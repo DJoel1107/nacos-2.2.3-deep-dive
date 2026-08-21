@@ -126,12 +126,29 @@ Nacos 1.x 的 HTTP 通信模式中，每次客户端请求都需要经过完整�
 Nacos 2.x 升级为 gRPC 长连接架构。`GrpcSdkServer`（core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcSdkServer.java:1-133）负责处理 SDK 客户端的 gRPC 连接。`GrpcSdkServer.start()`（core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcSdkServer.java:89-120）：
 
 ```java
-// GrpcSdkServer.start()（core/.../GrpcSdkServer.java:89-120）
+// BaseGrpcServer.startServer()（core/.../BaseGrpcServer.java:88-117）
 @Override
-public void start() {
-    super.start();                        // BaseGrpcServer: 绑定端口 + 注册拦截器
-    grpcCommonRequestAcceptor.start();    // 启动通用请求接收器
-    grpcBiStreamRequestAcceptor.start();  // 启动 Bi-directional Stream 接收器
+public void startServer() throws Exception {
+    final MutableHandlerRegistry handlerRegistry = new MutableHandlerRegistry();
+    addServices(handlerRegistry, getSeverInterceptors().toArray(new ServerInterceptor[0]));
+    NettyServerBuilder builder = NettyServerBuilder.forPort(getServicePort())
+            .executor(getRpcExecutor());
+    Optional<InternalProtocolNegotiator.ProtocolNegotiator> negotiator = newProtocolNegotiator();
+    if (negotiator.isPresent()) {
+        builder.protocolNegotiator(negotiator.get());
+    }
+    for (ServerTransportFilter each : getServerTransportFilters()) {
+        builder.addTransportFilter(each);
+    }
+    server = builder.maxInboundMessageSize(getMaxInboundMessageSize())
+            .fallbackHandlerRegistry(handlerRegistry)
+            .compressorRegistry(CompressorRegistry.getDefaultInstance())
+            .decompressorRegistry(DecompressorRegistry.getDefaultInstance())
+            .keepAliveTime(getKeepAliveTime(), TimeUnit.MILLISECONDS)
+            .keepAliveTimeout(getKeepAliveTimeout(), TimeUnit.MILLISECONDS)
+            .permitKeepAliveTime(getPermitKeepAliveTime(), TimeUnit.MILLISECONDS)
+            .build();
+    server.start();
 }
 ```
 
@@ -1122,11 +1139,24 @@ Nacos 2.5.3 的五层级数据模型通过 Namespace（租户隔离）→ Group�
 `EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）`（naming/src/main/java/com/alibaba/nacos/naming/consistency/EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）.java:67-78）的 `put(key, instances)` 方法根据 `instances[0].isEphemeral()` 路由：
 
 ```java
-if (instances[0].isEphemeral()) {
-    ephemeralClientOperationService.registerInstance(service, instance, clientId);  // AP → Distro
-// EphemeralClientOperationServiceImpl.registerInstance()（naming/.../EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）.java:67-78）
-} else {
-    persistentClientOperationService.registerInstance(service, instance, clientId);  // CP → JRaft
+// EphemeralClientOperationServiceImpl.registerInstance()（naming/core/v2/service/impl/EphemeralClientOperationServiceImpl.java:56-77）
+@Override
+public void registerInstance(Service service, Instance instance, String clientId) throws NacosException {
+    NamingUtils.checkInstanceIsLegal(instance);
+    Service singleton = ServiceManager.getInstance().getSingleton(service);
+    if (!singleton.isEphemeral()) {
+        throw new NacosRuntimeException(NacosException.INVALID_PARAM,
+                "Current service %s is persistent service, can't register ephemeral instance.");
+    }
+    Client client = clientManager.getClient(clientId);
+    checkClientIsLegal(client, clientId);
+    InstancePublishInfo instanceInfo = getPublishInfo(instance);
+    client.addServiceInstance(singleton, instanceInfo);
+    client.setLastUpdatedTime();
+    client.recalculateRevision();
+    NotifyCenter.publishEvent(new ClientOperationEvent.ClientRegisterServiceEvent(singleton, clientId));
+    NotifyCenter.publishEvent(
+            new MetadataEvent.InstanceMetadataEvent(singleton, instanceInfo.getMetadataId(), false));
 }
 ```
 
