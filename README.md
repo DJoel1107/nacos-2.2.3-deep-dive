@@ -67,14 +67,18 @@
 │   ├── glossary.md               # 术语表（91 个术语 / 16 分类）
 │   ├── nacos-writing-guide.md    # 写作工程指南
 │   ├── writing-spec.md           # 写作规范
-│   ├── source-reference-spec.md  # 源码引用规范（待产出）
-│   ├── quality-checklist.md      # 质检清单（待产出）
+│   ├── source-reference-spec.md  # 源码引用规范 ✅
+│   ├── quality-checklist.md      # 质检清单（55项/42必检） ✅
 │   ├── nacos-doc-outline.md     # 详细大纲（15 章 / 163 小节）
 │   └── outline.md                # 旧版大纲（归档）
 ├── chapters/                     # 各章正文
-│   ├── nacos-chapter-01.md
+│   ├── nacos-chapter-01.md      ✅ 2.5.3 新版（~66K字/13小节）
+│   ├── nacos-chapter-02.md      ⚠️ 旧 2.2.3 版，待重写
 │   ├── ...
 │   └── nacos-chapter-15.md
+├── chapter-html/                 # HTML 格式输出
+│   ├── nacos-chapter-01.html     ✅ Swiss Style 排版
+│   └── .gitkeep
 ├── analysis/                     # 分析报告
 │   └── nacos-2.2.3-to-2.5.3-diff.md
 ├── upstream/                    # 上游源码
