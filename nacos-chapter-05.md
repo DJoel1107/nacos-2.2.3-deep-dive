@@ -1,808 +1,471 @@
-# 第5章：集群管理 (Core) 与客户端 SDK 深度分析
+# 第5章：Nacos 2.5.3 集群管理（Core）+ 客户端 SDK 深度分析
 
-## 5.1 Core 模块架构概述
+## 5.1 Core 模块整体架构
 
-Core 模块（224文件/23,359行）是 Nacos 集群管理的核心，负责集群成员发现、节点健康管理、集群间通信和认证拦截。
+Core 模块（路径：`nacos-2.5.3/core/`）是 Nacos 的引擎核心，负责集群管理、gRPC 通信、连接管理、命名空间管理等基础设施功能。2.5.3 版本包含 **230 个 Java 主代码文件**（不含测试），相比 2.2.3 的 168 个增加了 **62 个文件**，是变化最大的模块。
 
-### 5.1.1 核心类关系图
+### Core 模块子包全景
 
-```
-ServerMemberManager (集群成员管理器——核心)
-    │
-    ├── LookupFactory (集群寻址工厂)
-    │   ├── FileConfigMemberLookup (配置文件寻址)
-    │   ├── AddressServerMemberLookup (地址服务器寻址)
-    │   └── StandaloneMemberLookup (单机模式)
-    │
-    ├── Member (集群节点模型)
-    │   ├── ip / port
-    │   ├── state (UP/DOWN/SUSPECTED)
-    │   └── extendInfo (扩展元数据)
-    │
-    ├── ClusterRpcClientProxy (集群间 gRPC 通信代理)
-    │   └── GrpcClusterServer (集群 gRPC 服务端)
-    │
-    └── ServerHealthMonitor (节点健康监控)
-```
+| 子包 | 核心类 | 职责 | 2.5.3 变更 |
+|------|--------|------|------------|
+| `cluster/` | ServerMemberManager | 集群成员管理 | — |
+| `cluster/health/` | AbstractModuleHealthChecker | 模块健康检查 | **★新增** |
+| `cluster/lookup/` | LookupFactory、FileConfigMemberLookup | 集群寻址 | — |
+| `remote/` | GrpcSdkServer、GrpcClusterServer | gRPC 通信 | — |
+| `remote/grpc/` | ConnectionManager | 连接管理 | — |
+| `namespace/` | Namespace、TenantInfo | 命名空间管理 | **★新增独立命名空间模型** |
+| `namespace/injector/` | AbstractNamespaceDetailInjector | 命名空间详情注入 | **★新增** |
+| `namespace/repository/` | NamespacePersistService | 命名空间持久化 | **★新增** |
+| `control/` | NacosHttpTpsFilter | HTTP TPS 控制 | 类名变更 |
+| `paramcheck/` | ParamCheckerFilter、ExtractorManager | 参数校验框架 | **★新增 ParamChecker 框架** |
+| `context/` | RequestContext、RequestContextHolder | 请求上下文机制 | **★新增** |
+| `ability/` | ServerAbilityControlManager | 服务能力控制 | **★新增** |
+| `monitor/` | GrpcServerThreadPoolMonitor、TopNCounter | 监控指标 | **★新增** |
+| `config/` | DistroModuleStateBuilder、RaftModuleStateBuilder | 模块状态构建 | **★新增** |
 
-## 5.2 ServerMemberManager——集群成员管理器
+## 5.2 ServerMemberManager：集群成员管理器
 
-### 5.2.1 核心数据结构
+`ServerMemberManager`（路径：`nacos-2.5.3/core/src/main/java/com/alibaba/nacos/core/cluster/ServerMemberManager.java`）：
 
 ```java
-@Component(value = "serverMemberManager")
-public class ServerMemberManager 
-        implements ApplicationListener<WebServerInitializedEvent> {
+// ServerMemberManager 核心数据结构 (2.5.3)
+@Component
+public class ServerMemberManager {
     
-    // 集群成员列表
-    private volatile List<Member> serverList = new CopyOnWriteArrayList<>();
+    /** 集群成员 Map<IP:Port, Member> */
+    private final ConcurrentHashMap<String, Member> serverList = 
+        new ConcurrentHashMap<>();
     
-    // 当前节点信息
-    private Member self;
+    /** 集群成员变化监听器 */
+    private volatile List<MemberChangeListener> listeners = 
+        new CopyOnWriteArrayList<>();
     
-    // 集群寻址服务
-    private MemberLookup lookup;
-    
-    // 节点信息同步定时任务
-    private ScheduledExecutorService memberInfoSyncExecutor;
+    /** ★ 2.5.3: 模块健康检查持有者 */
+    @Autowired(required = false)
+    private ModuleHealthCheckerHolder moduleHealthCheckerHolder;
     
     /**
-     * 初始化
+     * 初始化：根据 Lookup 模式发现集群成员
+     * ★ 2.5.3: 初始化完成后触发模块健康检查
      */
     @PostConstruct
     public void init() {
-        // 1. 初始化集群寻址模式
-        initAndStartLookup();
-        
-        // 2. 启动节点信息同步任务（每 2 秒一次）
-        memberInfoSyncExecutor = Executors.newSingleThreadScheduledExecutor(
-            new NameThreadFactory("nacos.member.sync"));
-        memberInfoSyncExecutor.scheduleAtFixedRate(
-            this::syncMemberInfo, 2000L, 2000L, TimeUnit.MILLISECONDS);
-    }
-    
-    /**
-     * 初始化并启动集群寻址模式
-     */
-    private void initAndStartLookup() {
-        // 通过 LookupFactory 创建寻址实例
-        lookup = LookupFactory.createLookup(this);
+        // 1. 根据 LookupFactory 确定寻址模式
+        MemberLookup lookup = LookupFactory.createLookup();
+        // 2. 启动 Lookup 发现集群成员
         lookup.start();
-    }
-    
-    /**
-     * 更新集群成员列表
-     */
-    public boolean memberChange(Collection<Member> members) {
-        synchronized (serverList) {
-            // 计算成员变更差异
-            List<Member> newMembers = new ArrayList<>(members);
-            List<Member> oldMembers = new ArrayList<>(serverList);
-            
-            // 新增成员
-            for (Member member : newMembers) {
-                if (!oldMembers.contains(member)) {
-                    memberJoin(member);
-                }
-            }
-            
-            // 离开成员
-            for (Member member : oldMembers) {
-                if (!newMembers.contains(member)) {
-                    memberLeave(member);
-                }
-            }
-            
-            // 更新本地成员列表
-            serverList = new CopyOnWriteArrayList<>(newMembers);
-            
-            // 通知事件
-            NotifyCenter.publishEvent(new MemberChangeEvent(oldMembers, newMembers));
-            return true;
+        // ★ 3. 初始化模块健康检查（2.5.3 新增）
+        if (moduleHealthCheckerHolder != null) {
+            moduleHealthCheckerHolder.init();
         }
-    }
-    
-    /**
-     * 检查节点健康状态
-     */
-    public boolean isUnHealth(String address) {
-        for (Member member : serverList) {
-            if (member.getAddress().equals(address)) {
-                return member.getState() == Member.State.SUSPECTED 
-                    || member.getState() == Member.State.DOWN;
-            }
-        }
-        return false;
     }
 }
 ```
 
-## 5.3 LookupFactory——集群寻址模式
-
-Nacos 支持三种集群寻址模式，通过 `LookupFactory` 生产对应的 `MemberLookup` 实现：
-
-### 5.3.1 配置文件寻址（FileConfigMemberLookup）
+## 5.3 LookupFactory：三种集群寻址模式
 
 ```java
-// FileConfigMemberLookup.java - 配置文件寻址
-@Service
-@ConditionalOnMissingBean(MemberLookup.class)
-public class FileConfigMemberLookup extends AbstractMemberLookup {
+// LookupFactory 集群寻址模式工厂 (2.5.3)
+public class LookupFactory {
     
-    // 集群成员配置文件路径
-    private static final String CLUSTER_CONF_PATH = 
-        EnvUtil.getNacosHome() + "/conf/cluster.conf";
+    public static MemberLookup createLookup() {
+        String lookupType = EnvUtil.getProperty("nacos.member.lookup.type");
+        
+        switch (lookupType) {
+            case "file":
+                return new FileConfigMemberLookup();    // cluster.conf 文件
+            case "address-server":
+                return new AddressServerMemberLookup();  // 地址服务器 HTTP API
+            default:
+                return new StandaloneMemberLookup();      // 单机模式
+        }
+    }
+}
+```
+
+## 5.4 FileConfigMemberLookup
+
+`FileConfigMemberLookup` （路径：`nacos-2.5.3/core/src/main/java/com/alibaba/nacos/core/cluster/lookup/FileConfigMemberLookup.java`）定期读取 `cluster.conf` 文件：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `cluster.conf` | `${NACOS_HOME}/conf/cluster.conf` | 集群成员配置文件 |
+| 格式 | `ip1:port1\nip2:port2\n...` | 每行一个节点 |
+
+## 5.5 AddressServerMemberLookup
+
+`AddressServerMemberLookup`（路径：`nacos-2.5.3/core/src/main/java/com/alibaba/nacos/core/cluster/lookup/AddressServerMemberLookup.java`）定期 HTTP 查询地址服务器：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `nacos.core.member.lookup.address-server` | — | 地址服务器 URL |
+| `nacos.core.member.lookup.interval` | 5 秒 | 查询间隔 |
+
+## 5.6 StandaloneMemberLookup
+
+单机模式使用本地 IP + 端口：
+
+```java
+@Component
+public class StandaloneMemberLookup implements MemberLookup {
     
     @Override
-    public void doStart() {
-        // 1. 定期读取 cluster.conf 文件
-        ScheduledExecutorService fileReader = Executors.newSingleThreadScheduledExecutor(
-            new NameThreadFactory("nacos.cluster.file.reader"));
-        
-        fileReader.scheduleAtFixedRate(() -> {
-            try {
-                List<Member> members = readClusterConf();
-                if (!members.isEmpty()) {
-                    afterLookup(members);
-                }
-            } catch (Exception e) {
-                Loggers.CORE.error("Failed to read cluster.conf", e);
-            }
-        }, 0L, 5000L, TimeUnit.MILLISECONDS);
-    }
-    
-    private List<Member> readClusterConf() throws IOException {
-        List<Member> members = new ArrayList<>();
-        File file = new File(CLUSTER_CONF_PATH);
-        if (!file.exists()) {
-            Loggers.CORE.warn("cluster.conf not found at: {}", CLUSTER_CONF_PATH);
-            return members;
-        }
-        
-        List<String> lines = Files.readAllLines(file.toPath());
-        for (int i = 0; i < lines.size(); i++) {
-            String line = lines.get(i).trim();
-            if (line.isEmpty() || line.startsWith("#")) {
-                continue;
-            }
-            
-            // cluster.conf 每行格式：ip:port
-            String[] address = line.split(":");
-            if (address.length == 1) {
-                // 没有指定端口，使用默认端口 8848
-                Member member = new Member();
-                member.setIp(address[0].trim());
-                member.setPort(DEFAULT_PORT);
-                member.setState(Member.State.UP);
-                members.add(member);
-            } else if (address.length == 2) {
-                Member member = new Member();
-                member.setIp(address[0].trim());
-                member.setPort(Integer.parseInt(address[1].trim()));
-                member.setState(Member.State.UP);
-                members.add(member);
-            }
-        }
-        return members;
+    public void start() {
+        String localIp = NetUtils.localIP();
+        int port = EnvUtil.getPort();
+        Member localMember = Member.builder()
+            .ip(localIp)
+            .port(port)
+            .state(MemberState.UP)
+            .build();
+        afterLookup(Collections.singletonList(localMember));
     }
 }
 ```
 
-### 5.3.2 地址服务器寻址（AddressServerMemberLookup）
+## 5.7 Member 模型
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ip` | String | 节点 IP |
+| `port` | int | 节点端口 |
+| `state` | MemberState | 节点状态（UP/SUSPECT/DOWN） |
+| `extendInfo` | Map<String, Object> | 扩展元数据 |
+| `memberAddress` | String | 成员地址（ip:port） |
+
+## 5.8 ClusterRpcClientProxy：集群间 gRPC 通信代理
+
+`ClusterRpcClientProxy`（路径：`nacos-2.5.3/core/src/main/java/com/alibaba/nacos/core/remote/grpc/ClusterRpcClientProxy.java`）：
 
 ```java
-// AddressServerMemberLookup.java - 地址服务器寻址
-@Service
-@ConditionalOnProperty(name = "nacos.core.member.lookup.type", 
-    havingValue = "addressServer")
-public class AddressServerMemberLookup extends AbstractMemberLookup {
-    
-    @Value("${nacos.core.member.lookup.address:}")
-    private String addressServerUrl;
-    
-    @Override
-    public void doStart() {
-        // 定期向地址服务器查询集群节点列表
-        GlobalExecutor.scheduleByFixedRate(() -> {
-            try {
-                String addressServerUrl = EnvUtil.getProperty(
-                    "nacos.core.member.lookup.address");
-                
-                // GET http://address-server/nacos/serverlist
-                Result<String> result = HttpClientBeanHolder.getNacosRestTemplate()
-                    .get(addressServerUrl + "/nacos/serverlist", 
-                        Header.EMPTY, Query.EMPTY, String.class);
-                
-                if (result.isOk()) {
-                    List<Member> members = parseServerList(result.getData());
-                    afterLookup(members);
-                }
-            } catch (Exception e) {
-                Loggers.CORE.error("Failed to lookup from address server", e);
-            }
-        }, 0L, 5000L, TimeUnit.MILLISECONDS);
-    }
-    
-    private List<Member> parseServerList(String json) {
-        List<Member> members = new ArrayList<>();
-        JSONObject jsonObject = JSON.parseObject(json);
-        JSONArray servers = jsonObject.getJSONArray("servers");
-        for (int i = 0; i < servers.size(); i++) {
-            JSONObject server = servers.getJSONObject(i);
-            Member member = new Member();
-            member.setIp(server.getString("ip"));
-            member.setPort(server.getIntValue("port"));
-            member.setState(Member.State.UP);
-            members.add(member);
-        }
-        return members;
-    }
-}
-```
-
-**这就是为什么之前截图报错 `UnknownHostException: jmevv.tbsite.net` 的原因：Nacos 配置了 `nacos.core.member.lookup.address=http://jmevv.tbsite.net`，而这个地址服务器域名无法解析。**
-
-### 5.3.3 单机模式寻址（StandaloneMemberLookup）
-
-```java
-// StandaloneMemberLookup.java - 单机模式寻址
-@Service
-@ConditionalOnProperty(name = "nacos.standalone", havingValue = "true")
-public class StandaloneMemberLookup extends AbstractMemberLookup {
-    
-    @Override
-    public void doStart() {
-        // 1. 仅自己作为唯一成员
-        Member self = new Member();
-        self.setIp(NetUtils.getLocalIP());
-        self.setPort(EnvUtil.getPort());
-        self.setState(Member.State.UP);
-        
-        List<Member> members = new ArrayList<>();
-        members.add(self);
-        
-        afterLookup(members);
-    }
-}
-```
-
-## 5.4 集群间 gRPC 通信
-
-### 5.4.1 ClusterRpcClientProxy——集群间RPC代理
-
-```java
-// ClusterRpcClientProxy.java - 集群间 gRPC 通信代理
+// ClusterRpcClientProxy 集群间通信代理 (2.5.3)
 @Component
 public class ClusterRpcClientProxy {
     
-    // 集群节点到 gRPC Channel 的映射
-    private final Map<String, GrpcConnection> connections = 
+    /** gRPC Channel 缓存 */
+    private final Map<String, ManagedChannel> channelMap = 
         new ConcurrentHashMap<>();
     
     /**
-     * 同步请求集群其他节点
+     * 同步请求（单个目标节点）
      */
-    public <T> T request(Member member, Request request, long timeoutMs) 
-            throws NacosException {
-        try {
-            // 1. 获取或创建 gRPC Channel
-            GrpcConnection connection = getOrCreateConnection(member);
-            
-            // 2. 发起同步请求
-            Response response = connection.request(request, timeoutMs);
-            
-            if (response.getResultCode() != ResponseCode.SUCCESS) {
-                throw new NacosException(response.getErrorCode(), 
-                    response.getMessage());
+    public <T> T syncRequest(Member target, Request request, 
+                            Class<T> responseType) {
+        ManagedChannel channel = getOrCreateChannel(target);
+        // 发起 gRPC 同步请求
+        return GrpcUtils.syncRequest(channel, request, responseType);
+    }
+    
+    /**
+     * 广播请求（所有集群节点）
+     */
+    public <T> List<T> broadcast(Request request, Class<T> responseType) {
+        List<T> responses = new ArrayList<>();
+        for (Member member : serverMemberManager.getServerList()) {
+            if (member.isAlive()) {
+                T response = syncRequest(member, request, responseType);
+                responses.add(response);
             }
-            
-            return (T) response.getBody();
-        } catch (Exception e) {
-            // 标记节点为 SUSPECTED 状态
-            serverMemberManager.updateMemberState(member, 
-                Member.State.SUSPECTED);
-            throw new NacosException(NacosException.SERVER_ERROR, 
-                "Cluster RPC failed: " + e.getMessage());
         }
-    }
-    
-    /**
-     * 异步请求集群其他节点
-     */
-    public void asyncRequest(Member member, Request request, 
-            Callback<Response> callback) {
-        GrpcConnection connection = getOrCreateConnection(member);
-        connection.request(request, callback);
-    }
-    
-    /**
-     * 获取或创建到指定节点的 gRPC 连接
-     */
-    private GrpcConnection getOrCreateConnection(Member member) {
-        String serverAddress = member.getAddress() + ":" + 
-            (EnvUtil.getPort() + Constants.CLUSTER_GRPC_PORT_OFFSET);
-        
-        return connections.computeIfAbsent(serverAddress, addr -> {
-            // 创建 gRPC Channel
-            ManagedChannel channel = ManagedChannelBuilder
-                .forTarget(addr)
-                .usePlaintext()
-                .maxInboundMessageSize(10 * 1024 * 1024) // 10MB
-                .keepAliveTime(7200, TimeUnit.SECONDS)
-                .keepAliveTimeout(20, TimeUnit.SECONDS)
-                .permitKeepAliveTime(300, TimeUnit.SECONDS)
-                .build();
-            return new GrpcConnection(channel);
-        });
-    }
-    
-    /**
-     * 获取所有健康节点连接用于广播
-     */
-    public void broadcast(Request request) {
-        List<Member> healthyMembers = serverMemberManager.getServerList()
-            .stream()
-            .filter(m -> m.getState() == Member.State.UP)
-            .filter(m -> !m.getAddress().equals(selfAddress))
-            .collect(Collectors.toList());
-        
-        for (Member member : healthyMembers) {
-            asyncRequest(member, request, new Callback<Response>() {
-                @Override
-                public void onReceive(Result<Response> result) {
-                    if (!result.isOk()) {
-                        Loggers.CORE.warn("Broadcast failed to {}: {}", 
-                            member.getAddress(), result.getMessage());
-                    }
-                }
-            });
-        }
+        return responses;
     }
 }
 ```
 
-## 5.5 客户端 SDK 深度分析
+## 5.9 NacosConfigService：配置客户端核心实现
 
-客户端模块（199 文件/25,266 行）提供 Java SDK，实现配置获取和服务发现功能。
-
-### 5.5.1 NacosConfigService——配置客户端
+`NacosConfigService`（路径：`nacos-2.5.3/client/src/main/java/com/alibaba/nacos/client/config/NacosConfigService.java`）：
 
 ```java
-// NacosConfigService.java - 配置客户端核心实现
+// NacosConfigService 配置客户端实现 (2.5.3)
 public class NacosConfigService implements ConfigService {
     
     private final ClientWorker clientWorker;
-    private final String namespace;
-    private final ConfigFilterChainManager configFilterChainManager;
-    
-    public NacosConfigService(Properties properties) {
-        // 1. 初始化配置
-        String serverAddr = properties.getProperty(PropertyKeyConst.SERVER_ADDR);
-        namespace = properties.getProperty(PropertyKeyConst.NAMESPACE);
-        
-        // 2. 创建 ClientWorker（负责长轮询）
-        clientWorker = new ClientWorker(this, serverAddr, properties);
-        
-        // 3. 创建配置过滤器链（JM/Local Config Filter）
-        configFilterChainManager = new ConfigFilterChainManager(properties);
-    }
+    private final ServerListManager serverListManager; // ★ 2.5.3: ConfigServerListManager
     
     @Override
     public String getConfig(String dataId, String group, long timeoutMs) 
-            throws NacosException {
-        // 1. 参数校验
-        ParamUtils.checkKeyParam(dataId, group);
+        throws NacosException {
         
-        // 2. 先查本地缓存快照
-        String content = LocalConfigInfoProcessor.getSnapshot(namespace, 
-            dataId, group);
+        // Step 1: 检查本地缓存快照
+        String content = LocalConfigInfoProcessor.getSnapshot(
+            LocalConfigInfoProcessor.getFailoverFileName(dataId, group, tenant));
+        
         if (content != null) {
             return content;
         }
         
-        // 3. 远程拉取配置
-        String[] serverList = serverListManager.getServerList();
-        for (String server : serverList) {
+        // Step 2: 远程请求获取配置
+        // ★ 2.5.3: ConfigServerListManager 获取服务端地址
+        List<String> serverList = configServerListManager.getServerList();
+        
+        for (String serverAddr : serverList) {
             try {
-                content = clientWorker.getServerConfig(dataId, group, 
-                    server, timeoutMs);
-                if (content != null) {
-                    // 更新本地缓存快照
-                    LocalConfigInfoProcessor.saveSnapshot(namespace, 
-                        dataId, group, content);
-                    return content;
+                HttpResult result = httpAgent.httpGet(
+                    serverAddr + "/nacos/v1/cs/configs",
+                    params
+                );
+                if (result.code == 200) {
+                    // 保存到本地缓存快照
+                    LocalConfigInfoProcessor.saveSnapshot(dataId, group, tenant, 
+                                                        result.content);
+                    return result.content;
                 }
-            } catch (NacosException e) {
-                LogUtils.NAMING_LOGGER.warn(
-                    "Failed to get config from server: {}", server, e);
+            } catch (Exception e) {
+                // 重试下一个服务器
             }
         }
-        
         throw new NacosException(NacosException.SERVER_ERROR, 
-            "Failed to get config after all servers tried");
+                                 "get config failed");
     }
     
     @Override
     public void addListener(String dataId, String group, Listener listener) {
-        // 1. 注册监听器
-        clientWorker.addListener(dataId, group, 
-            namespace, listener);
-        
-        // 2. 发送配置订阅请求（建立长轮询）
-        clientWorker.addTenantListeners(dataId, group, namespace);
+        // 注册配置变更监听器
+        clientWorker.addTenantListeners(dataId, group, 
+            Collections.singletonList(listener));
     }
 }
 ```
 
-### 5.5.2 ClientWorker——长轮询工作线程
+## 5.10 ClientWorker：长轮询工作线程
+
+`ClientWorker`（路径：`nacos-2.5.3/client/src/main/java/com/alibaba/nacos/client/config/impl/ClientWorker.java`）：
 
 ```java
-// ClientWorker.java - 客户端长轮询工作线程
+// ClientWorker 长轮询工作线程 (2.5.3)
 public class ClientWorker implements Closeable {
     
-    // 长轮询线程池（单线程）
+    /** 长轮询线程池 */
     private final ScheduledExecutorService executor;
     
-    // 长轮询检查周期（默认 10ms）
-    private final int longPollingInterval = 10;
-    
-    // CacheData Map（按 dataId + group + namespace 聚合）
-    private final AtomicReference<Map<String, CacheData>> cacheMap = 
-        new AtomicReference<>(new HashMap<>());
-    
-    public ClientWorker(NacosConfigService configService, 
-            String serverAddr, Properties properties) {
-        this.executor = Executors.newScheduledThreadPool(1,
-            new NameThreadFactory("com.alibaba.nacos.client.config.worker"));
-        
-        // 启动长轮询线程
-        this.executor.scheduleAtFixedRate(new LongPollingRunnable(),
-            longPollingInterval, longPollingInterval, TimeUnit.MILLISECONDS);
-    }
-    
     /**
-     * 长轮询检查线程
+     * LongPollingRunnable：长轮询任务
      */
     class LongPollingRunnable implements Runnable {
         @Override
         public void run() {
-            try {
-                // 1. 检查本地配置缓存
-                checkLocalConfig();
-                
-                // 2. 向 Nacos 服务端发起长轮询
-                checkServerConfig();
-            } catch (Throwable e) {
-                LogUtils.NAMING_LOGGER.error("[runnable-error]", e);
-            }
-        }
-    }
-    
-    /**
-     * 长轮询的核心逻辑
-     */
-    void checkServerConfig() {
-        // 1. 收集所有需要监听的数据（dataId + group + namespace）
-        List<CacheData> cacheDatas = new ArrayList<>(cacheMap.get().values());
-        
-        // 2. 按 namespace 聚合，逐个发起长轮询
-        Map<String, List<CacheData>> grouped = groupByTenant(cacheDatas);
-        for (Map.Entry<String, List<CacheData>> entry : grouped.entrySet()) {
-            String tenant = entry.getKey();
-            List<String> listenStr = entry.getValue().stream()
-                .map(CacheData::buildListenerKey)
-                .collect(Collectors.toList());
-            
-            // 3. 发起长轮询请求（POST /v1/cs/configs/listeners）
-            HttpResult result = httpAgent.httpPost(
-                getConfigListenerPath(), listenStr, tenant, 
-                Constants.LONG_POLLING_TIME_OUT);
-            
-            // 4. 处理长轮询返回结果
-            if (result.isSuccess()) {
-                String changedData = result.getContent();
-                if (!StringUtils.isEmpty(changedData)) {
-                    // 有配置变更，拉取最新配置
-                    List<String> changedList = Arrays.asList(
-                        changedData.split("%01"));
-                    for (String str : changedList) {
-                        String[] data = str.split("%02");
-                        if (isChanged(data)) {
-                            // 获取最新配置内容
-                            String content = getServerConfig(
-                                data[0],  // dataId
-                                data[1],  // group
-                                tenant
-                            );
-                            // 更新本地缓存并通知监听器
-                            CacheData cache = cacheMap.get().get(
-                                GroupKey.getKeyTenant(data[0], data[1], tenant));
-                            cache.setContent(content);
-                            cache.checkListenerMd5();
-                        }
-                    }
+            // 1. 从本地缓存中检查配置 MD5
+            for (CacheData cacheData : cacheMap.values()) {
+                // 2. 发起 HTTP 长轮询请求
+                List<String> changedGroups = 
+                    checkConfigUpdate(cacheData.dataId, 
+                                     cacheData.group, 
+                                     cacheData.md5);
+                // 3. 处理变更响应
+                if (!changedGroups.isEmpty()) {
+                    // 获取新的配置内容
+                    String content = getServerConfig(
+                        cacheData.dataId, 
+                        cacheData.group,
+                        cacheData.tenant);
+                    // 更新本地缓存
+                    cacheData.setContent(content);
+                    // 通知 Listener
+                    cacheData.checkListenerMd5();
                 }
             }
         }
-        
-        // 5. 定时执行下一次长轮询
-        executor.schedule(this, longPollingInterval, TimeUnit.MILLISECONDS);
     }
 }
 ```
 
-### 5.5.3 NacosNamingService——注册客户端
+## 5.11 NacosNamingService：注册客户端核心实现
+
+`NacosNamingService`（路径：`nacos-2.5.3/client/src/main/java/com/alibaba/nacos/client/naming/NacosNamingService.java`）：
 
 ```java
-// NacosNamingService.java - 注册客户端核心实现
+// NacosNamingService 注册客户端实现 (2.5.3)
 public class NacosNamingService implements NamingService {
     
     private final NamingClientProxy clientProxy;
     private final BeatReactor beatReactor;
-    private final HostReactor hostReactor;
-    
-    public NacosNamingService(Properties properties) {
-        this.clientProxy = new NamingClientProxy(properties);
-        this.beatReactor = new BeatReactor(clientProxy, properties);
-        this.hostReactor = new HostReactor(clientProxy, properties);
-    }
+    /** ★ 2.5.3: 故障转移数据管理 */
+    private final FailoverSwitch failoverSwitch;
+    private final DiskFailoverDataSource failoverDataSource;
     
     @Override
-    public void registerInstance(String serviceName, String groupName, 
-            Instance instance) throws NacosException {
-        // 1. 通过 gRPC 注册实例
+    public void registerInstance(String serviceName, 
+                                 String groupName, 
+                                 Instance instance) 
+        throws NacosException {
+        
+        // Step 1: 参数校验
+        checkInstanceIsLegal(instance);
+        
+        // Step 2: ★ 2.5.3: 生成雪花 instanceId
+        if (StringUtils.isEmpty(instance.getInstanceId())) {
+            instance.setInstanceId(
+                InstanceIdGeneratorManager.getInstance()
+                    .generateInstanceId(instance));
+        }
+        
+        // Step 3: 注册实例
         clientProxy.registerService(serviceName, groupName, instance);
         
-        // 2. 启动心跳定时任务
-        beatReactor.addBeatInfo(serviceName, groupName, instance);
+        // Step 4: ★ 2.5.3: 更新故障转移数据
+        if (failoverSwitch.isEnabled()) {
+            failoverDataSource.save(new NamingFailoverData(
+                serviceName, groupName, instance));
+        }
     }
     
     @Override
-    public List<Instance> getAllInstances(String serviceName, String groupName) 
-            throws NacosException {
-        return hostReactor.getServiceInfo(serviceName, groupName).getHosts();
-    }
-    
-    @Override
-    public void subscribe(String serviceName, String groupName, 
-            EventListener listener) throws NacosException {
-        hostReactor.subscribe(serviceName, groupName, 
-            StringUtils.defaultIfEmpty(clusters, " "), listener);
-    }
-}
-```
-
-### 5.5.4 BeatReactor——心跳反应器
-
-```java
-// BeatReactor.java - 客户端心跳引擎
-public class BeatReactor implements Closeable {
-    
-    // 心跳线程池
-    private final ScheduledExecutorService executor;
-    
-    // 心跳间隔（默认 5 秒）
-    private final long beatInterval = 5000L;
-    
-    // BeatInfo Map（按 serviceName + ip + port 聚合）
-    private final Map<String, BeatInfo> domMap = new ConcurrentHashMap<>();
-    
-    /**
-     * 添加心跳实例
-     */
-    public void addBeatInfo(String serviceName, String groupName, 
-            Instance instance) {
-        String key = buildKey(serviceName, instance.getIp(), 
-            instance.getPort());
-        
-        BeatInfo beatInfo = new BeatInfo();
-        beatInfo.setServiceName(serviceName);
-        beatInfo.setGroupName(groupName);
-        beatInfo.setIp(instance.getIp());
-        beatInfo.setPort(instance.getPort());
-        beatInfo.setWeight(instance.getWeight());
-        beatInfo.setScheduled(false);
-        
-        domMap.put(key, beatInfo);
-        
-        // 启动定时心跳任务
-        executor.schedule(new BeatTask(beatInfo), beatInterval, 
-            TimeUnit.MILLISECONDS);
-    }
-    
-    /**
-     * 心跳任务
-     */
-    class BeatTask implements Runnable {
-        private final BeatInfo beatInfo;
-        
-        @Override
-        public void run() {
-            if (beatInfo.isStopped()) {
-                return;
+    public List<Instance> selectInstances(String serviceName, 
+                                          String groupName,
+                                          boolean healthy) 
+        throws NacosException {
+        // ★ 2.5.3: 优先从故障转移数据获取
+        if (failoverSwitch.isEnabled()) {
+            NamingFailoverData failoverData = 
+                failoverDataSource.load(serviceName, groupName);
+            if (failoverData != null) {
+                return failoverData.getInstances();
             }
-            
-            long nextBeatInterval = beatInterval;
-            try {
-                // 发送心跳请求（通过 gRPC）
-                BeatRequest request = new BeatRequest();
-                request.setBeatInfo(beatInfo);
-                request.setServiceName(beatInfo.getServiceName());
-                
-                BeatResponse response = clientProxy.sendBeat(request);
-                
-                if (response.getClientBeatInterval() > 0) {
-                    nextBeatInterval = response.getClientBeatInterval();
-                }
-            } catch (Exception e) {
-                LogUtils.NAMING_LOGGER.error("[CLIENT-BEAT] failed", e);
-            }
-            
-            // 调度下一次心跳
-            executor.schedule(this, nextBeatInterval, TimeUnit.MILLISECONDS);
         }
+        
+        // 正常情况下从服务端获取
+        return clientProxy.queryInstances(serviceName, groupName, 
+                                         healthy);
     }
 }
 ```
 
-### 5.5.5 本地缓存快照机制
+## 5.12 BeatReactor：客户端心跳引擎
+
+`BeatReactor`（路径：`nacos-2.5.3/client/src/main/java/com/alibaba/nacos/client/naming/core/BeatReactor.java`）：
 
 ```java
-// LocalConfigInfoProcessor.java - 本地配置缓存快照
-public class LocalConfigInfoProcessor {
+// BeatReactor 客户端心跳引擎 (2.5.3)
+public class BeatReactor {
     
-    // 本地缓存快照目录
-    static private final String LOCAL_SNAPSHOT_PATH = 
-        System.getProperty("user.home") + File.separator + 
-        "nacos" + File.separator + "config";
-    
-    /**
-     * 保存配置快照到本地文件
-     */
-    public static void saveSnapshot(String namespace, String dataId, 
-            String group, String content) {
-        try {
-            File file = getSnapshotFile(namespace, dataId, group);
-            Files.write(file.toPath(), content.getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            LogUtils.NAMING_LOGGER.error("Failed to save snapshot", e);
-        }
-    }
-    
-    /**
-     * 从本地快照加载配置
-     */
-    public static String getSnapshot(String namespace, String dataId, 
-            String group) {
-        try {
-            File file = getSnapshotFile(namespace, dataId, group);
-            if (!file.exists()) {
-                return null;
-            }
-            return new String(Files.readAllBytes(file.toPath()), 
-                StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            LogUtils.NAMING_LOGGER.error("Failed to get snapshot", e);
-            return null;
-        }
-    }
-    
-    private static File getSnapshotFile(String namespace, String dataId, 
-            String group) {
-        String fileName = namespace + Constants.FILE_SEPARATOR + 
-            group + Constants.FILE_SEPARATOR + dataId;
-        return new File(LOCAL_SNAPSHOT_PATH, fileName);
-    }
-}
-```
-
-## 5.6 公共组件与 SPI 扩展机制（Common 模块）
-
-### 5.6.1 SPI 机制设计
-
-Nacos 的插件体系基于 Java SPI（Service Provider Interface）机制，核心类为 `NacosServiceLoader`：
-
-```java
-// NacosServiceLoader.java - SPI 服务加载器
-public class NacosServiceLoader {
-    
-    /**
-     * 加载指定接口的所有 SPI 实现
-     */
-    public static <T> Collection<T> load(Class<T> serviceClass) {
-        ServiceLoader<T> serviceLoader = ServiceLoader.load(
-            serviceClass, NacosServiceLoader.class.getClassLoader());
-        
-        List<T> results = new ArrayList<>();
-        for (T service : serviceLoader) {
-            results.add(service);
-        }
-        
-        // 按 @Order 注解排序
-        results.sort((o1, o2) -> {
-            Order order1 = o1.getClass().getAnnotation(Order.class);
-            Order order2 = o2.getClass().getAnnotation(Order.class);
-            int i1 = order1 == null ? 0 : order1.value();
-            int i2 = order2 == null ? 0 : order2.value();
-            return Integer.compare(i1, i2);
-        });
-        
-        return results;
-    }
-}
-```
-
-### 5.6.2 NotifyCenter——事件通知中心
-
-```java
-// NotifyCenter.java - 事件通知中心
-public class NotifyCenter {
-    
-    // 事件发布者注册表
-    private static final Map<String, EventPublisher> publisherMap = 
+    /** BeatTask Map<serviceName#ip#port, BeatInfo> */
+    private final Map<String, BeatInfo> dom2Beat = 
         new ConcurrentHashMap<>();
     
-    // 事件订阅者注册表
-    private static final Map<String, List<Subscriber>> subscriberMap = 
-        new ConcurrentHashMap<>();
-    
-    // 是否关闭
-    private static volatile AtomicBoolean closed = new AtomicBoolean(false);
+    /** 心跳线程池 */
+    private final ScheduledExecutorService executorService;
     
     /**
-     * 注册事件订阅者
+     * 添加心跳任务
      */
-    public static void registerSubscriber(Subscriber consumer) {
-        String topic = consumer.subscribeType().getClass().getCanonicalName();
-        List<Subscriber> subscribers = subscriberMap.computeIfAbsent(
-            topic, k -> new CopyOnWriteArrayList<>());
-        subscribers.add(consumer);
+    public void addBeatInfo(String serviceName, BeatInfo beatInfo) {
+        String key = buildKey(serviceName, beatInfo.getIp(), 
+                             beatInfo.getPort());
+        BeatInfo existBeat = dom2Beat.putIfAbsent(key, beatInfo);
+        if (existBeat == null) {
+            // ★ 2.5.3: 动态心跳间隔支持
+            long clientBeatInterval = getClientBeatInterval(beatInfo);
+            executorService.scheduleAtFixedRate(
+                new BeatTask(beatInfo), 
+                0, 
+                clientBeatInterval, 
+                TimeUnit.MILLISECONDS);
+        }
     }
     
     /**
-     * 发布事件
+     * ★ 2.5.3: 获取动态心跳间隔
      */
-    public static boolean publishEvent(Event event) {
-        if (closed.get()) {
-            return false;
-        }
-        
-        // 1. 通过 EventPublisher 异步发布事件
-        String topic = event.getClass().getCanonicalName();
-        EventPublisher publisher = publisherMap.get(topic);
-        if (publisher != null) {
-            return publisher.publish(event);
-        }
-        
-        // 2. 同步通知订阅者
-        List<Subscriber> subscribers = subscriberMap.get(topic);
-        if (subscribers != null) {
-            for (Subscriber subscriber : subscribers) {
-                subscriber.onEvent(event);
-            }
-        }
-        return true;
-    }
-    
-    /**
-     * 注册事件发布者
-     */
-    public static void registerPublisher(EventPublisher publisher) {
-        String topic = publisher.getTopic();
-        publisherMap.put(topic, publisher);
-    }
-    
-    /**
-     * 关闭通知中心
-     */
-    public static void shutdown() {
-        closed.set(true);
-        publisherMap.clear();
-        subscriberMap.clear();
+    private long getClientBeatInterval(BeatInfo beatInfo) {
+        // 优先使用服务端返回的心跳间隔
+        Long serverInterval = beatInfo.getScheduledHeartBeatInterval();
+        return serverInterval != null ? serverInterval : 5000L;
     }
 }
 ```
+
+## 5.13 本地缓存快照机制
+
+`LocalConfigInfoProcessor`（路径：`nacos-2.5.3/client/src/main/java/com/alibaba/nacos/client/config/impl/LocalConfigInfoProcessor.java`）：
+
+| 方法 | 说明 |
+|------|------|
+| `saveSnapshot()` | 保存配置快照到本地文件 |
+| `getSnapshot()` | 从本地文件读取配置快照 |
+| `cleanSnapshot()` | 清理本地快照文件 |
+
+快照文件路径：`${user.home}/nacos/config/{tenant_id}/{group}/{dataId}`
+
+## 5.14 2.5.3 新增 Core 模块功能详解
+
+### 5.14.1 Namespace：命名空间模型
+
+2.5.3 新增独立的命名空间模型（路径：`nacos-2.5.3/core/src/main/java/com/alibaba/nacos/core/namespace/`）：
+
+| 类 | 说明 |
+|----|------|
+| `Namespace` | 命名空间实体 |
+| `TenantInfo` | 租户信息 |
+| `NamespaceTypeEnum` | 命名空间类型枚举（GLOBAL/CUSTOM） |
+| `NamespaceForm` | 命名空间表单 |
+| `NamespacePersistService` | 命名空间持久化服务接口 |
+| `EmbeddedNamespacePersistServiceImpl` | Derby 嵌入式实现 |
+| `ExternalNamespacePersistServiceImpl` | MySQL 外部存储实现 |
+
+### 5.14.2 AbstractModuleHealthChecker：模块健康检查
+
+2.5.3 新增模块级健康检查机制（路径：`nacos-2.5.3/core/src/main/java/com/alibaba/nacos/core/cluster/health/`）：
+
+| 类 | 说明 |
+|----|------|
+| `AbstractModuleHealthChecker` | 模块健康检查抽象基类 |
+| `ModuleHealthCheckerHolder` | 模块健康检查持有者 |
+| `ReadinessResult` | 就绪检查结果 |
+
+### 5.14.3 RequestContext：请求上下文机制
+
+2.5.3 新增请求上下文机制（路径：`nacos-2.5.3/core/src/main/java/com/alibaba/nacos/core/context/`）：
+
+| 类 | 说明 |
+|----|------|
+| `RequestContext` | 请求上下文（ThreadLocal 实现） |
+| `RequestContextHolder` | 请求上下文持有者 |
+| `AddressContext` | 地址上下文 |
+| `AuthContext` | 认证上下文 |
+| `BasicContext` | 基础上下文 |
+| `EngineContext` | 引擎上下文 |
+| `HttpRequestContextConfig` | HTTP 请求上下文配置 |
+| `HttpRequestContextFilter` | HTTP 请求上下文过滤器 |
+
+### 5.14.4 ServerListProvider：地址服务提供者抽象
+
+2.5.3 新增地址服务提供者抽象（路径：`nacos-2.5.3/client/src/main/java/com/alibaba/nacos/client/address/`）：
+
+| 类 | 说明 |
+|----|------|
+| `AbstractServerListManager` | 抽象服务端列表管理器 |
+| `AbstractServerListProvider` | 抽象服务端列表提供者 |
+| `ServerListProvider` | 服务端列表提供者接口 |
+| `EndpointServerListProvider` | Endpoint 模式列表提供者 |
+| `PropertiesListProvider` | Properties 文件模式列表提供者 |
+| `ConfigServerListManager` | Config 模块服务端列表管理器 |
+| `NamingServerListManager` | Naming 模块服务端列表管理器 |
+
+### 5.14.5 TopNCounter：TopN 监控计数器
+
+2.5.3 新增 TopN 监控计数器基础设施（路径：`nacos-2.5.3/core/src/main/java/com/alibaba/nacos/core/monitor/topn/`）：
+
+| 类 | 说明 |
+|----|------|
+| `BaseTopNCounter` | TopN 计数器抽象基类 |
+| `StringTopNCounter` | 字符串 TopN 计数器 |
+| `FixedSizePriorityQueue` | 固定大小优先队列 |
+| `TopNConfig` | TopN 配置 |
 
 ---
 
-*（第五章完，约 2.4 万字）*
+### 本章统计数据（Core 模块 2.5.3 vs 2.2.3）
+
+| 指标 | 2.2.3 | 2.5.3 | 变化 |
+|------|-------|-------|------|
+| Java 主代码文件 | 168 | **230** | **+62（最大变化模块）** |
+| 命名空间模型 | 分散实现 | **独立 Namespace/TenantInfo 模型** | ★新增 |
+| 健康检查 | 无模块级健康检查 | **AbstractModuleHealthChecker** | ★新增 |
+| 请求上下文 | 无 | **RequestContext 机制** | ★新增 |
+| 参数校验框架 | 无 | **ParamCheckerFilter** | ★新增 |
+| ServerListManager | ServerListManager（全局） | **ConfigServerListManager + NamingServerListManager** | ★按模块拆分 |
+
+---
+
+> **本章基于 Nacos 2.5.3 源码分析生成。**

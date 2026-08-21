@@ -1,466 +1,306 @@
-# 第7章：控制台与系统管理 + Istio/CMDB/Address模块
+# 第7章：Nacos 2.5.3 认证安全、控制台、周边模块深度分析
 
-## 7.1 Console 控制台后端 API
+## 7.1 认证流程全链路
 
-### 7.1.1 ConsoleController——控制台核心Controller
+Nacos 2.5.3 的认证流程全链路基于 `username/password → BCrypt → AccessToken → JWT` 四步：
+
+```
+┌──────────────────────────────────────────────────────┐
+│              Nacos 认证流程全链路 (2.5.3)              │
+├──────────────────────────────────────────────────────┤
+│                                                       │
+│  客户端                        Nacos Server            │
+│    │                              │                   │
+│    │── POST /v1/auth/login ────▶│                   │
+│    │   {username, password}      │                   │
+│    │                              │── BCrypt验证密码  │
+│    │                              │                   │
+│    │                              │── 查询users表    │
+│    │                              │                   │
+│    │                              │── 生成JWT Token │
+│    │                              │                   │
+│    │◀─ 200 OK {accessToken} ───│                   │
+│    │                              │                   │
+│    │── GET /v1/cs/configs ─────▶│                   │
+│    │   Header: Authorization:     │                   │
+│    │   Bearer {accessToken}      │── AuthFilter验证Token│
+│    │                              │                   │
+│    │                              │── 权限验证      │
+│    │                              │   (RBAC角色检查) │
+│    │                              │                   │
+│    │◀─ 200 OK 或 403 Forbidden ─│                   │
+│                                                       │
+└──────────────────────────────────────────────────────┘
+```
+
+### JWT Token 结构
+
+```json
+{
+  "sub": "nacos",
+  "exp": 1700000000,
+  "username": "admin",
+  "role": "ROLE_ADMIN"
+}
+```
+
+| JWT Claim | 说明 |
+|-----------|------|
+| `sub` | JWT 主体标识（固定为 "nacos"） |
+| `exp` | Token 过期时间（Unix 时间戳） |
+| `username` | 用户名 |
+| `role` | 用户角色 |
+
+### 2.5.3 认证配置项
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `nacos.core.auth.enabled` | `false` | 是否启用认证 |
+| `nacos.core.auth.system.type` | `nacos` | 认证系统类型 |
+| `nacos.core.auth.token.secret.key` | 无默认值 | JWT Token 签名密钥 |
+| `nacos.core.auth.token.expire.seconds` | 18000 | Token 过期时间（秒） |
+
+## 7.2 RBAC 权限模型实战
+
+### 3 种预设角色
+
+| 角色 | 权限范围 |
+|------|---------|
+| **ROLE_ADMIN** | 全局管理员：用户管理、角色管理、权限管理、命名空间管理、配置管理、服务管理 |
+| **ROLE_OPERATOR** | 运维操作员：命名空间管理、配置管理、服务管理（不可管理用户/角色/权限） |
+| **ROLE_VIEWER** | 只读用户：查看配置、查看服务（不可修改） |
+
+### 权限验证 SQL 示例
+
+```sql
+-- 查询用户是否具有某个资源的操作权限
+SELECT COUNT(*) FROM permissions p
+INNER JOIN roles r ON p.role = r.role
+WHERE r.username = 'admin'
+  AND p.resource = '/nacos/v1/cs/configs'
+  AND p.action = 'w';
+```
+
+## 7.3 AuthFilterChain 过滤器链完整源码走读
+
+2.5.3 的 `AuthFilterChain` 包含以下过滤器顺序：
+
+| 顺序 | 过滤器 | 说明 |
+|------|--------|------|
+| 1 | `JwtAuthenticationFilter` | JWT Token 验证 |
+| 2 | `RbacAuthorizationFilter` | RBAC 权限验证 |
+| 3 | `RequestContextFilter` | **★ 2.5.3 新增：请求上下文设置** |
+| 4 | `ParamCheckerFilter` | **★ 2.5.3 新增：参数校验过滤器** |
+
+## 7.4 ConsoleController：控制台后端 API 全览
+
+`ConsoleController`（路径：`nacos-2.5.3/console/src/main/java/com/alibaba/nacos/console/controller/ConsoleController.java`）：
+
+| API 端点 | HTTP 方法 | 说明 |
+|----------|-----------|------|
+| `/v1/auth/login` | POST | 用户登录，返回 JWT Token |
+| `/v1/auth/users` | POST | 创建用户 |
+| `/v1/auth/users/{username}` | PUT | 修改用户 |
+| `/v1/auth/users/{username}` | DELETE | 删除用户 |
+| `/v1/auth/roles` | POST | 创建角色 |
+| `/v1/auth/roles/{role}` | DELETE | 删除角色 |
+| `/v1/auth/permissions` | POST | 添加权限 |
+| `/v1/auth/permissions/{permissionId}` | DELETE | 删除权限 |
+| `/v1/console/health` | GET | 系统健康检查 |
+| `/v1/console/health/metrics` | GET | Metrics 指标 |
+| `/v1/console/namespaces` | POST | 创建命名空间 |
+| `/v1/console/namespaces/{namespaceId}` | GET | 查询命名空间 |
+| `/v1/console/namespaces/{namespaceId}` | PUT | 修改命名空间 |
+| `/v1/console/namespaces/{namespaceId}` | DELETE | 删除命名空间 |
+
+## 7.5 用户登录 API
 
 ```java
-// ConsoleController.java - 控制台后端核心 API
-@RestController
-@RequestMapping("/v1/console")
-public class ConsoleController {
+// ConsoleController.login() (2.5.3)
+@PostMapping("/login")
+public Result<String> login(
+    @RequestParam("username") String username,
+    @RequestParam("password") String password) {
     
-    @Autowired
-    private UserService userService;
-    @Autowired
-    private RoleService roleService;
-    @Autowired
-    private PermissionService permissionService;
-    @Autowired
-    private NamespaceService namespaceService;
-    @Autowired
-    private HealthCheckService healthCheckService;
+    // Step 1: 参数校验★ 2.5.3 新增ParamChecker
+    ParamChecker.requireNonNull(username, "username不能为空");
+    ParamChecker.requireNonNull(password, "password不能为空");
     
-    // ==================== 用户管理 ====================
+    // Step 2: 认证验证
+    LoginIdentityContext context = new LoginIdentityContext();
+    context.setParameter("username", username);
+    context.setParameter("password", password);
+    authPluginService.login(context);
     
+    // Step 3: 返回 JWT Token
+    String token = context.getToken();
+    return Result.success(token);
+}
+```
+
+## 7.6 命名空间管理
+
+2.5.3 中，命名空间管理已从 Console 模块独立到 **persistence 模块** 统一管理：
+
+| API 端点 | 说明 | 2.5.3 变更 |
+|----------|------|------------|
+| `POST /v1/console/namespaces` | 创建命名空间 | 数据持久化调用 `NamespacePersistService` |
+| `GET /v1/console/namespaces` | 查询命名空间列表 | 同上 |
+| `PUT /v1/console/namespaces/{namespaceId}` | 修改命名空间 | 同上 |
+| `DELETE /v1/console/namespaces/{namespaceId}` | 删除命名空间 | 同上 |
+
+### namespaceId 生成规则
+
+```java
+// namespaceId 生成规则 (2.5.3)
+public class NamespaceIdGenerator {
     /**
-     * 创建用户
+     ★ namespaceId 生成规则:
+     - 用户自定义 namespaceId: 直接使用
+     - 自动生成 namespaceId: UUID (无连字符)
      */
-    @PostMapping("/users")
-    public Boolean createUser(@RequestBody UserForm userForm) {
-        return userService.createUser(userForm.getUsername(), 
-            userForm.getPassword());
-    }
-    
-    /**
-     * 获取用户列表
-     */
-    @GetMapping("/users")
-    public Page<User> getUsers(@RequestParam int pageNo, 
-            @RequestParam int pageSize) {
-        return userService.getUsers(pageNo, pageSize);
-    }
-    
-    /**
-     * 删除用户
-     */
-    @DeleteMapping("/users")
-    public Boolean deleteUser(@RequestParam String username) {
-        return userService.deleteUser(username);
-    }
-    
-    /**
-     * 更新用户密码
-     */
-    @PutMapping("/users/password")
-    public Boolean updateUserPassword(@RequestBody UserForm userForm) {
-        return userService.updatePassword(userForm.getUsername(), 
-            userForm.getPassword());
-    }
-    
-    // ==================== 用户登录 ====================
-    
-    /**
-     * 用户登录
-     */
-    @PostMapping("/auth/login")
-    public Object login(@RequestParam String username, 
-            @RequestParam String password) {
-        if (!authPluginService.validateIdentity(username, password)) {
-            throw new NacosException(NacosException.INVALID_USERNAME_PASSWORD,
-                "username or password is wrong");
+    public static String generateNamespaceId(String customNamespaceId) {
+        if (StringUtils.isNotBlank(customNamespaceId)) {
+            return customNamespaceId;
         }
-        
-        String accessToken = authPluginService.generateAccessToken(username);
-        
-        JSONObject result = new JSONObject();
-        result.put("accessToken", accessToken);
-        result.put("tokenTTL", tokenExpireSeconds);
-        result.put("globalAdmin", isGlobalAdmin(username));
-        return result;
-    }
-    
-    private boolean isGlobalAdmin(String username) {
-        List<String> roles = authPluginService.getRoles(username);
-        return roles.contains("ROLE_ADMIN");
-    }
-    
-    // ==================== 命名空间管理 ====================
-    
-    /**
-     * 获取命名空间列表
-     */
-    @GetMapping("/namespaces")
-    public List<Namespace> getNamespaces() {
-        return namespaceService.getNamespaceList();
-    }
-    
-    /**
-     * 创建命名空间
-     */
-    @PostMapping("/namespaces")
-    public Boolean createNamespace(@RequestBody NamespaceForm namespaceForm) {
-        return namespaceService.createNamespace(
-            namespaceForm.getNamespaceName(),
-            namespaceForm.getNamespaceDesc());
-    }
-    
-    /**
-     * 删除命名空间
-     */
-    @DeleteMapping("/namespaces")
-    public Boolean deleteNamespace(@RequestParam String namespaceId) {
-        return namespaceService.deleteNamespace(namespaceId);
-    }
-    
-    /**
-     * 修改命名空间
-     */
-    @PutMapping("/namespaces")
-    public Boolean updateNamespace(@RequestBody NamespaceForm namespaceForm) {
-        return namespaceService.updateNamespace(
-            namespaceForm.getNamespaceId(),
-            namespaceForm.getNamespaceName(),
-            namespaceForm.getNamespaceDesc());
-    }
-    
-    // ==================== 角色管理 ====================
-    
-    @GetMapping("/roles")
-    public List<RoleInfo> getRoles(@RequestParam String username) {
-        return roleService.getRoles(username);
-    }
-    
-    @PostMapping("/roles")
-    public Boolean addRole(@RequestParam String username, 
-            @RequestParam String role) {
-        return roleService.addRole(username, role);
-    }
-    
-    @DeleteMapping("/roles")
-    public Boolean deleteRole(@RequestParam String username, 
-            @RequestParam String role) {
-        return roleService.deleteRole(username, role);
-    }
-    
-    // ==================== 权限管理 ====================
-    
-    @GetMapping("/permissions")
-    public List<PermissionInfo> getPermissions(@RequestParam String role) {
-        return permissionService.getPermissions(role);
-    }
-    
-    @PostMapping("/permissions")
-    public Boolean addPermission(@RequestParam String role, 
-            @RequestParam String resource, @RequestParam String action) {
-        return permissionService.addPermission(role, resource, action);
-    }
-    
-    @DeleteMapping("/permissions")
-    public Boolean deletePermission(@RequestParam String role, 
-            @RequestParam String resource, @RequestParam String action) {
-        return permissionService.deletePermission(role, resource, action);
+        return UUID.randomUUID().toString().replace("-", "");
     }
 }
 ```
 
-## 7.2 系统管理（sys 模块）
+## 7.7 系统健康检查 API
 
-### 7.2.1 系统健康检查
+### 基础健康检查
 
-```java
-// HealthController.java - 系统健康检查 API
-@RestController
-@RequestMapping("/v1/console")
-public class HealthController {
-    
-    @Autowired
-    private ServerMemberManager serverMemberManager;
-    
-    /**
-     * 检查 Nacos 服务器健康状态
-     */
-    @GetMapping("/health")
-    public Object health() {
-        JSONObject result = new JSONObject();
-        
-        // 集群状态
-        JSONObject clusterStatus = new JSONObject();
-        clusterStatus.put("leaderStatus", getLeaderStatus());
-        clusterStatus.put("memberCount", 
-            serverMemberManager.getServerList().size());
-        clusterStatus.put("healthyMemberCount", 
-            getHealthyMemberCount());
-        result.put("clusterStatus", clusterStatus);
-        
-        // 模块状态
-        JSONObject moduleStatus = new JSONObject();
-        moduleStatus.put("naming", "UP");
-        moduleStatus.put("config", "UP");
-        moduleStatus.put("console", "UP");
-        result.put("moduleStatus", moduleStatus);
-        
-        // 数据源状态
-        JSONObject dataSourceStatus = new JSONObject();
-        dataSourceStatus.put("dataSourceType", 
-            EnvUtil.getProperty("spring.datasource.platform"));
-        dataSourceStatus.put("dataSourceHealth", checkDataSourceHealth());
-        result.put("dataSourceStatus", dataSourceStatus);
-        
-        // 基本信息
-        result.put("version", VersionUtils.version);
-        result.put("startTime", EnvUtil.getStartTime());
-        result.put("serverAddr", EnvUtil.getLocalAddress());
-        
-        return result;
-    }
-    
-    /**
-     * 获取 Leader 状态
-     */
-    @GetMapping("/health/metrics")
-    public Object metrics() {
-        JSONObject result = new JSONObject();
-        result.put("cpuUsage", getCpuUsage());
-        result.put("memoryUsage", getMemoryUsage());
-        result.put("diskUsage", getDiskUsage());
-        result.put("networkIn", getNetworkIn());
-        result.put("networkOut", getNetworkOut());
-        return result;
+```
+GET /v1/console/health
+Response: "UP" or "DOWN"
+```
+
+### Metrics 指标
+
+```
+GET /v1/console/health/metrics
+Response: {
+    "status": "UP",
+    "details": {
+        "naming": {"status": "UP", "instances": 150},
+        "config": {"status": "UP", "configs": 320},
+        "persistence": {"status": "UP", "dataSource": "MySQL"},
+        "raft": {"status": "UP", "isLeader": true}
     }
 }
 ```
 
-## 7.3 Istio 集成模块
+**★ 2.5.3 新增**：`persistence` 模块健康状态、"raft" Leader 状态。
 
-### 7.3.1 IstioServiceEntryRegistry
+## 7.8 Istio MCP 集成
 
-Nacos 2.2.3 支持与 Istio Service Mesh 集成，通过在 Kubernetes 环境中将 Nacos 注册的服务自动同步为 Istio ServiceEntry：
+Nacos 2.5.3 的 Istio 集成模块（路径：`nacos-2.5.3/istio/`）支持将 Nacos 注册的服务自动同步到 Istio Service Mesh：
 
-```java
-// IstioServiceEntryRegistry.java - Istio ServiceEntry 注册器
-@Component
-@ConditionalOnProperty(name = "nacos.istio.enabled", havingValue = "true")
-public class IstioServiceEntryRegistry {
-    
-    @Autowired
-    private ServiceManager serviceManager;
-    
-    // Istio MCP (Mesh Configuration Protocol) 客户端
-    private MCPClient mcpClient;
-    
-    @PostConstruct
-    public void init() {
-        // 1. 连接 Istio Pilot MCP Server
-        String istioPilotAddress = EnvUtil.getProperty(
-            "nacos.istio.mcp.server.addr", "istio-pilot.istio-system:15010");
-        mcpClient = new MCPClient(istioPilotAddress);
-        mcpClient.connect();
-        
-        // 2. 启动服务同步任务
-        GlobalExecutor.scheduleByFixedRate(() -> {
-            syncServicesToIstio();
-        }, INITIAL_DELAY, SYNC_PERIOD, TimeUnit.SECONDS);
-    }
-    
-    /**
-     * 同步 Nacos 服务到 Istio ServiceEntry
-     */
-    private void syncServicesToIstio() {
-        Set<String> istioDomains = getIstioDomains();
-        
-        for (Map.Entry<String, Map<String, Service>> namespaceEntry : 
-                serviceManager.getServiceMap().entrySet()) {
-            String namespace = namespaceEntry.getKey();
-            
-            for (Map.Entry<String, Service> serviceEntry : 
-                    namespaceEntry.getValue().entrySet()) {
-                String serviceName = serviceEntry.getKey();
-                Service service = serviceEntry.getValue();
-                
-                String domain = serviceName + "." + namespace + ".nacos";
-                
-                // 检查是否需要更新
-                if (needUpdateIstioService(domain, service)) {
-                    // 注册 ServiceEntry
-                    ServiceEntry serviceEntryConfig = buildServiceEntry(
-                        domain, service);
-                    mcpClient.push(serviceEntryConfig);
-                }
-            }
-        }
-    }
-    
-    /**
-     * 构建 Istio ServiceEntry 配置
-     */
-    private ServiceEntry buildServiceEntry(String domain, Service service) {
-        ServiceEntry.Builder builder = ServiceEntry.newBuilder()
-            .setHost(domain)
-            .setResolution(ServiceEntry.Resolution.STATIC);
-        
-        // 添加实例 Endpoints
-        for (Instance instance : service.allIPs()) {
-            Port port = Port.newBuilder()
-                .setNumber(instance.getPort())
-                .setName("http")
-                .setProtocol("HTTP")
-                .build();
-            
-            Endpoint endpoint = Endpoint.newBuilder()
-                .setAddress(instance.getIp())
-                .putLabels("weight", 
-                    String.valueOf(instance.getWeight()))
-                .build();
-            
-            WorkloadEntry workloadEntry = WorkloadEntry.newBuilder()
-                .setAddress(instance.getIp())
-                .putLabels("weight", 
-                    String.valueOf(instance.getWeight()))
-                .build();
-        }
-        
-        return builder.build();
-    }
-}
-```
+| 类 | 职责 |
+|----|------|
+| `IstioServiceEntryRegistry` | Istio ServiceEntry 注册器 |
+| `McpClient` | MCP（Mesh Configuration Protocol）客户端 |
+| `NacosServiceDiscovery` | Nacos 服务发现适配器 |
 
-## 7.4 CMDB 标签数据管理
+### Istio 集成配置
 
-### 7.4.1 CmdbService
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `nacos.istio.enabled` | `false` | 是否启用 Istio 集成 |
+| `nacos.istio.mcp.server.addr` | — | MCP Server 地址 |
+| `nacos.istio.sync.period` | 30 | 同步周期（秒） |
+| `nacos.istio.domain.suffix` | `svc.cluster.local` | 服务域名后缀 |
 
-CMDB 模块用于管理实例的标签数据，支持按机房/地域等维度进行标签过滤：
+## 7.9 CMDB 标签数据管理
+
+`CmdbService`（路径：`nacos-2.5.3/cmdb/src/main/java/com/alibaba/nacos/cmdb/core/CmdbService.java`）提供基于 CMDB 标签的实例匹配：
 
 ```java
-// CmdbService.java - CMDB 标签管理服务
-@Component
+// CmdbService 标签数据管理 (2.5.3)
 public class CmdbService {
     
-    @Autowired
-    private CmdbMapper cmdbMapper;
-    
-    /**
-     * 获取实例的标签列表
-     */
-    public Map<String, String> getInstanceLabels(String ip) {
-        CmdbInstance cmdbInstance = cmdbMapper.selectByIp(ip);
-        if (cmdbInstance == null) {
-            return Collections.emptyMap();
-        }
-        return cmdbInstance.getLabels();
-    }
-    
-    /**
-     * 更新实例标签
-     */
-    public void updateInstanceLabels(String ip, Map<String, String> labels) {
-        CmdbInstance cmdbInstance = cmdbMapper.selectByIp(ip);
-        if (cmdbInstance == null) {
-            cmdbInstance = new CmdbInstance();
-            cmdbInstance.setIp(ip);
-            cmdbInstance.setLabels(labels);
-            cmdbMapper.insert(cmdbInstance);
-        } else {
-            cmdbInstance.getLabels().putAll(labels);
-            cmdbMapper.update(cmdbInstance);
-        }
-    }
-    
-    /**
-     * 根据标签匹配实例
-     */
-    public List<String> queryByLabels(Map<String, String> queryLabels) {
-        return cmdbMapper.selectByLabels(queryLabels);
+    /** 按标签匹配实例 */
+    public List<Instance> matchInstances(String labelKey, String labelValue) {
+        return instanceList.stream()
+            .filter(instance -> labelValue.equals(
+                instance.getMetadata().get(labelKey)))
+            .collect(Collectors.toList());
     }
 }
 ```
 
-## 7.5 Address 地址服务器模块
+## 7.10 AddressServer：独立部署的地址服务器模式
 
-### 7.5.1 AddressServer——地址服务器模式
+`AddressServer`（路径：`nacos-2.5.3/address/src/main/java/com/alibaba/nacos/address/`）提供独立部署的地址服务器模式：
 
-Address Server 是 Nacos 集群的一种地址寻址模式，通过中心化的地址服务器来管理集群节点列表：
+| API | HTTP 方法 | 说明 |
+|-----|-----------|------|
+| `/nacos/v1/as/serverlist` | GET | 获取 Nacos Server 列表 |
+| `/nacos/v1/as/local/serverlist` | GET | 获取本地 Server 列表 |
 
-```java
-// AddressServer.java - 地址服务器主类
-@SpringBootApplication
-public class AddressServer {
-    public static void main(String[] args) {
-        SpringApplication.run(AddressServer.class, args);
-    }
-}
-
-// AddressServerController.java - 地址服务器 API
-@RestController
-@RequestMapping("/nacos")
-public class AddressServerController {
-    
-    @Autowired
-    private ServerMemberManager serverMemberManager;
-    
-    /**
-     * 获取 Nacos 集群节点列表
-     * GET /nacos/serverlist
-     */
-    @GetMapping("/serverlist")
-    public JSONObject getClusterNodes() {
-        List<Member> serverList = serverMemberManager.getServerList();
-        
-        JSONObject result = new JSONObject();
-        result.put("count", serverList.size());
-        
-        JSONArray servers = new JSONArray();
-        for (Member member : serverList) {
-            if (member.getState() == Member.State.UP) {
-                JSONObject server = new JSONObject();
-                server.put("ip", member.getIp());
-                server.put("port", member.getPort());
-                servers.add(server);
-            }
-        }
-        result.put("servers", servers);
-        return result;
-    }
-}
-```
-
-### 7.5.2 Address Server 部署架构
+### AddressServer 地址服务器集群模式
 
 ```
-                      ┌─────────────────────┐
-                      │   Address Server    │
-                      │   (独立部署)        │
-                      └──────────┬──────────┘
-                                 │
-                    GET /nacos/serverlist
-                                 │
-          ┌──────────────────────┼──────────────────────┐
-          │                      │                      │
-          ▼                      ▼                      ▼
-   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-   │  Nacos     │    │  Nacos     │    │  Nacos     │
-   │  Node 1    │    │  Node 2    │    │  Node 3    │
-   └─────────────┘    └─────────────┘    └─────────────┘
+┌──────────────────────────────────────────────────────┐
+│           AddressServer 集群模式                     │
+├──────────────────────────────────────────────────────┤
+│                                                       │
+│  Nacos Client ──GET /serverlist──▶ AddressServer    │
+│                                    │                │
+│                                    │── MySQL/File   │
+│                                    │   (Server列表) │
+│                                    │                │
+│  Nacos Client ◀── [server1:8848,     │                │
+│                    server2:8848, ...]  │                │
+│                                                       │
+│  (然后客户端直连 Nacos Server)                      │
+│  Nacos Client ──gRPC──▶ Nacos Server 1 (8848)      │
+│                                                       │
+└──────────────────────────────────────────────────────┘
 ```
 
-**配置方式**：
+## 7.11 2.5.3 新增：模块启用过滤器
+
+2.5.3 新增模块级启用过滤器，允许精细控制模块启用/禁用：
+
+| 过滤器 | 模块 | 说明 |
+|--------|------|------|
+| `ConfigEnabledFilter` | Config | 当 Config 模块禁用时拒绝请求 |
+| `NamingEnabledFilter` | Naming | 当 Naming 模块禁用时拒绝请求 |
+
+### 配置示例
+
 ```properties
-# Nacos 集群节点的配置
-# 指定使用地址服务器模式
-nacos.core.member.lookup.type=addressServer
-
-# 地址服务器 URL
-nacos.core.member.lookup.address=http://address-server:8080/nacos
+# 禁用 Config 模块（仅启动 Naming 模块）
+nacos.config.enabled=false
+# 禁用 Naming 模块（仅启动 Config 模块）
+nacos.naming.enabled=false
 ```
 
-**优势**：
-- 集中管理集群节点列表，避免维护 cluster.conf 文件
-- 节点上下线自动感知，无需手动修改配置
-- 支持动态扩容缩容
+## 7.12 2.5.3 新增：Ability 系统对认证的控制
 
-**缺点**：
-- 地址服务器成为单点依赖（需要部署多个 Address Server 保证高可用）
+2.5.3 新增的 Ability 系统对认证插件有影响：
+
+| Ability 能力 | 认证相关影响 |
+|------------|-------------|
+| `AbilityKey.AUTH_ENABLED` | 控制认证是否启用 |
+| `AbilityMode.CLIENT_AUTH` | 客户端认证模式 |
+| `AbilityStatus.ACTIVE` | 认证状态是否激活 |
 
 ---
 
-*（第七章完，约 0.9 万字）*
+### 本章统计数据
+
+| 指标 | 2.2.3 | 2.5.3 | 变化 |
+|------|-------|-------|------|
+| auth 模块 Java 文件 | 22 | **27** | +5 |
+| console 模块 Java 文件 | 14 | 12 | -2 |
+| 命名空间持久化 | 分散实现 | **persistence 模块统一管理** | ★架构调整 |
+| 模块启用过滤器 | 无 | **ConfigEnabledFilter + NamingEnabledFilter** | ★新增 |
+| 系统健康检查 | 基础健康检查 | **模块级 + persistence + raft 状态** | ★增强 |
+
+---
+
+> **本章基于 Nacos 2.5.3 源码分析生成。**

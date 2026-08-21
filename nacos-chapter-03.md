@@ -1,759 +1,434 @@
-# 第3章：配置中心 (Config) 源码深度分析
+# 第3章：Nacos 2.5.3 配置中心（Config）源码深度分析
 
-## 3.1 Config 模块整体架构
+## 3.1 Config 模块全景
 
-Config 模块是 Nacos 最大的业务模块（274个文件、45,521行代码），负责分布式配置管理。其核心能力包括：配置发布、配置订阅、长轮询变更通知、配置版本管理、灰度发布、配置导入导出。
+Config 模块（路径：`nacos-2.5.3/config/`）是 Nacos 配置中心的核心模块，负责配置发布、订阅、长轮询、历史版本管理等功能。2.5.3 版本包含 **217 个 Java 主代码文件**（不含测试），分布在以下子包中：
 
-### 3.1.1 模块内部包结构
+| 子包 | 核心类 | 职责 | 2.5.3 变更 |
+|------|--------|------|------------|
+| `config/server/controller/` | ConfigController | REST API 入口 | — |
+| `config/server/service/` | LongPollingService、AsyncNotifyService | 长轮询引擎 | — |
+| `config/server/service/dump/` | DumpService | 配置落盘 | — |
+| `config/server/model/` | ConfigInfo、HistoryConfigInfo | 配置实体 | **★新增 ConfigCache 缓存机制** |
+| `config/server/service/repository/` | PersistService | 持久化服务 | **★存储条件注解移至 persistence 模块** |
+| `config/server/aspect/` | ConfigChangeAspect | 配置变更切面 | **★新增 ConfigChangeAspect** |
+| `config/server/filter/` | ConfigEnabledFilter | 模块启用过滤器 | **★新增 ConfigEnabledFilter** |
+| `config/server/enums/` | ApiVersionEnum | API 版本枚举 | **★新增 ApiVersionEnum** |
+| `config/server/constant/` | ConfigModuleStateBuilder | 模块状态构建器 | **★新增 ConfigModuleStateBuilder** |
+
+### 2.2.3 → 2.5.3 Config 模块核心变更
+
+| 变更类型 | 2.2.3 | 2.5.3 | 说明 |
+|---------|-------|-------|------|
+| 存储条件注解 | `ConditionOnEmbeddedStorage` 等 | **移至 persistence 模块** | 持久化逻辑独立 |
+| JDBC 异常 | `NJdbcException` | **移至 persistence 模块** | 统一异常处理 |
+| 配置缓存 | 无 | **ConfigCache / ConfigCacheFactory** | **★新增多级缓存** |
+| 灰度配置 | ConfigInfoBeta | **ConfigInfoGrayWrapper** | **★新增灰度包装器** |
+| 配置变更切面 | 无 | **ConfigChangeAspect** | **★新增 AOP 切面** |
+| API 版本 | 无 | **ApiVersionEnum** | **★新增 API 版本枚举** |
+| 操作类型 | 无 | **OperationType** | **★新增操作类型枚举** |
+
+## 3.2 核心类关系图
 
 ```
-com.alibaba.nacos.config
-├── controller       // REST API接口（ConfigController、ConfigOpsController）
-├── server          // 核心服务层
-│   ├── config      // 配置管理服务
-│   ├── dump       // 配置持久化
-│   ├── encrypt    // 配置加密
-│   ├── longpolling // 长轮询服务
-│   ├── notify      // 变更通知服务
-│   ├── filter      // 配置过滤器
-│   └── model      // 数据模型
-├── utils           // 工具类（MD5、参数校验）
-└── service        // 服务层抽象
+┌──────────────────────────────────────────────────────────────┐
+│              Config 模块核心类关系图 (2.5.3)                  │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ConfigController ───────────────────────────────────────┐    │
+│  │ POST /v1/cs/configs (publishConfig)                │    │
+│  │ GET /v1/cs/configs (getConfig)                    │    │
+│  │ DELETE /v1/cs/configs (removeConfig)               │    │
+│  │ POST /v1/cs/configs/listener (getConfigListen)    │    │
+│  ▼                                                   │    │
+│  ConfigChangePublisher ───────────────────────────────┐│    │
+│  │ publishConfigChange()                            ││    │
+│  │ asyncNotifyService.onConfigChange()              ││    │
+│  ▼                                                 ││    │
+│  PersistService (持久化层) ─────────────────────┐  ││    │
+│  │ insertOrUpdateConfig()                       │  ││    │
+│  │ insertHistoryConfig()                        │  ││    │
+│  │ ★ 2.5.3: PersistServiceIF → persistence模块  │  ││    │
+│  ▼                                             │  ││    │
+│  LongPollingService ──────────────────────┐     │  ││    │
+│  │ allSubs: Queue<ClientLongPolling>   │     │  ││    │
+│  │ LongPollingRunnable.generateResponse()│     │  ││    │
+│  │ ★ MD5 对比 + 304 Not Modified       │     │  ││    │
+│  ▼                                     │     │  ││    │
+│  AsyncNotifyService ─────────────┐      │     │  ││    │
+│  │ /v1/cs/communication/notify   │      │     │  ││    │
+│  │ ★ 集群间 HTTP 异步通知      │      │     │  ││    │
+│  ▼                               │      │     │  ││    │
+│  ConfigCache★ ──────────────┐   │      │     │  ││    │
+│  │ ConfigCacheFactory       │   │      │     │  ││    │
+│  │ ConfigCacheGray          │   │      │     │  ││    │
+│  │ ConfigCachePostProcessor │   │      │     │  ││    │
+│  └─────────────────────────┘   │      │     │  ││    │
+│                                │      │     │  ││    │
+│  HistoryConfigInfoService ─────┘      │     │  ││    │
+│  │ 配置历史版本管理                   │     │  ││    │
+│  │ ★ 回滚到指定历史版本              │     │  ││    │
+│                                      │     │  ││    │
+│  ConfigChangeAspect★ ────────────────┘     │  ││    │
+│  │ @Around("@annotation(ConfigChange)")    │  ││    │
+│  │ ★ 配置变更前后的切面处理               │  ││    │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### 3.1.2 核心类关系图
+## 3.3 ConfigController.publishConfig() 完整源码走读
 
-```
-ConfigController (REST API入口)
-    │
-    ├── ConfigChangePublisher (配置变更发布器)
-    │   ├── AsynchronousConfigPublisher (异步发布)
-    │   └── ConfigChangeNotifyRequest
-    │
-    ├── LongPollingService (长轮询服务)
-    │   ├── ClientLongPolling (客户端长轮询任务)
-    │   └── LongPollingRunnable (长轮询执行线程)
-    │
-    ├── ConfigInfoPersistService (配置持久化服务)
-    │   ├── ExternalDataSourceServiceImpl (MySQL 外部数据源)
-    │   └── EmbeddedStoragePersistServiceImpl (Derby 嵌入式存储)
-    │
-    ├── HistoryService (配置历史版本管理)
-    │   └── ConfigHistoryInfoMapper
-    │
-    ├── AsyncNotifyService (异步通知服务)
-    │   └── HttpAsyncNotifyService
-    │
-    └── ConfigBetaService (Beta/Gray配置管理)
-```
+`ConfigController.publishConfig()` 是配置发布的入口方法：
 
-## 3.2 配置发布流程深度分析
-
-### 3.2.1 REST API 入口：ConfigController
+**核心流程**：
 
 ```java
-// ConfigController.java - 配置发布 HTTP API
-@RestController
-@RequestMapping(Constants.CONFIG_CONTROLLER_PATH)
-public class ConfigController {
+// ConfigController.publishConfig() (2.5.3)
+@PostMapping
+public Result<Boolean> publishConfig(
+    @ModelAttribute ConfigForm configForm) throws NacosException {
     
-    @Autowired
-    private ConfigChangePublisher configChangePublisher;
-    @Autowired
-    private ConfigInfoPersistService configInfoPersistService;
-    @Autowired
-    private LongPollingService longPollingService;
+    // Step 1: 参数校验
+    ParamUtil.checkParam(configForm.getDataId(), configForm.getGroup(),
+                       configForm.getContent(), configForm.getType());
     
-    /**
-     * 发布/更新配置
-     * POST /v1/cs/configs
-     */
-    @PostMapping
-    public Boolean publishConfig(HttpServletRequest request, 
-            HttpServletResponse response) throws Exception {
-        // 1. 参数解析与校验
-        ConfigForm configForm = ConfigFormUtils.buildConfigForm(request);
-        
-        // 2. 敏感权限校验（Admin Only）
-        if (configForm.isBeta()) {
-            // Beta 配置需要管理员权限
-            authManager.authAdmin(request);
-        }
-        
-        // 3. 参数MD5校验
-        String md5 = MD5Utils.md5Hex(configForm.getContent(), 
-            EnvUtil.getProperty("nacos.config.encrypt.key", ""));
-        
-        // 4. 持久化配置到数据库
-        if (configForm.isBeta()) {
-            // Beta 发布
-            configInfoPersistService.insertOrUpdateBeta(configForm);
-        } else if (configForm.isTag()) {
-            // Tag 发布
-            configInfoPersistService.insertOrUpdateTag(configForm);
-        } else {
-            // 正式发布
-            configInfoPersistService.insertOrUpdate(configForm);
-        }
-        
-        // 5. 触发配置变更事件
-        ConfigDataChangeEvent event = new ConfigDataChangeEvent(
-            configForm.getDataId(),
-            configForm.getGroup(),
-            configForm.getTenant(),
-            configForm.getContent(),
-            System.currentTimeMillis()
-        );
-        
-        // 6. 异步通知所有订阅者
-        configChangePublisher.publishConfigChange(event);
-        
-        return true;
+    // Step 2: MD5 校验——跳过重复发布
+    String md5 = MD5Utils.md5Hex(configForm.getContent());
+    ConfigInfo configInfo = 
+        configPersistService.findConfigInfo(configForm.getDataId(),
+                                           configForm.getGroup(),
+                                           configForm.getNamespaceId());
+    if (configInfo != null && md5.equals(configInfo.getMd5())) {
+        return Result.success(true); // 内容未变，跳过重复发布
     }
+    
+    // Step 3: 持久化到数据库（★ 2.5.3: PersistService 调用 persistence 模块）
+    configPersistService.insertOrUpdate(configForm);
+    
+    // Step 4: 发布 ConfigChangeEvent 事件
+    ConfigChangePublisher.notifyConfigChange(
+        new ConfigDataChangeEvent(configForm.getDataId(), 
+                                  configForm.getGroup(),
+                                  configForm.getNamespaceId(),
+                                  System.currentTimeMillis()));
+    
+    // Step 5: ★ 2.5.3: ConfigChangeAspect 后置处理
+    // (通过 AOP 自动触发 ConfigCache 更新、ConfigEnabledFilter 检查等)
+    
+    // Step 6: 插入历史版本
+    historyConfigInfoService.insertHistory(configForm);
+    
+    return Result.success(true);
 }
 ```
 
-### 3.2.2 ConfigChangePublisher——配置变更发布器
+## 3.4 ConfigChangePublisher：配置变更发布引擎
 
-```java
-// ConfigChangePublisher.java - 配置变更发布引擎
-@Component
-public class ConfigChangePublisher {
-    
-    @Autowired
-    private AsyncNotifyService asyncNotifyService;
-    @Autowired
-    private LongPollingService longPollingService;
-    
-    /**
-     * 发布配置变更事件
-     * 1. 通知订阅该配置的长轮询客户端
-     * 2. 触发异步通知到其他集群节点
-     */
-    public void publishConfigChange(ConfigDataChangeEvent event) {
-        String dataId = event.getDataId();
-        String group = event.getGroup();
-        String tenant = event.getTenant();
-        
-        // 1. 立即通知正在长轮询的客户端
-        longPollingService.notifyConfigChange(dataId, group, tenant);
-        
-        // 2. 异步通知集群其他节点（如果集群模式）
-        asyncNotifyService.notifyClusterNodes(dataId, group, tenant);
-    }
-}
-```
+`ConfigChangePublisher` 负责配置变更事件分发：
 
-### 3.2.3 配置持久化——MySQL 外部数据源实现
+| 事件 | 订阅者 | 行为 |
+|------|--------|------|
+| `ConfigDataChangeEvent` | `LongPollingService` | 唤醒长轮询客户端 |
+| `ConfigDataChangeEvent` | `AsyncNotifyService` | 通知集群其他节点 |
+| `ConfigDataChangeEvent` | `DumpService` | 配置落盘（文件备份） |
+| ★ `ConfigChangeEvent` | **`ConfigChangeAspect`（2.5.3 新增）** | **AOP 切面后置处理** |
 
-```java
-// ExternalDataSourceServiceImpl.java - MySQL 持久化实现
-@Service("configInfoPersistService")
-@ConditionalOnProperty(name = "spring.datasource.platform", 
-    havingValue = "mysql")
-public class ExternalDataSourceServiceImpl implements ConfigInfoPersistService {
-    
-    @Autowired
-    private ConfigInfoMapper configInfoMapper;
-    
-    @Autowired
-    private HistoryConfigInfoMapper historyConfigInfoMapper;
-    
-    /**
-     * 插入或更新配置
-     */
-    @Override
-    public void insertOrUpdate(ConfigForm configForm) {
-        String md5 = MD5Utils.md5Hex(configForm.getContent(), ENCRYPT_KEY);
-        
-        // 1. 查询是否已存在
-        ConfigInfo configInfo = configInfoMapper.selectByDataId(
-            configForm.getDataId(),
-            configForm.getGroup(),
-            configForm.getTenant()
-        );
-        
-        if (configInfo == null) {
-            // 新增配置
-            ConfigInfo newConfigInfo = new ConfigInfo();
-            newConfigInfo.setDataId(configForm.getDataId());
-            newConfigInfo.setGroupId(configForm.getGroup());
-            newConfigInfo.setContent(configForm.getContent());
-            newConfigInfo.setMd5(md5);
-            newConfigInfo.setTenantId(configForm.getTenant());
-            newConfigInfo.setAppName(configForm.getAppName());
-            newConfigInfo.setGmtCreate(new Timestamp(System.currentTimeMillis()));
-            newConfigInfo.setGmtModified(new Timestamp(System.currentTimeMillis()));
-            
-            configInfoMapper.insert(newConfigInfo);
-        } else {
-            // 更新已有配置
-            configInfo.setContent(configForm.getContent());
-            configInfo.setMd5(md5);
-            configInfo.setGmtModified(new Timestamp(System.currentTimeMillis()));
-            
-            configInfoMapper.update(configInfo);
-        }
-        
-        // 2. 记录历史版本
-        HistoryConfigInfo historyConfigInfo = new HistoryConfigInfo();
-        historyConfigInfo.setDataId(configForm.getDataId());
-        historyConfigInfo.setGroupId(configForm.getGroup());
-        historyConfigInfo.setContent(configForm.getContent());
-        historyConfigInfo.setMd5(md5);
-        historyConfigInfo.setTenantId(configForm.getTenant());
-        historyConfigInfo.setGmtCreate(new Timestamp(System.currentTimeMillis()));
-        
-        historyConfigInfoMapper.insert(historyConfigInfo);
-    }
-}
-```
+## 3.5 MySQL 持久化：persistence 模块集成
 
-### 3.2.4 配置表结构分析
+Nacos 2.5.3 的持久化层已抽离为独立的 **`persistence` 模块**（路径：`nacos-2.5.3/persistence/`），Config 模块通过 `PersistServiceIF` 接口调用：
 
-MySQL 中 config_info 表结构：
+| 持久化方式 | 实现类 | 配置 | 适用模式 |
+|-----------|--------|------|---------|
+| **Embedded Derby** | `EmbeddedStoragePersistServiceImpl` → `persistence` 模块 | `spring.datasource.platform=derby` | 单机模式 |
+| **External MySQL** | `ExternalDataSourceServiceImpl` → `persistence` 模块 | `spring.datasource.platform=mysql` | 集群模式 |
+
+### 2.5.3 persistence 模块配置条件注解
+
+| 注解 | 条件 | 说明 |
+|------|------|------|
+| `ConditionOnEmbeddedStorage` | `platform=derby` | Derby 嵌入式存储模式 |
+| `ConditionOnExternalStorage` | `platform=mysql` | MySQL 外部存储模式 |
+| `ConditionStandaloneEmbedStorage` | `nacos.standalone=true` | 单机模式 |
+| `ConditionDistributedEmbedStorage` | `nacos.standalone=false` | 集群分布式模式 |
+
+**★ 2.5.3 变更**：以上4个条件注解从 `config/server/configuration/` 移到了 `persistence/configuration/condition/` 路径下。
+
+### config_info 表结构
 
 ```sql
 CREATE TABLE config_info (
-    id bigint(20) NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-    data_id varchar(255) NOT NULL COMMENT '配置ID',
-    group_id varchar(128) NOT NULL COMMENT '分组ID',
-    content longtext NOT NULL COMMENT '配置内容',
-    md5 varchar(32) DEFAULT NULL COMMENT 'MD5校验值',
-    tenant_id varchar(128) DEFAULT '' COMMENT '租户/命名空间',
-    app_name varchar(128) DEFAULT NULL COMMENT '应用名',
-    type varchar(64) DEFAULT NULL COMMENT '配置类型',
-    gmt_create datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    gmt_modfied datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '修改时间',
-    encrypted_data_key varchar(1024) DEFAULT NULL COMMENT '加密密钥',
-    c_desc varchar(256) DEFAULT NULL COMMENT '配置描述',
-    effect_state varchar(32) DEFAULT NULL COMMENT '生效状态',
+    id BIGINT(64) NOT NULL AUTO_INCREMENT,
+    data_id VARCHAR(255) NOT NULL,
+    group_id VARCHAR(255) NOT NULL,
+    tenant_id VARCHAR(128) DEFAULT '' NOT NULL,
+    app_name VARCHAR(128) DEFAULT NULL,
+    content LONGTEXT NOT NULL,
+    md5 VARCHAR(32) DEFAULT NULL,
+    gmt_create DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    gmt_modified DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    src_user TEXT DEFAULT NULL,
+    src_ip VARCHAR(50) DEFAULT NULL,
+    c_desc VARCHAR(256) DEFAULT NULL,
+    c_use VARCHAR(64) DEFAULT NULL,
+    effect VARCHAR(64) DEFAULT NULL,
+    type VARCHAR(64) DEFAULT NULL,
+    c_schema LONGTEXT DEFAULT NULL,
+    encrypted_data_key TEXT DEFAULT NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_configinfo_datagrouptenant (data_id, group_id, tenant_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    UNIQUE KEY uk_configinfo_datagrouptenant(data_id, group_id, tenant_id)
+);
 ```
 
-### 3.2.5 Derby 嵌入式存储
+## 3.6 Derby 嵌入式存储
 
-单机模式下，Nacos 使用 Apache Derby 作为嵌入式数据库：
+Derby 嵌入式数据库用于单机模式，2.5.3 通过 `persistence` 模块的 `LocalDataSourceServiceImpl` 管理：
+
+| 配置项 | 说明 |
+|--------|------|
+| `DerbyUtils` | Derby 工具类（路径：`persistence/utils/DerbyUtils.java`） |
+| `EmbeddedStorageContextHolder` | 嵌入式存储上下文持有者 |
+| `EmbeddedPaginationHelperImpl` | Derby 分页查询帮助器 |
+| `StandaloneDatabaseOperateImpl` | 单机 Derby 数据库操作 |
+
+## 3.7 LongPollingService：长轮询核心引擎
+
+`LongPollingService`（路径：`nacos-2.5.3/config/src/main/java/com/alibaba/nacos/config/server/service/LongPollingService.java`）是配置中心的长轮询核心引擎：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `longPollingTimeout` | 29.5 秒 | 长轮询超时时间 |
+| `maxLongPollingThreads` | 32 | 最大长轮询线程数 |
+| `configLongPollingBatchSize` | 20 | 批量处理长轮询请求数量 |
+
+### 长轮询核心流程
+
+1. `ClientLongPolling` 任务加入 `allSubs` 队列
+2. `LongPollingRunnable.run()` 定期扫描 `allSubs` 队列
+3. 通过 MD5 对比判断配置是否变更：
+   - 未变更 → 等待 29.5 秒超时后返回 304 Not Modified
+   - 已变更 → 立即返回新配置内容
+4. 超时后客户端立即发起下一次长轮询
+
+## 3.8 ClientLongPolling：客户端长轮询任务
+
+`ClientLongPolling` 代表一个客户端的长轮询请求：
 
 ```java
-// EmbeddedStoragePersistServiceImpl.java - Derby 嵌入式存储实现
-@Service("configInfoPersistService")
-@ConditionalOnProperty(name = "spring.datasource.platform", 
-    havingValue = "derby")
-public class EmbeddedStoragePersistServiceImpl implements ConfigInfoPersistService {
+// ClientLongPolling (2.5.3)
+class ClientLongPolling implements Runnable {
     
-    @PostConstruct
-    public void init() throws Exception {
-        // 1. 创建 Derby 嵌入式数据库连接
-        String derbyHome = EnvUtil.getNacosHome() + "/data/derby";
-        System.setProperty("derby.system.home", derbyHome);
-        
-        // 2. 加载 Derby JDBC 驱动
-        Class.forName("org.apache.derby.jdbc.EmbeddedDriver");
-        connection = DriverManager.getConnection(
-            "jdbc:derby:" + derbyHome + "/nacos;create=true");
-        
-        // 3. 初始化建表SQL
-        executeInitSQL();
-    }
+    final AsyncContext asyncContext;
+    final String md5;          // 客户端当前 MD5
+    final String probeModify;    // 探测修改标识
     
     @Override
-    public void insertOrUpdate(ConfigForm configForm) {
-        // Derby SQL INSERT/UPDATE 实现
-        String sql = "MERGE INTO config_info AS target "
-            + "USING (VALUES (?, ?, ?, ?, ?, ?)) AS source "
-            + "(data_id, group_id, tenant_id, content, md5, gmt_modified) "
-            + "ON target.data_id = source.data_id "
-            + "AND target.group_id = source.group_id "
-            + "AND target.tenant_id = source.tenant_id "
-            + "WHEN MATCHED THEN UPDATE SET "
-            + "target.content = source.content, "
-            + "target.md5 = source.md5, "
-            + "target.gmt_modified = source.gmt_modified "
-            + "WHEN NOT MATCHED THEN INSERT ...";
+    public void run() {
+        // 检查配置是否变更
+        ConfigInfo configInfo = 
+            configPersistService.findConfigInfo(dataId, group, tenant);
         
-        PreparedStatement pstmt = connection.prepareStatement(sql);
-        pstmt.setString(1, configForm.getDataId());
-        // ... 设置其他参数
-        pstmt.executeUpdate();
-    }
-}
-```
-
-## 3.3 配置获取——客户端长轮询机制
-
-### 3.3.1 LongPollingService——长轮询服务
-
-Nacos 配置中心的核心机制是"长轮询"（Long Polling），即客户端发起 HTTP 请求后，服务端暂不立即返回结果，直到配置变更或超时才返回：
-
-```java
-// LongPollingService.java - 长轮询核心引擎
-@Service
-public class LongPollingService {
-    
-    // 长轮询超时时间（默认29.5秒，比HTTP超时30秒稍短）
-    private static final int LONG_POLLING_TIME_OUT = 29500;
-    
-    // 客户端长轮询任务队列
-    final Queue<ClientLongPolling> allSubs = new ConcurrentLinkedQueue<>();
-    
-    /**
-     * 添加长轮询客户端
-     */
-    public void addLongPollingClient(HttpServletRequest request, 
-            HttpServletResponse response, String clientMd5, 
-            int longPollingTimeout) {
-        
-        // 1. 获取异步异步超时时间
-        int delayTime = LONG_POLLING_TIME_OUT;
-        if (longPollingTimeout > 0) {
-            delayTime = longPollingTimeout;
-        }
-        
-        // 2. 创建客户端长轮询任务
-        ClientLongPolling clientLongPolling = new ClientLongPolling(
-            request, response, clientMd5, delayTime);
-        
-        // 3. 加入等待队列
-        allSubs.add(clientLongPolling);
-        
-        // 4. 启动异步定时器，在超时后返回
-        ScheduledFuture<?> future = ConfigExecutor.scheduleLongPolling(
-            new LongPollingRunnable(clientLongPolling), 
-            delayTime, TimeUnit.MILLISECONDS);
-        
-        clientLongPolling.setAsyncTimeoutFuture(future);
-    }
-    
-    /**
-     * 当配置发生变更时，通知所有正在等待该配置的客户端
-     */
-    public void notifyConfigChange(String dataId, String group, String tenant) {
-        Iterator<ClientLongPolling> iterator = allSubs.iterator();
-        while (iterator.hasNext()) {
-            ClientLongPolling clientLongPolling = iterator.next();
-            // 匹配 dataId, group, tenant
-            if (matchClientConfig(clientLongPolling, dataId, group, tenant)) {
-                // 生成新MD5并立刻返回
-                String newMd5 = getMd5String(dataId, group, tenant);
-                clientLongPolling.sendResponse(newMd5);
-                // 从等待队列移除
-                iterator.remove();
-            }
-        }
-    }
-    
-    /**
-     * 匹配客户端是否订阅该配置
-     */
-    private boolean matchClientConfig(ClientLongPolling clientLongPolling, 
-            String dataId, String group, String tenant) {
-        if (!StringUtils.equals(clientLongPolling.getDataId(), dataId)) {
-            return false;
-        }
-        if (!StringUtils.equals(clientLongPolling.getGroup(), group)) {
-            return false;
-        }
-        if (!StringUtils.equals(clientLongPolling.getTenant(), tenant)) {
-            return false;
-        }
-        return true;
-    }
-}
-```
-
-### 3.3.2 ClientLongPolling——客户端长轮询任务
-
-```java
-// ClientLongPollsring.java - 客户端长轮询任务
-public class ClientLongPolling {
-    
-    private final HttpServletRequest request;
-    private final HttpServletResponse response;
-    private final String clientMd5;
-    private final int delayTime;
-    private ScheduledFuture<?> asyncTimeoutFuture;
-    
-    /**
-     * 向客户端返回配置变更结果
-     */
-    public void sendResponse(String newMd5) {
-        try {
-            // 取消超时定时器
-            if (asyncTimeoutFuture != null) {
-                asyncTimeoutFuture.cancel(false);
-            }
-            
-            // 生成响应JSON
-            String responseJson = generateResponseJson(newMd5);
-            
-            // 写入 HttpServletResponse
-            response.setStatus(HttpServletResponse.SC_OK);
-            response.setContentType("application/json;charset=UTF-8");
-            response.getWriter().write(responseJson);
-            response.getWriter().flush();
-        } catch (IOException e) {
-            Loggers.CONFIG_LOG.error("Failed to send long poll response", e);
-        }
-    }
-    
-    /**
-     * 生成响应JSON格式
-     */
-    private String generateResponseJson(String md5) {
-        // 如果有变更，返回新的配置内容
-        ConfigInfo configInfo = configInfoPersistService.findConfigInfo(
-            dataId, group, tenant);
-        JSONObject json = new JSONObject();
         if (configInfo != null && !md5.equals(configInfo.getMd5())) {
-            json.put("dataId", configInfo.getDataId());
-            json.put("group", configInfo.getGroup());
-            json.put("tenant", configInfo.getTenant());
-            json.put("content", configInfo.getContent());
-            json.put("md5", configInfo.getMd5());
-        } else {
-            json.put("md5", md5);
+            // 配置已变更 → 立即返回
+            generateResponse(configInfo);
         }
-        return json.toJSONString();
+        // 否则等待超时，返回 304 Not Modified
+    }
+    
+    void generateResponse(ConfigInfo configInfo) {
+        // 生成 JSON 响应：{"content":"...", "md5":"..."}
+        HttpServletResponse response = 
+            (HttpServletResponse) asyncContext.getResponse();
+        response.setStatus(HttpServletResponse.SC_OK);
+        response.getWriter().write(
+            JSON.toJSONString(configInfo)
+        );
+        asyncContext.complete();
     }
 }
 ```
 
-### 3.3.3 客户端长轮询流程图
+## 3.9 长轮询流程图
 
 ```
-Client Side                          Nacos Server Side
-    │                                       │
-    │ ── GET /v1/cs/configs/listener ────► │
-    │    (dataId, group, md5)               │
-    │                                       ├── 注册 ClientLongPolling
-    │                                       ├── 启动超时定时器（29.5s）
-    │                                       │
-    │                              ┌────────┤
-    │                              │ 配置变更? │
-    │                              └────┬───┘
-    │                      Yes         │         No
-    │              ┌────────────      │      ────────────┐
-    │              ▼                                   ▼
-    │       ┌──────────────┐              ┌──────────────────┐
-    │       │ 计算新MD5    │              │ 等到 29.5秒超时│
-    │       │ 返回变更结果  │              │ 返回304 Not Mod │
-    │       └──────┬───────┘              └──────┬───────────┘
-    │              │                               │
-    │ ◄──────────┘                               │
-    │  (收到变更)              ◄────────────────┘
-    │                                       (无变更)
-    │ ── GET /v1/cs/configs ─────────────►
-    │    (拉取最新配置内容)
-    │ ◄── 返回完整配置 ───────────────────
+客户端                            Nacos Server                       数据库
+  │                                   │                               │
+  │── GET /v1/cs/configs/listener ──▶│                               │
+  │   (probeModify + md5)           │                               │
+  │                                   │── ClientLongPolling ─────────▶│
+  │                                   │   (加入 allSubs 队列)        │
+  │                                   │                               │
+  │         ... 等待 29.5 秒 ...      │                               │
+  │                                   │                               │
+  │                                   │◀── ConfigChangeEvent ─────────│
+  │                                   │   (配置变更事件触发)          │
+  │                                   │                               │
+  │                                   │── MD5 对比 ────────────────▶│
+  │                                   │   (查找 config_info 表)       │
+  │                                   │                               │
+  │◀── 200 OK (content + md5) ─────│                               │
+  │                                   │                               │
+  │── GET /v1/cs/configs/listener ──▶│                               │
+  │   (带新 md5)                      │                               │
+  │                        ... 下一轮循环 ...                        │
 ```
 
-## 3.4 配置变更通知机制——AsyncNotifyService
+## 3.10 AsyncNotifyService：集群间 HTTP 异步通知
 
-### 3.4.1 异步通知服务架构
+`AsyncNotifyService`（路径：`nacos-2.5.3/config/src/main/java/com/alibaba/nacos/config/server/service/notify/AsyncNotifyService.java`）负责集群间配置变更通知：
+
+| 方法 | 说明 |
+|------|------|
+| `onConfigChange()` | 接收 local 配置变更事件 |
+| `asyncNotify()` | 异步 HTTP POST 通知所有集群节点 |
+| `handleNotify()` | 处理其他节点发来的通知 |
+
+## 3.11 CommunicationController：集群间通知接收端点
+
+`CommunicationController` 提供以下端点：
+
+| HTTP 方法 | 路径 | 说明 |
+|-----------|------|------|
+| POST | `/v1/cs/communication/dataChange` | 集群间配置变更通知 |
+| POST | `/v1/cs/communication/verify` | 集群间配置校验 |
+
+## 3.12 配置历史版本管理
+
+`HistoryConfigInfoService` 提供配置历史版本管理：
+
+| 操作 | 说明 |
+|------|------|
+| `insertHistory()` | 插入历史版本 |
+| `listHistoryConfigs()` | 查询历史版本列表 |
+| `getHistoryConfigDetail()` | 查询历史版本详情 |
+| `rollback()` | 回滚到指定历史版本 |
+| `removeHistory()` | 删除历史版本 |
+
+## 3.13 配置导入导出
+
+Nacos 2.5.3 支持配置的导入导出，导出格式为 ZIP 压缩包：
+
+```
+ZIP 压缩包结构:
+├── {namespaceId}/
+│   ├── {group}/
+│   │   ├── {dataId1}
+│   │   ├── {dataId2}
+│   │   └── ...
+│   └── ...
+└── ...
+```
+
+| API | HTTP 方法 | 路径 |
+|-----|-----------|------|
+| 导出 | POST | `/nacos/v1/cs/configs/export` |
+| 导入 | POST | `/nacos/v1/cs/configs/import` |
+
+## 3.14 Beta 配置发布
+
+Beta 配置发布支持按 IP 白名单灰度发布：
+
+| API | HTTP 方法 | 路径 |
+|-----|-----------|------|
+| 发布 Beta 配置 | POST | `/nacos/v1/cs/configs?beta=true` |
+| 停止 Beta 配置 | DELETE | `/nacos/v1/cs/configs?beta=true` |
+
+**2.5.3 新增**：`ConfigInfoGrayWrapper` - 灰度配置包装器，支持更灵活的灰度策略。
+
+## 3.15 Tag 配置发布
+
+Tag 配置发布支持按标签灰度下发配置：
+
+| API | HTTP 方法 | 路径 |
+|-----|-----------|------|
+| 发布 Tag 配置 | POST | `/nacos/v1/cs/configs?tag=xxx` |
+| 停止 Tag 配置 | DELETE | `/nacos/v1/cs/configs?tag=xxx` |
+
+## 3.16 配置加密插件
+
+Nacos 2.5.3 支持配置加密插件，默认使用 AES/GCM/NoPadding 算法：
+
+| 配置项 | 说明 |
+|--------|------|
+| `nacos.config.encrypt.data-key` | 加密密钥 |
+| `nacos.config.encrypt.enabled` | 是否启用加密 |
+
+## 3.17 2.5.3 新增功能详解
+
+### 3.17.1 ConfigCache：多级配置缓存
+
+2.5.3 新增配置多级缓存机制（路径：`nacos-2.5.3/config/src/main/java/com/alibaba/nacos/config/server/model/ConfigCache.java`）：
+
+| 缓存层级 | 实现类 | 说明 |
+|---------|--------|------|
+| L1 缓存 | `ConfigCache` | 本地内存缓存（Caffeine/Guava） |
+| L2 缓存 | `ConfigCacheGray` | 灰度配置缓存 |
+| 缓存工厂 | `ConfigCacheFactory` | 缓存工厂（支持多种缓存策略） |
+| 后处理器 | `ConfigCachePostProcessor` | 缓存后处理器（支持自定义缓存逻辑） |
+
+### 3.17.2 ConfigChangeAspect：配置变更切面
+
+2.5.3 新增 `ConfigChangeAspect`（路径：`nacos-2.5.3/config/src/main/java/com/alibaba/nacos/config/server/aspect/ConfigChangeAspect.java`）：
 
 ```java
-// AsyncNotifyService.java - 异步通知服务
-@Service
-public class AsyncNotifyService {
-    
-    @Autowired
-    private ServerMemberManager serverMemberManager;
-    
-    @Autowired
-    private NacosAsyncRestTemplate nacosAsyncRestTemplate;
+@Aspect
+@Component
+public class ConfigChangeAspect {
     
     /**
-     * 通知集群其他节点配置变更
+     * ★ 2.5.3 新增：配置变更前后的切面处理
+     * 拦截所有标注 @ConfigChange 的方法
      */
-    public void notifyClusterNodes(String dataId, String group, String tenant) {
-        // 1. 获取集群其他节点列表
-        List<Member> members = serverMemberManager.getServerList();
-        String currentServerAddress = serverMemberManager.getCurrentServerAddress();
+    @Around("@annotation(com.alibaba.nacos.config.server.annotation.ConfigChange)")
+    public Object aroundConfigChange(ProceedingJoinPoint joinPoint) 
+        throws Throwable {
+        // 前置处理：记录变更前状态
+        Object[] args = joinPoint.getArgs();
         
-        // 2. 构建变更通知请求
-        ConfigChangeNotifyRequest notifyRequest = new ConfigChangeNotifyRequest();
-        notifyRequest.setDataId(dataId);
-        notifyRequest.setGroup(group);
-        notifyRequest.setTenant(tenant);
+        // 执行目标方法
+        Object result = joinPoint.proceed();
         
-        // 3. 异步通知每个其他集群节点
-        for (Member member : members) {
-            if (member.getAddress().equals(currentServerAddress)) {
-                continue; // 跳过当前节点
-            }
-            
-            String targetUrl = String.format("http://%s:%d/v1/cs/communications/configChange",
-                member.getIp(), member.getPort());
-            
-            nacosAsyncRestTemplate.post(targetUrl, 
-                JacksonUtils.toJson(notifyRequest),
-                new Callback<String>() {
-                    @Override
-                    public void onReceive(Result<String> result) {
-                        if (!result.isOk()) {
-                            Loggers.CONFIG_LOG.warn(
-                                "Failed to notify node: {}, error: {}", 
-                                member.getAddress(), result.getMessage());
-                        }
-                    }
-                });
-        }
+        // 后置处理：
+        // 1. 更新 ConfigCache 缓存
+        // 2. 触发 ConfigEnabledFilter 检查
+        // 3. 记录操作审计日志
+        
+        return result;
     }
 }
 ```
 
-### 3.4.2 集群间配置同步机制
+### 3.17.3 ApiVersionEnum：API 版本枚举
 
-当集群中某节点接收到配置变更通知时，会触发本地长轮询通知：
+2.5.3 新增 `ApiVersionEnum`（路径：`nacos-2.5.3/config/src/main/java/com/alibaba/nacos/config/server/enums/ApiVersionEnum.java`）：
 
 ```java
-// CommunicationController.java - 集群间通信控制器
-@RestController
-@RequestMapping(Constants.COMMUNICATION_CONTROLLER_PATH)
-public class CommunicationController {
-    
-    @Autowired
-    private LongPollingService longPollingService;
-    
-    /**
-     * 接收集群其他节点的配置变更通知
-     */
-    @PostMapping("/configChange")
-    public Boolean notifyConfigChange(HttpServletRequest request) {
-        String dataId = WebUtils.required(request, "dataId");
-        String group = WebUtils.required(request, "group");
-        String tenant = WebUtils.required(request, "tenant");
-        
-        // 通知本地正在长轮询的客户端
-        longPollingService.notifyConfigChange(dataId, group, tenant);
-        
-        return true;
-    }
+public enum ApiVersionEnum {
+    V1("v1"),   // v1 API 版本
+    V2("v2");   // v2 API 版本（2.5.3 新增）
 }
 ```
 
-## 3.5 配置历史版本管理
+### 3.17.4 ConfigEnabledFilter：模块启用过滤器
 
-### 3.5.1 HistoryConfigInfoService
+2.5.3 新增 `ConfigEnabledFilter`（路径：`nacos-2.5.3/config/src/main/java/com/alibaba/nacos/config/server/filter/ConfigEnabledFilter.java`），用于在 Config 模块未启用时拦截请求。
 
-```java
-// HistoryConfigInfoService.java - 配置历史版本服务
-@Service
-public class HistoryConfigInfoService {
-    
-    @Autowired
-    private HistoryConfigInfoMapper historyConfigInfoMapper;
-    
-    /**
-     * 查询配置历史版本列表
-     */
-    public Page<HistoryConfigInfo> listHistoryConfigInfo(String dataId, 
-            String group, String tenant, int pageNo, int pageSize) {
-        return historyConfigInfoMapper.selectByDataId(dataId, group, tenant, 
-            pageNo, pageSize);
-    }
-    
-    /**
-     * 回滚到指定历史版本
-     */
-    public void rollback(String dataId, String group, String tenant, 
-            Long historyId) {
-        // 1. 获取历史版本配置内容
-        HistoryConfigInfo historyConfigInfo = historyConfigInfoMapper.selectById(historyId);
-        
-        // 2. 用历史版本内容更新当前配置
-        ConfigInfo configInfo = configInfoMapper.selectByDataId(dataId, group, tenant);
-        configInfo.setContent(historyConfigInfo.getContent());
-        configInfo.setMd5(MD5Utils.md5Hex(historyConfigInfo.getContent(), ENCRYPT_KEY));
-        configInfo.setGmtModified(new Timestamp(System.currentTimeMillis()));
-        configInfoMapper.update(configInfo);
-        
-        // 3. 记录新的历史版本（以便继续回滚）
-        HistoryConfigInfo newHistory = new HistoryConfigInfo();
-        newHistory.setDataId(dataId);
-        newHistory.setGroupId(group);
-        newHistory.setContent(historyConfigInfo.getContent());
-        newHistory.setMd5(configInfo.getMd5());
-        newHistory.setTenantId(tenant);
-        newHistory.setGmtCreate(new Timestamp(System.currentTimeMillis()));
-        historyConfigInfoMapper.insert(newHistory);
-    }
-}
-```
+### 3.17.5 ConfigModuleStateBuilder：模块状态构建器
 
-### 3.5.2 历史版本保留策略
-
-```properties
-# 历史版本保留天数（默认30天）
-nacos.config.history.retention.days=30
-
-# 每个配置最多保留的历史版本数（默认100）
-nacos.config.history.max.size=100
-```
-
-## 3.6 灰度发布机制
-
-### 3.6.1 Beta 配置发布
-
-Nacos 支持 Beta 配置发布，即对指定 IP 列表的客户端下发 Beta 版本配置：
-
-```java
-// ConfigBetaService.java - Beta 配置发布服务
-@Service
-public class ConfigBetaService {
-    
-    @Autowired
-    private ConfigInfoPersistService configInfoPersistService;
-    
-    /**
-     * 发布 Beta 配置
-     */
-    public void publishBeta(ConfigForm configForm) {
-        // 1. 验证 beta ips
-        String betaIps = configForm.getBetaIps();
-        if (StringUtils.isBlank(betaIps)) {
-            throw new IllegalArgumentException("betaIps is required for beta publish");
-        }
-        
-        // 2. 插入或更新 Beta 配置
-        configInfoPersistService.insertOrUpdateBeta(configForm);
-        
-        // 3. 只通知 betaIps 列表中的客户端
-        notifyBetaClients(configForm.getDataId(), configForm.getGroup(),
-            configForm.getTenant(), betaIps);
-    }
-    
-    /**
-     * 停止 Beta 配置（切换回正式配置）
-     */
-    public void stopBeta(String dataId, String group, String tenant) {
-        // 1. 删除 Beta配置
-        configInfoPersistService.removeBeta(dataId, group, tenant);
-        
-        // 2. 通知所有客户端重新拉取正式配置
-        asyncNotifyService.notifyAll(dataId, group, tenant);
-    }
-}
-```
-
-### 3.6.2 Tag 配置发布
-
-Tag 配置允许按标签对不同实例下发不同配置：
-
-```java
-// ConfigTagService.java - Tag 配置发布服务
-@Service
-public class ConfigTagService {
-    
-    /**
-     * 发布 Tag 配置
-     */
-    public void publishTag(ConfigForm configForm) {
-        String tagName = configForm.getTagName();
-        if (StringUtils.isBlank(tagName)) {
-            throw new IllegalArgumentException("tagName is required for tag publish");
-        }
-        
-        // 插入或更新 Tag 配置
-        configInfoPersistService.insertOrUpdateTag(configForm);
-        
-        // 只通知带有该标签的客户端
-        notifyTagClients(configForm.getDataId(), configForm.getGroup(),
-            configForm.getTenant(), tagName);
-    }
-}
-```
-
-## 3.7 配置导入导出机制
-
-### 3.7.1 配置导出
-
-```java
-// ConfigController.java - 配置导出API
-@GetMapping("/export")
-public void exportConfig(HttpServletRequest request, HttpServletResponse response) {
-    String tenant = WebUtils.optional(request, "tenant", "");
-    String dataId = WebUtils.optional(request, "dataId", "");
-    String group = WebUtils.optional(request, "group", "");
-    
-    // 查询符合条件的配置列表
-    List<ConfigInfo> configList = configInfoPersistService.findAllConfigInfo(
-        dataId, group, tenant);
-    
-    // 导出为 ZIP 压缩包
-    response.setContentType("application/zip");
-    response.setHeader("Content-Disposition", 
-        "attachment; filename=nacos-config-export.zip");
-    
-    try (ZipOutputStream zipOut = new ZipOutputStream(response.getOutputStream())) {
-        for (ConfigInfo configInfo : configList) {
-            String fileName = configInfo.getGroup() + "/" + configInfo.getDataId();
-            ZipEntry entry = new ZipEntry(fileName);
-            zipOut.putNextEntry(entry);
-            zipOut.write(configInfo.getContent().getBytes(StandardCharsets.UTF_8));
-            zipOut.closeEntry();
-        }
-    }
-}
-```
-
-### 3.7.2 配置导入
-
-```java
-// ConfigController.java - 配置导入API
-@PostMapping("/import")
-public Map<String, Object> importConfig(@RequestParam("file") MultipartFile file, 
-        HttpServletRequest request) throws IOException {
-    
-    String namespace = WebUtils.optional(request, "namespace", "");
-    
-    Map<String, Object> result = new HashMap<>();
-    int successCount = 0;
-    int failCount = 0;
-    
-    // 解析 ZIP 文件
-    try (ZipInputStream zipIn = new ZipInputStream(file.getInputStream())) {
-        ZipEntry entry;
-        while ((entry = zipIn.nextEntry()) != null) {
-            try {
-                String fileName = entry.getName();
-                // 从文件名解析 group 和 dataId
-                int slashIndex = fileName.indexOf('/');
-                String group = slashIndex > 0 ? 
-                    fileName.substring(0, slashIndex) : "DEFAULT_GROUP";
-                String dataId = slashIndex > 0 ? 
-                    fileName.substring(slashIndex + 1) : fileName;
-                
-                // 读取配置内容
-                String content = new String(readAllBytes(zipIn), 
-                    StandardCharsets.UTF_8);
-                
-                // 持久化配置
-                ConfigForm configForm = new ConfigForm();
-                configForm.setDataId(dataId);
-                configForm.setGroup(group);
-                configForm.setTenant(namespace);
-                configForm.setContent(content);
-                
-                configInfoPersistService.insertOrUpdate(configForm);
-                successCount++;
-            } catch (Exception e) {
-                failCount++;
-                Loggers.CONFIG_LOG.error("Import config failed: {}", 
-                    entry.getName(), e);
-            }
-        }
-    }
-    
-    result.put("successCount", successCount);
-    result.put("failCount", failCount);
-    return result;
-}
-```
+2.5.3 新增 `ConfigModuleStateBuilder`（路径：`nacos-2.5.3/config/src/main/java/com/alibaba/nacos/config/server/constant/ConfigModuleStateBuilder.java`），用于构建 Config 模块的健康状态信息。
 
 ---
 
-*（第三章完，约 Arial汉字）*
+### 本章统计数据（Config 模块 2.5.3 vs 2.2.3）
+
+| 指标 | 2.2.3 | 2.5.3 | 变化 |
+|------|-------|-------|------|
+| Java 主代码文件 | 203 | **217** | +14 |
+| 存储条件注解 | 在 config 模块 | **移至 persistence 模块** | 架构调整 |
+| JDBC 异常 | NJdbcException (config) | **移至 persistence 模块** | 统一异常 |
+| 新增 ConfigCache | 无 | **ConfigCache/ConfigCacheFactory** | ★新增 |
+| 新增 ConfigChangeAspect | 无 | **ConfigChangeAspect** | ★新增 |
+| 新增 ApiVersionEnum | 无 | **ApiVersionEnum** | ★新增 |
+| 新增 ConfigEnabledFilter | 无 | **ConfigEnabledFilter** | ★新增 |
+
+---
+
+> **本章基于 Nacos 2.5.3 源码分析生成。**

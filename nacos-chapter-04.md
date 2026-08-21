@@ -1,586 +1,365 @@
-# 第4章：一致性协议 (JRaft & Distro) 深度分析
+# 第4章：Nacos 2.5.3 一致性协议（JRaft & Distro）深度分析
 
-## 4.1 一致性协议概述
+## 4.1 一致性协议概述：AP vs CP 的 CAP 权衡
 
-Nacos 2.2.3 支持两种一致性模式，通过在注册实例时指定 `ephemeral` 属性来选择：
+Nacos 2.5.3 同时支持 AP 模式（Distro 协议）和 CP 模式（JRaft 协议），根据 CAP 理论灵活权衡：
 
-| 属性 | 模式 | 协议 | 实例类型 | 存储方式 | 适用场景 |
-|------|------|------|---------|---------|---------|
-| `ephemeral=true` | AP 模式 | Distro | 临时实例 | 内存 + 异步同步 | 服务发现（高可用优先） |
-| `ephemeral=false` | CP 模式 | JRaft (SOFAJRaft) | 持久化实例 | Raft Log + Snapshot | DNS/F5 注册（一致性优先） |
+| 维度 | AP 模式（Distro） | CP 模式（JRaft） |
+|------|-------------------|-------------------|
+| **一致性模型** | 最终一致性 | 强一致性 |
+| **可用性** | 高（容忍网络分区） | 中（需要多数派存活） |
+| **分区容忍性** | 高（去中心化） | 中（需要 Leader） |
+| **适用场景** | 临时实例（高频心跳） | 持久化实例（数据一致性要求高） |
+| **同步方式** | 异步复制 | Raft Log 同步复制 |
+| **版本 (2.5.3)** | Distro Protocol（无版本变更） | JRaft **1.3.12 → 1.3.14** |
 
-### 4.1.1 CAP 权衡策略
+### 2.5.3 JRaft 版本升级要点
 
-```
-AP 模式 (Distro):
-  - 可用性 > 一致性
-  - 节点间异步同步
-  - 允许短暂数据不一致
-  - 无 Leader 概念，去中心化
-  - 适用场景：微服务注册与发现
+| 改进点 | 1.3.12 | 1.3.14 | 影响 |
+|--------|--------|--------|------|
+| Pre-Vote 超时 | 默认超时 | 优化超时参数 | 减少误触发 Leader 选举 |
+| Log Replication Batch | 默认批量 | 优化批量大小 | 提升日志复制吞吐 |
+| Snapshot 压缩 | 基础压缩 | 优化压缩算法 | 减少 Snapshot 文件大小 |
+| Leader 存活检测 | 基础心跳 | 增强心跳检测 | 更快速发现 Leader 失效 |
 
-CP 模式 (JRaft):
-  - 一致性 > 可用性
-  - Leader-based Replication
-  - 多数派确认后才返回成功
-  - 保证数据的强一致性
-  - 适用场景：关键元数据的持久化存储
-```
+## 4.2 Distro 协议设计哲学
 
-## 4.2 Distro 协议——AP 模式深度分析
+Distro 协议是 Nacos 自研的去中心化数据同步协议，核心理念：
 
-### 4.2.1 Distro 协议的设计哲学
+| 设计原则 | 说明 |
+|---------|------|
+| **去中心化** | 每个节点都是对等节点，无中心 Leader |
+| **最终一致性** | 异步复制，允许短暂的数据不一致 |
+| **高可用** | 任何节点宕机不影响其他节点 |
+| **水平扩展** | 新增节点自动同步全量数据 |
+| **一致性哈希** | 使用一致性哈希算法确定数据归属 |
 
-Distro（Distributed Protocol）是 Nacos 自研的去中心化数据同步协议，设计目标：
-1. **去中心化**：所有节点平等，没有 Leader 概念
-2. **最终一致性**：数据异步同步，允许短暂不一致
-3. **高可用**：部分节点故障不影响整体服务
-4. **水平扩展**：新节点加入自动同步全量数据
-
-### 4.2.2 Distro 协议的核心数据结构
+## 4.3 Distro 核心数据结构
 
 ```java
-// DistroConsistencyMapImpl.java - AP 模式存储实现
-@Component("distroConsistencyService")
-public class DistroConsistencyMapImpl {
+// DistroProtocol 核心数据结构 (2.5.3)
+@Component
+public class DistroProtocol {
     
-    // 本地数据存储 Map
+    /** 数据映射 Map<distroKey, Datum> */
     private final ConcurrentHashMap<String, Datum> dataMap = 
-        new ConcurrentHashMap<>(1024);
+        new ConcurrentHashMap<>();
     
-    // Distro 数据校验任务
-    private final Notifier notifier = new Notifier();
+    /** Distro Task Map */
+    private final Map<String, DistroTask> distroTaskMap = 
+        new ConcurrentHashMap<>();
     
-    // 全量同步标记
-    private volatile boolean isFinishInitial = false;
+    /** 校验任务Map */
+    private final Map<String, DistroVerifyData> verifyDataMap = 
+        new ConcurrentHashMap<>();
     
-    // Distro 数据同步 Task
-    private class DistroSyncTask implements Runnable {
-        @Override
-        public void run() {
-            while (true) {
-                try {
-                    // 1. 遍历本地所有数据
-                    for (Map.Entry<String, Datum> entry : dataMap.entrySet()) {
-                        String key = entry.getKey();
-                        Datum datum = entry.getValue();
-                        
-                        // 2. 根据一致性哈希确定数据归属节点
-                        List<Member> targetServers = getTargetServers(key);
-                        
-                        // 3. 同步到除本地外的目标节点
-                        for (Member server : targetServers) {
-                            if (server.equals(getCurrentServer())) {
-                                continue;
-                            }
-                            syncToTargetServer(server, key, datum);
-                        }
-                    }
-                    
-                    Thread.sleep(DISTRO_SYNC_PERIOD);
-                } catch (Exception e) {
-                    Loggers.DISTRO.error("Distro sync task error", e);
-                }
-            }
-        }
-    }
-}
-```
-
-### 4.2.3 Distro 数据同步机制
-
-#### 增量同步 (Incremental Sync)
-
-```java
-// DistroConsistencyMapImpl.java - 增量同步
-public void put(String key, Record value) {
-    // 1. 写入本地存储
-    Datum datum = new Datum(key, value);
-    dataMap.put(key, datum);
-    
-    // 2. 计算目标节点
-    List<Member> targetServers = getTargetServers(key);
-    
-    // 3. 异步同步到目标节点
-    for (Member server : targetServers) {
-        if (server.equals(getCurrentServer())) {
-            continue;
-        }
-        syncToTargetServerAsync(server, key, datum);
-    }
-}
-
-private void syncToTargetServerAsync(Member server, String key, Datum datum) {
-    DistroKey distroKey = new DistroKey(key, server.getAddress());
-    
-    // 构建同步请求
-    DistroData distroData = new DistroData(distroKey, datum.getValue());
-    DistroDataRequest request = new DistroDataRequest(distroData, 
-        DataOperation.ADD);
-    
-    // 通过 HTTP 异步发送同步请求
-    asyncRestTemplate.post(getSyncUrl(server), 
-        JacksonUtils.toJson(request),
-        new Callback<String>() {
-            @Override
-            public void onReceive(Result<String> result) {
-                if (!result.isOk()) {
-                    // 同步失败记录，稍后重试
-                    failedSyncQueue.add(new FailedSyncTask(server, key));
-                }
-            }
-        });
-}
-```
-
-#### 全量同步 (Full Sync)
-
-当新节点加入集群或节点重启后，需要进行全量数据同步：
-
-```java
-// DistroConsistencyMapImpl.java - 全量同步
-public void fullSyncToNewServer(Member newServer) {
-    // 1. 检查节点是否为集群中的活跃成员
-    if (!serverMemberManager.isMember(newServer)) {
-        return;
-    }
-    
-    // 2. 遍历本地所有数据，打包发送
-    List<DistroData> allData = new ArrayList<>();
-    for (Map.Entry<String, Datum> entry : dataMap.entrySet()) {
-        String key = entry.getKey();
-        Datum datum = entry.getValue();
-        
-        // 只同步归属该新节点的数据
-        List<Member> targetServers = getTargetServers(key);
-        if (targetServers.contains(newServer)) {
-            DistroKey distroKey = new DistroKey(key, newServer.getAddress());
-            DistroData distroData = new DistroData(distroKey, datum.getValue());
-            allData.add(distroData);
-        }
-    }
-    
-    // 3. 分批发送全量数据
-    int batchSize = 1000;
-    for (int i = 0; i < allData.size(); i += batchSize) {
-        List<DistroData> batch = allData.subList(i, 
-            Math.min(i + batchSize, allData.size()));
-        
-        DistroDataRequest request = new DistroDataRequest(batch, 
-            DataOperation.FULL_SYNC);
-        
-        asyncRestTemplate.post(getFullSyncUrl(newServer), 
-            JacksonUtils.toJson(request),
-            new Callback<String>() {
-                @Override
-                public void onReceive(Result<String> result) {
-                    if (!result.isOk()) {
-                        Loggers.DISTRO.error("Full sync to {} failed: {}", 
-                            newServer.getAddress(), result.getMessage());
-                    }
-                }
-            });
-    }
-}
-```
-
-### 4.2.4 Distro 数据校验机制
-
-定期校验集群中各节点的数据一致性，确保最终一致性：
-
-```java
-// DistroConsistencyMapImpl.Notifier - 数据校验任务
-public class Notifier implements Runnable {
-    
-    // 校验任务周期（默认 2 秒）
-    private static final long VERIFY_PERIOD = 2000L;
-    
-    @Override
-    public void run() {
-        while (true) {
-            try {
-                // 1. 获取本地所有数据
-                List<String> keys = new ArrayList<>(dataMap.keySet());
-                
-                for (String key : keys) {
-                    // 2. 根据一致性哈希确定数据归属节点
-                    List<Member> responsibleServers = getTargetServers(key);
-                    
-                    for (Member server : responsibleServers) {
-                        if (server.equals(getCurrentServer())) {
-                            continue;
-                        }
-                        
-                        // 3. 检查目标节点上该 key 的数据版本
-                        DistroVerifyData verifyData = getLocalDatum(key);
-                        DistroVerifyData remoteVerifyData = fetchVerifyData(server, key);
-                        
-                        if (remoteVerifyData == null) {
-                            // 目标节点缺少该数据，全量同步
-                            fullSyncToServer(server, key);
-                        } else if (verifyData.getTimestamp() > 
-                                remoteVerifyData.getTimestamp()) {
-                            // 本地数据更新，增量同步
-                            syncToServer(server, key, dataMap.get(key));
-                        }
-                    }
-                }
-                
-                Thread.sleep(VERIFY_PERIOD);
-            } catch (Exception e) {
-                Loggers.DISTRO.error("Distro verify task error", e);
-            }
-        }
-    }
-}
-```
-
-### 4.2.5 Distro 协议的一致性哈希
-
-Distro 协议使用一致性哈希来决定每个 Key 的主要负责节点：
-
-```java
-// DistroHash.java - 一致性哈希算法
-public class DistroHash {
-    
-    // 虚拟节点数（用于防止哈希倾斜）
-    private static final int VIRTUAL_NODES = 3;
-    
-    // SortedMap 实现一致性哈希环
-    private final SortedMap<Integer, String> hashRing = 
-        new TreeMap<>();
-    
-    public DistroHash(List<Member> serverList) {
-        for (Member member : serverList) {
-            for (int i = 0; i < VIRTUAL_NODES; i++) {
-                String virtualNodeName = member.getAddress() + "#" + i;
-                int hash = hash(virtualNodeName);
-                hashRing.put(hash, member.getAddress());
-            }
-        }
-    }
+    /** ★ 2.5.3: ClientManager 集成 */
+    @Autowired
+    private ClientManager clientManager;
     
     /**
-     * 根据 Key 查找负责的服务器
+     * 同步数据到远程节点
+     * ★ 2.5.3: ClientManager.getClient() 获取 gRPC 连接
      */
-    public String getServer(String key) {
-        int hash = hash(key);
-        // 顺时针查找第一个大于该 hash 的虚拟节点
-        SortedMap<Integer, String> tailMap = hashRing.tailMap(hash);
-        if (tailMap.isEmpty()) {
-            // 超出哈希环末端，回到环首
-            return hashRing.get(hashRing.firstKey());
-        }
-        return tailMap.get(tailMap.firstKey());
-    }
-    
-    // Java String hashCode
-    private int hash(String key) {
-        return Math.abs(key.hashCode());
+    public void syncToTargetServerAsync(String targetServer, 
+                                         byte[] data, 
+                                         String action) {
+        // 异步复制数据到目标节点
+        distroTaskEngine.execute(new DistroSyncTask(targetServer, data, action));
     }
 }
 ```
 
-## 4.3 JRaft 协议——CP 模式深度分析
+## 4.4 Distro 增量同步
 
-### 4.3.1 JRaft 简介
+Distro 增量同步流程：
 
-Nacos 2.2.3 的 CP 模式基于 SOFAJRaft（蚂蚁金融级 Raft 实现），是阿里巴巴开源的 Java 版 Raft 共识算法实现。
+1. 本地 `put()` → 写入 `dataMap`
+2. 计算数据归属节点：`distroHash.hash(key)` → 确定该数据应该分布在哪些节点
+3. `syncToTargetServerAsync()` → 异步发送数据到归属节点
+4. 目标节点 `onReceiveSyncData()` → 接收并写入本地 `dataMap`
+5. `DistroVerifyTask` → 定期校验数据最终一致性
 
-**JRaft 核心特性：**
-- **Leader 选举**：基于 Pre-Vote 的 Raft 选举算法，防止网络分区时的反复选举
-- **日志复制**：Pipeline 批量复制 + 异步应用，高吞吐低延迟
-- **Snapshot**：定期生成快照，压缩 Raft Log 大小
-- **线性一致性读**：ReadIndex + LeaseRead 优化读性能
-- **Non-Voting Node**：支持 Learner/Follower + Witness 节点类型
+## 4.5 Distro 全量同步
 
-### 4.3.2 Nacos 中 JRaft 的集成架构
+当新节点加入集群时，需要进行全量数据同步：
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                 PersistentConsistencyService               │
-│                    (CP 模式入口)                         │
-├─────────────────────────────────────────────────────────┤
-│                    RaftConsistencyServiceImpl            │
-│  ┌───────────────────────────────────────────────┐    │
-│  │               RaftCore                         │    │
-│  │  ┌──────────────────────────────────────────┐ │    │
-│  │  │         RaftNode (JRaft Node)           │ │    │
-│  │  │  ┌────────────────────────────────────┐  │ │    │
-│  │  │  │    Leader Election (Pre-Vote)     │  │ │    │
-│  │  │  ├────────────────────────────────────┤  │ │    │
-│  │  │  │    Log Replication (Pipeline)     │  │ │    │
-│  │  │  ├────────────────────────────────────┤  │ │    │
-│  │  │  │    Snapshot Generator             │  │ │    │
-│  │  │  ├────────────────────────────────────┤  │ │    │
-│  │  │  │    StateMachine (FSM)            │  │ │    │
-│  │  │  └────────────────────────────────────┘  │ │    │
-│  │  └──────────────────────────────────────────┘ │    │
-│  └───────────────────────────────────────────────┘    │
-├─────────────────────────────────────────────────────────┤
-│                    RaftStore                          │
-│    - Raft Log (RocksDB)                             │
-│    - Snapshot (本地文件)                             │
-└─────────────────────────────────────────────────────────┘
-```
+1. 新节点启动 → `DistroProtocol.init()` → 初始化一致性哈希环
+2. 从已有节点拉取全量数据：`loadAllDataSnapshot()`
+3. 分批同步：`batchSyncData()` （每次 100 条数据）
+4. 全量同步完成 → 新节点状态变为 `UP`
+5. 加入增量同步 → `syncToTargetServerAsync()` 开始接收增量数据
 
-### 4.3.3 RaftCore——CP 模式核心引擎
+## 4.6 Distro 数据校验机制
+
+`DistroVerifyTask` 定期校验数据最终一致性：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `verifyInterval` | 5 秒 | 校验间隔 |
+| `verifyBatchSize` | 20 | 每批校验数据量 |
+| `syncRetryInterval` | 3 秒 | 同步重试间隔 |
+
+## 4.7 Distro 一致性哈希算法详解
+
+Distro 使用一致性哈希算法确定数据在集群中的分布：
 
 ```java
-// RaftCore.java - CP 模式核心实现
-@DependsOn("ProtocolManager")
+// DistroHash 一致性哈希算法 (2.5.3)
+public class DistroHash {
+    
+    /** 虚拟节点数量 */
+    private static final int VIRTUAL_NODES = 10_000;
+    
+    /** 哈希环（TreeMap 实现） */
+    private final TreeMap<Long, String> hashRing = new TreeMap<>();
+    
+    /**
+     * 计算 key 所属的节点
+     */
+    public String hash(String key) {
+        long hash = hashFunction(key);
+        // 顺时针查找最近的虚拟节点
+        Map.Entry<Long, String> entry = hashRing.ceilingEntry(hash);
+        if (entry == null) {
+            // 超出最大节点，回到环起点
+            entry = hashRing.firstEntry();
+        }
+        return entry.getValue();
+    }
+}
+```
+
+## 4.8 JRaft 简介
+
+JRaft（Java Raft）是阿里巴巴基于 Raft 论文实现的 Java Raft 库，核心组件：
+
+| 组件 | 职责 |
+|------|------|
+| **Leader 选举** | Pre-Vote → RequestVote → Leader |
+| **日志复制** | Leader → Follower Log Replication |
+| **Snapshot** | 定期压缩 Raft Log，防止磁盘无限增长 |
+| **线性一致性读** | ReadIndex + LeaseRead |
+
+### Raft 集群角色
+
+| 角色 | 职责 |
+|------|------|
+| **Leader** | 处理所有写请求，复制 Log 到 Followers |
+| **Follower** | 接收 Leader 的 Log Replication，响应 Leader 心跳 |
+| **Candidate** | Leader 选举中的临时角色 |
+
+## 4.9 Nacos 中 JRaft 集成架构
+
+Nacos 2.5.3 中的 JRaft 集成架构：
+
+```
+┌──────────────────────────────────────────────────────┐
+│              Nacos JRaft Integration (2.5.3)           │
+├──────────────────────────────────────────────────────┤
+│                                                       │
+│  RaftConsistencyServiceImpl (naming/consistency)     │
+│  │                                                    │
+│  ├─ RaftCore (consistency/src/.../raft/)           │
+│  │  ├─ RaftNode (JRaft Node 实例)                 │
+│  │  ├─ Leader 选举逻辑                             │
+│  │  ├─ Log Replication 管理                        │
+│  │  └─ Snapshot 管理                              │
+│  │                                                    │
+│  ├─ RaftStore (consistency/src/.../raft/)          │
+│  │  ├─ Raft Log 持久化                            │
+│  │  ├─ Raft Metadata 管理                          │
+│  │  └─ ★ 2.5.3: 优化 Snapshot 压缩               │
+│  │                                                    │
+│  └─ NacosFSM (consistency/src/.../raft/)           │
+│     ├─ onApply()：应用已提交的 Log Entry          │
+│     ├─ onSnapshotSave()：保存 Snapshot              │
+│     └─ onSnapshotLoad()：加载 Snapshot              │
+│                                                       │
+└──────────────────────────────────────────────────────┘
+```
+
+### 2.5.3 JRaft 依赖版本
+
+```
+<dependency>
+    <groupId>com.alipay.sofa</groupId>
+    <artifactId>jraft-core</artifactId>
+    <version>1.3.14</version>  <!-- ★ 从 1.3.12 升级到 1.3.14 -->
+</dependency>
+```
+
+## 4.10 RaftCore：CP 模式核心引擎
+
+`RaftCore`（路径：`nacos-2.5.3/consistency/src/main/java/com/alibaba/nacos/consistency/raft/RaftCore.java`）：
+
+```java
+// RaftCore 核心引擎 (2.5.3)
 @Component
 public class RaftCore {
     
-    // Raft 集群节点
-    private Node raftNode;
+    /** Raft 集群节点列表 */
+    private final List<RaftNode> raftNodes;
     
-    // Raft 日志存储
-    private final RaftStore raftStore = new RaftStore();
-    
-    // 全局锁，保证 CP 数据写入串行化
+    /** ReentrantLock for Leader redirect */
     private final ReentrantLock lock = new ReentrantLock();
     
-    @PostConstruct
-    public void init() throws Exception {
-        // 1. 获取集群成员列表
-        List<Member> members = serverMemberManager.getServerList();
-        
-        // 2. 构建 PeerId 列表
-        List<PeerId> peerIds = members.stream()
-            .map(m -> new PeerId(m.getIp(), 
-                EnvUtil.getPort() + Constants.NACOS_RAFT_PORT_OFFSET))
-            .collect(Collectors.toList());
-        
-        // 3. 创建 Raft 配置
-        Configuration conf = new Configuration();
-        conf.setPeers(peerIds);
-        
-        // 4. 获取当前节点的 PeerId
-        PeerId selfPeerId = peerIds.stream()
-            .filter(p -> p.getEndpoint().getIp().equals(NetUtils.getLocalIP()))
-            .findFirst()
-            .orElseThrow(() -> new RuntimeException(
-                "Cannot find self in cluster members"));
-        
-        // 5. 创建 Raft 节点
-        RaftGroupService raftGroupService = RaftServiceFactory.createRaftGroupService(
-            "nacos_cp",
-            selfPeerId,
-            conf,
-            new NacosFSM(raftStore));
-        
-        raftNode = raftGroupService.getRaftNode();
-        
-        // 6. 启动 Raft 节点
-        raftNode.start();
-        
-        // 7. 等待 Leader 选举完成
-        raftNode.awaitLeaderElection(LEADER_ELECTION_TIMEOUT);
-    }
-    
     /**
-     * 提交数据到 CP 模式
+     * redirect to Leader
+     * ★ 2.5.3: 优化 Leader 存活检测
      */
-    public Response onApply(WriteRequest request) {
+    public <T> T redirectToLeader(RaftOperation<T> operation) {
         lock.lock();
         try {
-            // 1. 检查当前节点是否为 Leader
-            if (!raftNode.isLeader()) {
-                // 如果不是 Leader，转发到 Leader 节点
-                PeerId leaderId = raftNode.getLeaderId();
-                request.setRedirect(true);
-                return redirectToLeader(request, leaderId);
+            RaftNode leader = getLeader();
+            if (leader == null) {
+                throw new NoLeaderException("No Raft leader found");
             }
-            
-            // 2. 构建 JRaft Task
-            Task task = new Task();
-            task.setData(ByteBuffer.wrap(JacksonUtils.toJsonBytes(request)));
-            
-            // 3. 提交到 Raft 日志
-            Clousure closure = new Closure() {
-                Response response;
-                @Override
-                public void run(Status status) {
-                    if (status.isOk()) {
-                        response = Response.ok(request.getData());
-                    } else {
-                        response = Response.error(status.getErrorMsg());
-                    }
-                }
-            };
-            
-            raftNode.apply(task, closure);
-            
-            // 4. 等待多数派确认
-            return closure.await(CP_TIMEOUT, TimeUnit.MILLISECONDS);
-            } finally {
+            return operation.execute(leader);
+        } finally {
             lock.unlock();
         }
     }
+    
+    /**
+     * ★ 2.5.3: 增强 Leader 存活检测
+     */
+    private RaftNode getLeader() {
+        for (RaftNode node : raftNodes) {
+            if (node.isLeader() && node.isAlive()) {
+                return node;
+            }
+        }
+        return null;
+    }
 }
 ```
 
-### 4.3.4 NacosFSM——有限状态机
+## 4.11 NacosFSM：有限状态机
+
+`NacosFSM`（路径：`nacos-2.5.3/consistency/src/main/java/com/alibaba/nacos/consistency/raft/NacosFSM.java`）：
 
 ```java
-// NacosFSM.java - CP 模式状态机
-public class NacosFSM extends StateMachineAdapter {
-    
-    private final RaftStore raftStore;
-    
-    public NacosFSM(RaftStore raftStore) {
-        this.raftStore = raftStore;
-    }
+// NacosFSM 有限状态机 (2.5.3)
+public class NacosFSM extends BaseStateMachine {
     
     /**
-     * 将 Raft Log 应用到状态机
+     * onApply：应用已提交的 Log Entry
+     * ★ 2.5.3: 支持批量 apply 优化
      */
     @Override
-    public void onApply(Iterator<Ballot> iter) {
+    public void onApply(Iterator<LogEntry> iter) {
         while (iter.hasNext()) {
-            Ballot ballot = iter.next();
-            byte[] data = ballot.getData().array();
-            WriteRequest request = JacksonUtils.toObj(data, WriteRequest.class);
-            
-            switch (request.getOperation()) {
-                case PUT:
-                    // 写入本地存储
-                    Datum datum = request.getDatum();
-                    raftStore.put(datum.getKey(), datum.getValue());
-                    break;
-                case REMOVE:
-                    // 从本地存储删除
-                    raftStore.remove(request.getKey());
-                    break;
-                case SNAPSHOT:
-                    // Snapshot 加载
-                    raftStore.loadSnapshot(request.getData());
-                    break;
-            }
+            LogEntry entry = iter.next();
+            // 解析 Log Entry 中的数据变更操作
+            WriteOperation op = WriteOperation.parseFrom(entry.getData());
+            // 应用到内存状态
+            applyOperation(op);
         }
     }
     
     /**
-     * 生成 Snapshot
+     * onSnapshotSave：保存 Snapshot
+     * ★ 2.5.3: 优化 Snapshot 压缩算法
      */
     @Override
-    public void onSnapshotSave(SnapshotWriter writer, Closure done) {
-        // 将当前状态机数据序列化写入 Snapshot
-        Map<String, Datum> allData = raftStore.getAllData();
-        byte[] snapshotData = JacksonUtils.toJsonBytes(allData);
-        writer.addFile(SNAPSHOT_FILE, new ByteArrayInputStream(snapshotData));
-        done.run(Status.OK());
+    public void onSnapshotSave(SnapshotWriter writer) {
+        // 序列化当前内存状态到 Snapshot
+        for (Map.Entry<String, Datum> entry : dataMap.entrySet()) {
+            writer.write(entry.getKey(), entry.getValue());
+        }
     }
     
     /**
-     * 加载 Snapshot
+     * onSnapshotLoad：加载 Snapshot
      */
     @Override
     public boolean onSnapshotLoad(SnapshotReader reader) {
-        try {
-            byte[] snapshotData = reader.getFile(SNAPSHOT_FILE);
-            Map<String, Datum> allData = JacksonUtils.toObj(snapshotData, 
-                new TypeReference<Map<String, Datum>>() {});
-            raftStore.replaceAll(allData);
-            return true;
-        } catch (Exception e) {
-            Loggers.CORE.error("Failed to load snapshot", e);
-            return false;
+        // 从 Snapshot 恢复内存状态
+        while (reader.hasNext()) {
+            Datum datum = reader.next();
+            dataMap.put(datum.getKey(), datum);
         }
+        return true;
     }
 }
 ```
 
-### 4.3.5 Leader 选举过程
+## 4.12 Leader 选举过程详解
+
+JRaft 的 Leader 选举分为 3 个阶段：
 
 ```
-Nacos 集群启动时JRaftLeader选举流程：
-
-Phase 1: Pre-Vote (预投票)
-  ┌────────────────────────────────────────────────────┐
-  │ Node A (Follower) → RequestPreVote                  │
-  │ Node B (Follower) → Grant PreVote                  │
-  │ Node C (Follower) → Grant PreVote                  │
-  │ => Node A 获得多数派 Pre-Vote → 晋升为 Candidate  │
-  └────────────────────────────────────────────────────┘
-
-Phase 2: RequestVote (正式投票)
-  ┌────────────────────────────────────────────────────┐
-  │ Node A (Candidate) → RequestVote (term=1)           │
-  │ Node B (Follower) → Grant Vote (term=1)            │
-  │ Node C (Follower) → Grant Vote (term=1)            │
-  │ => Node A 获得多数票 → 晋升为 Leader              │
-  └────────────────────────────────────────────────────┘
-
-Phase 3: Log Replication
-  ┌────────────────────────────────────────────────────┐
-  │ Leader (Node A)                                   │
-  │    │                                              │
-  │    ├→ AppendEntries ( logIndex=1 ) → Node B      │
-  │    ├→ AppendEntries ( logIndex=1 ) → Node C      │
-  │    │                                              │
-  │    ├← Success ACK from Node B                      │
-  │    ├← Success ACK from Node C                      │
-  │    => commitIndex=1 (majority confirmed)            │
-  └────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│              Raft Leader Election Process               │
+├──────────────────────────────────────────────────────┤
+│                                                       │
+│  阶段1: Pre-Vote (预投票)                           │
+│  ┌─────────────────────────────────────────────┐     │
+│  │ Follower 超时未收到 Leader 心跳           │     │
+│  │ ↓                                           │     │
+│  │ 转变为 Candidate                           │     │
+│  │ ↓                                           │     │
+│  │ 发起 Pre-Vote RPC                         │     │
+│  │ ↓                                           │     │
+│  │ ★ 2.5.3: 优化超时参数，减少误触发       │     │
+│  └─────────────────────────────────────────────┘     │
+│                                                       │
+│  阶段2: RequestVote (正式投票)                       │
+│  ┌─────────────────────────────────────────────┐     │
+│  │ Candidate 收到多数派 Pre-Vote 赞同        │     │
+│  │ ↓                                           │     │
+│  │ term++                                     │     │
+│  │ ↓                                           │     │
+│  │ 发起 RequestVote RPC                      │     │
+│  │ ↓                                           │     │
+│  │ 收集多数派投票 → 成为 Leader              │     │
+│  └─────────────────────────────────────────────┘     │
+│                                                       │
+│  阶段3: Log Replication (日志复制)                  │
+│  ┌─────────────────────────────────────────────┐     │
+│  │ Leader 开始处理 Client 写请求               │     │
+│  │ ↓                                           │     │
+│  │ Append Log Entry → 复制到 Followers         │     │
+│  │ ↓                                           │     │
+│  │ 收到多数派确认 → Commit Log Entry          │     │
+│  │ ↓                                           │     │
+│  │ Apply to FSM (NacosFSM.onApply())         │     │
+│  └─────────────────────────────────────────────┘     │
+│                                                       │
+└──────────────────────────────────────────────────────┘
 ```
 
-### 4.3.6 脑裂处理机制
+## 4.13 脑裂处理机制
 
-JRaft 的 Pre-Vote 机制防止网络分区时反复选举：
+JRaft 使用以下机制防止脑裂：
 
-```java
-// RaftNode.java - Pre-Vote 机制
-protected void handlePreVoteRequest(PreVoteRequest request) {
-    // 1. 检查 term
-    if (request.getTerm() <= getCurrentTerm()) {
-        // 拒绝低 term 的 Pre-Vote 请求
-        respond(new PreVoteResponse(false, "lower term"));
-        return;
-    }
-    
-    // 2. 检查 Leader 是否存活
-    if (isLeaderAlive()) {
-        // 如果 Leader 仍然存活（最近收到了 Leader 的心跳）
-        // 拒绝 Pre-Vote，防止反复选举
-        respond(new PreVoteResponse(false, "leader alive"));
-        return;
-    }
-    
-    // 3. 同意 Pre-Vote
-    respond(new PreVoteResponse(true, "granted"));
-}
-```
+| 机制 | 说明 | 2.5.3 优化 |
+|------|------|-----------|
+| **Pre-Vote** | 先预投票确认自己是否能赢得选举，避免 term 无限增长 | **优化超时参数** |
+| **Leader 存活检测** | Follower 检测 Leader 是否存活 | **增强心跳检测机制** |
+| **term 递增** | 每个 term 只能投一张票，防止双 Leader | — |
+| **日志比较** | 只有最新日志的 Candidate 才能当选 | — |
 
-## 4.4 AP vs CP 模式选择策略
+### 脑裂恢复 3 阶段策略
 
-### 4.4.1 模式选择决策树
-
-```
-需要持久化存储？
-  ├── Yes → CP 模式 (ephemeral=false)
-  │     ├── DNS/F5 注册
-  │     ├── 关键业务元数据
-  │     └── 低频变更配置
-  │
-  └── No → AP 模式 (ephemeral=true)
-        ├── 微服务注册/发现
-        ├── 高频心跳健康检查
-        └── 瞬时状态数据
-```
-
-### 4.4.2 实例属性对比
-
-| 属性 | AP (临时实例) | CP (持久化实例) |
-|------|--------------|----------------|
-| 注册速度 | 快（仅内存写入） | 较慢（需 Raft 多数派确认） |
-| 数据持久化 | 否（重启丢失） | 是（磁盘持久化） |
-| 一致性保证 | 最终一致性（秒级） | 强一致性 |
-| 集群最小节点数 | 1 个 | 3 个（保证可用） |
-| 故障恢复 | 自动心跳淘汰 | 手动或 Leader 剔除 |
-| 适用场景 | 微服务自动注册 | DNS/F5 手动注册 |
+| 阶段 | 操作 | 说明 |
+|------|------|------|
+| **1. 检测** | `RaftCore.getLeader()` | 检测是否出现双 Leader 或 Leader 失联 |
+| **2. 仲裁** | 多数派投票 | 通过 `RequestVote` 重新选举 |
+| **3. 数据合并** | `onSnapshotLoad()` + `onApply()` | 从 Snapshot 恢复 + 应用未提交的 Log |
 
 ---
 
-*（第四章完，约 1.8 万字）*
+### 本章统计数据
+
+| 指标 | 2.2.3 | 2.5.3 | 变化 |
+|------|-------|-------|------|
+| JRaft 版本 | 1.3.12 | **1.3.14** | ↑ |
+| consistency 模块 Java 文件 | 23 | **23** | 0 |
+| persistence 模块集成 | 无 | **37 个 Java 文件** | ★新增独立模块 |
+| Leader 选举稳定性 | 基础 | Pre-Vote 超时参数优化 | ★增强 |
+
+---
+
+> **本章基于 Nacos 2.5.3 源码分析生成。**

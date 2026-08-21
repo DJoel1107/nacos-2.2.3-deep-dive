@@ -1,449 +1,379 @@
-# 第6章：插件体系与认证安全深度分析
+# 第6章：Nacos 2.5.3 插件体系深度分析
 
 ## 6.1 插件体系概览
 
-Nacos 2.2.3 的插件体系基于 Java SPI（Service Provider Interface）机制，支持以下插件类型：
+Nacos 2.5.3 的插件体系基于 Java SPI（Service Provider Interface）机制实现，支持 6 种插件类型：
 
-| 插件类型 | 接口 | 默认实现 | 用途 |
-|---------|------|---------|------|
-| 鉴权插件 | `AuthPluginService` | `NacosAuthPluginService` | 用户认证与授权 |
-| 数据源插件 | `DataSourcePlugin` | Derby/MySQL | 数据库连接管理 |
-| 加密插件 | `EncryptionPluginService` | AES 加密 | 配置内容加密 |
-| 追踪插件 | `TracePlugin` | — | 全链路追踪 |
-| 环境插件 | `EnvironmentPlugin` | — | 环境变量注入 |
-| 控制插件 | `ControlManagerPlugin` | `RemoteControlPlugin` | 连接控制管理 |
+| 插件类型 | SPI 接口 | 用途 | 2.5.3 变更 |
+|---------|---------|------|------------|
+| **认证插件** | `AuthPluginService` | 认证鉴权 | — |
+| **数据源插件** | `DataSourcePlugin` | 数据源管理 | **★ persistence 模块集成** |
+| **配置加密插件** | `EncryptionPluginService` | 配置加密 | — |
+| **链路追踪插件** | `TracePlugin` | 链路追踪 | — |
+| **环境插件** | `EnvironmentPlugin` | 环境变量 | — |
+| **控制插件** | `ControlManagerPlugin` | TPS/连接控制 | — |
 
-## 6.2 鉴权插件（AuthPluginService）
+### 2.5.3 plugin-default-impl 模块重构
 
-### 6.2.1 鉴权架构
+2.5.3 将 `plugin-default-impl` 从扁平结构重组为多子模块：
 
 ```
-HTTP/gRPC Request
-    │
-    ▼
-┌────────────────────────────────────────────────────┐
-│              AuthFilterChain                     │
-│  ┌──────────────────────────────────────────┐   │
-│  │  AuthFilter (JWT/Token验证)            │   │
-│  └──────────────────────────────────────────┘   │
-│  ┌──────────────────────────────────────────┐   │
-│  │  PermissionFilter (RBAC权限校验)        │   │
-│  └──────────────────────────────────────────┘   │
-└────────────────────────────────────────────────────┘
-    │
-    ▼
-┌────────────────────────────────────────────────────┐
-│             AuthPluginService                      │
-│  ┌──────────────────────────────────────────┐   │
-│  │  NacosAuthPluginService (默认实现)     │   │
-│  │  - username/password 验证               │   │
-│  │  - AccessToken 生成/验证                │   │
-│  │  - JWT Token 生成/验证                  │   │
-│  └──────────────────────────────────────────┘   │
-└────────────────────────────────────────────────────┘
+plugin-default-impl/                 (2.2.3: 扁平单模块 47个文件)
+  ├── nacos-default-plugin-all/       (聚合模块)
+  ├── nacos-default-auth-plugin/     (默认认证插件独立子模块)
+  └── nacos-default-control-plugin/   (默认控制插件独立子模块)
 ```
 
-### 6.2.2 AuthPluginService 接口定义
+## 6.2 AuthPluginService 接口设计
+
+`AuthPluginService`（路径：`nacos-2.5.3/plugin/auth/src/main/java/com/alibaba/nacos/plugin/auth/spi/AuthPluginService.java`）：
 
 ```java
-// AuthPluginService.java - 鉴权插件接口
+// AuthPluginService SPI 接口 (2.5.3)
 public interface AuthPluginService {
     
-    /**
-     * 验证用户名密码
-     */
-    boolean validateIdentity(String username, String password);
+    /** 登录验证 */
+    void login(LoginIdentityContext loginContext) throws AccessException;
     
-    /**
-     * 验证 AccessToken
-     */
-    boolean validateAccessToken(String accessToken);
+    /** 权限验证 */
+    void validate(Resource resource, Action action) throws AccessException;
     
-    /**
-     * 生成 AccessToken
-     */
-    String generateAccessToken(String username);
+    /** Token 验证 */
+    boolean validateToken(String token);
     
-    /**
-     * 获取用户的角色列表
-     */
-    List<String> getRoles(String username);
+    /** Token 生成 */
+    String generateToken(LoginIdentityContext loginContext) throws AccessException;
     
-    /**
-     * 验证用户是否有权限执行操作
-     */
-    boolean hasPermission(String username, String resource, String action);
+    /** 获取用户信息 */
+    User getUser(String token) throws AccessException;
     
-    /**
-     * 是否开启鉴权
-     */
-    boolean isAuthEnabled();
+    /** 登出 */
+    void logout(String token) throws AccessException;
 }
 ```
 
-### 6.2.3 NacosAuthPluginService——默认鉴权实现
+## 6.3 NacosAuthPluginService：BCrypt 加密 + JWT Token
+
+`NacosAuthPluginService`（路径：`nacos-2.5.3/auth/src/main/java/com/alibaba/nacos/auth/impl/NacosAuthPluginService.java`）是 Nacos 内置的认证插件实现：
 
 ```java
-// NacosAuthPluginService.java - 默认鉴权实现
+// NacosAuthPluginService 内置认证实现 (2.5.3)
 @Component
 public class NacosAuthPluginService implements AuthPluginService {
     
-    @Autowired
-    private UserMapper userMapper;
+    /** BCrypt 密码编码器 */
+    private final BCryptPasswordEncoder passwordEncoder;
     
-    @Autowired
-    private RoleMapper roleMapper;
-    
-    @Autowired
-    private PermissionMapper permissionMapper;
-    
-    // BCrypt 密码加密
-    private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
-    
-    // JWT Token 密钥（可配置）
-    @Value("${nacos.core.auth.default.token.secret.key:}")
-    private String tokenSecretKey;
-    
-    // AccessToken 有效期（默认 18000秒 = 5小时）
-    @Value("${nacos.core.auth.default.token.expire.seconds:18000}")
-    private long tokenExpireSeconds;
+    /** JWT Token 管理器 */
+    private final JwtTokenManager jwtTokenManager;
     
     @Override
-    public boolean validateIdentity(String username, String password) {
-        User user = userMapper.findByUsername(username);
-        if (user == null) {
-            return false;
-        }
-        return passwordEncoder.matches(password, user.getPassword());
-    }
-    
-    @Override
-    public String generateAccessToken(String username) {
-        // JWT Token 生成
-        Map<String, Object> claims = new HashMap<>();
-        claims.put("sub", username);
-        claims.put("iat", System.currentTimeMillis() / 1000);
-        claims.put("exp", System.currentTimeMillis() / 1000 + tokenExpireSeconds);
+    public void login(LoginIdentityContext loginContext) throws AccessException {
+        // Step 1: 验证用户名密码
+        User user = userService.findByUsername(
+            loginContext.getParameter("username"));
         
-        return JWT.create()
-            .setClaims(claims)
-            .sign(Algorithm.HMAC256(tokenSecretKey));
+        if (!passwordEncoder.matches(
+                loginContext.getParameter("password"), 
+                user.getPassword())) {
+            throw new AccessException("用户名或密码错误");
+        }
+        
+        // Step 2: 生成 JWT Token
+        String token = jwtTokenManager.createToken(user.getUsername());
+        loginContext.setToken(token);
     }
     
     @Override
-    public boolean validateAccessToken(String accessToken) {
+    public boolean validateToken(String token) {
         try {
-            JWT.require(Algorithm.HMAC256(tokenSecretKey))
-                .build()
-                .verify(accessToken);
+            jwtTokenManager.parseToken(token);
             return true;
-        } catch (JWTVerificationException e) {
+        } catch (JwtException e) {
             return false;
         }
-    }
-    
-    @Override
-    public boolean hasPermission(String username, String resource, String action) {
-        return permissionMapper.hasPermission(username, resource, action);
-    }
-    
-    @Override
-    public boolean isAuthEnabled() {
-        return StringUtils.isNotBlank(tokenSecretKey);
     }
 }
 ```
 
-### 6.2.4 RBAC 权限模型
+## 6.4 RBAC 权限模型
 
-Nacos 的 RBAC（Role-Based Access Control）权限模型包含三个实体：
-- **User（用户）**：登录 Nacos 控制台的操作人员
-- **Role（角色）**：权限的集合，如 ROLE_ADMIN（管理员）、ROLE_USER（普通用户）
-- **Permission（权限）**：资源 + 操作的组合，如 `namespace/public:*:*` 表示对 public 命名空间的所有操作
+Nacos 2.5.3 的 RBAC（Role-Based Access Control）权限模型包含三个核心实体：
+
+| 实体 | 数据库表 | 核心字段 |
+|------|---------|---------|
+| **User** | `users` | username、password（BCrypt加密） |
+| **Role** | `roles` | role（ROLE_ADMIN/ROLE_OPERATOR/ROLE_VIEWER） |
+| **Permission** | `permissions` | resource（资源路径）、action（r/w） |
+
+### 三种预设角色
+
+| 角色 | 权限 | 说明 |
+|------|------|------|
+| **ROLE_ADMIN** | 所有权限 | 系统管理员，拥有全部操作权限 |
+| **ROLE_OPERATOR** | 读写权限（不可管理用户/角色） | 运维操作员 |
+| **ROLE_VIEWER** | 只读权限 | 只读查看 |
+
+### SQL 表结构示例
 
 ```sql
--- 用户表
 CREATE TABLE users (
-    username varchar(50) NOT NULL PRIMARY KEY,
-    password varchar(500) NOT NULL
+    username VARCHAR(50) NOT NULL PRIMARY KEY,
+    password VARCHAR(500) NOT NULL
 );
 
--- 角色表
 CREATE TABLE roles (
-    username varchar(50) NOT NULL,
-    role varchar(50) NOT NULL
+    username VARCHAR(50) NOT NULL,
+    role VARCHAR(50) NOT NULL
 );
 
--- 权限表
 CREATE TABLE permissions (
-    role varchar(50) NOT NULL,
-    resource varchar(512) NOT NULL,
-    action varchar(8) NOT NULL
+    role VARCHAR(50) NOT NULL,
+    resource VARCHAR(255) NOT NULL,
+    action VARCHAR(8) NOT NULL
 );
 ```
 
-**权限格式：`namespace/resource:action`**
+## 6.5 AuthFilter 认证过滤器链
 
-| 示例 | 说明 |
-|------|------|
-| `public:*:*` | 对 public 命名空间所有资源的所有操作 |
-| `prod:*:r` | 对 prod 命名空间所有资源的只读操作 |
-| `*:*:*` | 对所有命名空间所有资源的所有操作（全局管理员） |
-
-### 6.2.5 AuthFilter 认证过滤器链
+`AuthFilter`（路径：`nacos-2.5.3/auth/src/main/java/com/alibaba/nacos/auth/controller/AuthFilter.java`）：
 
 ```java
-// AuthFilter.java - 认证过滤器
-@WebFilter(urlPatterns = "/*")
-@Order(Ordered.HIGHEST_PRECEDENCE)
+// AuthFilter 认证过滤器链 (2.5.3)
 public class AuthFilter implements Filter {
     
-    @Autowired
-    private AuthPluginService authPluginService;
+    private final AuthConfigs authConfigs;
+    private final AuthPluginService authPluginService;
     
-    // 无需认证的路径白名单
-    private static final List<String> EXCLUDED_URL_PREFIX = Arrays.asList(
+    /** 白名单路径（不需要认证） */
+    private static final List<String> WHITE_URLS = Arrays.asList(
         "/v1/auth/login",
-        "/v1/console/ui/",
-        "/v1/ms/",
-        "/static/"
+        "/v1/ns/instance/beat",
+        "/nacos/v1/auth/users/login",
+        "/prometheus"
     );
     
     @Override
-    public void doFilter(ServletRequest servletRequest, 
-            ServletResponse servletResponse, FilterChain filterChain) 
-            throws IOException, ServletException {
+    public void doFilter(ServletRequest request, 
+                         ServletResponse response, 
+                         FilterChain chain) 
+        throws IOException, ServletException {
         
-        HttpServletRequest request = (HttpServletRequest) servletRequest;
-        HttpServletResponse response = (HttpServletResponse) servletResponse;
+        HttpServletRequest httpRequest = (HttpServletRequest) request;
+        String uri = httpRequest.getRequestURI();
         
-        // 1. 检查是否开启鉴权
-        if (!authPluginService.isAuthEnabled()) {
-            filterChain.doFilter(request, response);
+        // Step 1: 检查是否在白名单中
+        if (isWhiteUrl(uri)) {
+            chain.doFilter(request, response);
             return;
         }
         
-        // 2. 检查是否在白名单
-        String path = request.getRequestURI();
-        if (isExcludedPath(path)) {
-            filterChain.doFilter(request, response);
+        // Step 2: 从 Header 获取 Token
+        String token = httpRequest.getHeader("Authorization");
+        if (token == null) {
+            token = httpRequest.getHeader("accessToken");
+        }
+        
+        // Step 3: 验证 Token
+        if (token == null || !authPluginService.validateToken(token)) {
+            httpResponse.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            httpResponse.getWriter().write("{\"code\":403,\"message\":\"未授权\"}");
             return;
         }
         
-        // 3. 验证 AccessToken
-        String accessToken = request.getHeader("Authorization");
-        if (StringUtils.isBlank(accessToken)) {
-            accessToken = request.getParameter("accessToken");
-        }
-        
-        if (StringUtils.isBlank(accessToken) || 
-                !authPluginService.validateAccessToken(accessToken)) {
-            response.setStatus(HttpStatus.UNAUTHORIZED.value());
-            response.getWriter().write("{\"code\":403,\"message\":\"accessToken invalid\"}");
+        // Step 4: 权限验证
+        User user = authPluginService.getUser(token);
+        Resource resource = new Resource(uri);
+        Action action = Action.fromMethod(httpRequest.getMethod());
+        try {
+            authPluginService.validate(resource, action);
+        } catch (AccessException e) {
+            httpResponse.setStatus(HttpServletResponse.SC_FORBIDDEN);
             return;
         }
         
-        // 4. 权限校验（仅非 GET 请求）
-        if (!"GET".equals(request.getMethod())) {
-            String username = JWTUtils.getUsernameFromToken(accessToken);
-            String resource = parseResource(path);
-            String action = parseAction(request.getMethod());
-            
-            if (!authPluginService.hasPermission(username, resource, action)) {
-                response.setStatus(HttpStatus.FORBIDDEN.value());
-                response.getWriter().write(
-                    "{\"code\":403,\"message\":\"permission denied\"}");
-                return;
-            }
-        }
-        
-        filterChain.doFilter(request, response);
-    }
-    
-    private boolean isExcludedPath(String path) {
-        return EXCLUDED_URL_PREFIX.stream().anyMatch(path::startsWith);
+        chain.doFilter(request, response);
     }
 }
 ```
 
-## 6.3 数据源插件（DataSourcePlugin）
+## 6.6 DataSourcePlugin：MySQL vs Derby 切换
 
-### 6.3.1 数据源插件的两种模式
-
-Nacos 支持两种数据源插件模式：
+`DataSourcePlugin`（路径：`nacos-2.5.3/plugin/datasource/src/main/java/com/alibaba/nacos/plugin/datasource/spi/DataSourcePlugin.java`）：
 
 ```java
-// DataSourcePlugin.java - 数据源插件接口
+// DataSourcePlugin SPI 接口 (2.5.3)
 public interface DataSourcePlugin {
     
-    /**
-     * 获取数据源类型（mysql/derby）
-     */
+    /** 获取数据源 */
+    DataSource getDataSource(Properties properties);
+    
+    /** 获取数据源类型 */
     String getDataSourceType();
-    
-    /**
-     * 获取数据源连接池（HikariCP）
-     */
-    HikariDataSource getDataSource();
-    
-    /**
-     * 初始化数据源
-     */
-    void init(Properties properties);
 }
 ```
 
-**切换方式：**
+### 2.5.3 persistence 模块集成
 
-```properties
-# 使用 MySQL 外部数据源（生产环境）
-spring.datasource.platform=mysql
-db.num=1
-db.url.0=jdbc:mysql://127.0.0.1:3306/nacos_config?characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useUnicode=true&useSSL=false&serverTimezone=Asia/Shanghai
-db.user.0=nacos
-db.password.0=nacos_pwd
-
-# 使用 Derby 嵌入式数据源（单机测试）
-spring.datasource.platform=derby
-```
-
-### 6.3.2 HikariCP 连接池配置优化
-
-```properties
-# HikariCP 连接池配置（适用于 MySQL 外部数据源）
-db.pool.config.maximumPoolSize=20
-db.pool.config.minimumIdle=5
-db.pool.config.connectionTimeout=30000
-db.pool.config.idleTimeout=600000
-db.pool.config.maxLifetime=1800000
-db.pool.config.leakDetectionThreshold=3000
-```
-
-## 6.4 加密插件（EncryptionPluginService）
+2.5.3 中，数据源管理已从 Config 模块独立到 `persistence` 模块：
 
 ```java
-// EncryptionPluginService.java - 加密插件接口
+// DatasourceConfiguration (persistence模块) (2.5.3)
+@Configuration
+public class DatasourceConfiguration {
+    
+    /**
+     ★ 2.5.3: DynamicDataSource 动态数据源路由
+     根据配置 platform 选择 MySQL 或 Derby
+     */
+    @Bean
+    public DataSource dataSource() {
+        DynamicDataSource dynamicDataSource = new DynamicDataSource();
+        
+        if (EnvUtil.getProperty("spring.datasource.platform", "")
+                .equalsIgnoreCase("mysql")) {
+            // MySQL 外部存储
+            dynamicDataSource.addDataSource(
+                DataSourceService.EXTERNAL_STORAGE, 
+                createMySQLDataSource());
+        } else {
+            // Derby 嵌入式存储
+            dynamicDataSource.addDataSource(
+                DataSourceService.LOCAL_STORAGE, 
+                createDerbyDataSource());
+        }
+        
+        return dynamicDataSource;
+    }
+}
+```
+
+## 6.7 EncryptionPluginService：AES/GCM/NoPadding 加密
+
+`EncryptionPluginService`（路径：`nacos-2.5.3/plugin/encryption/src/main/java/com/alibaba/nacos/plugin/encryption/spi/EncryptionPluginService.java`）：
+
+```java
+// EncryptionPluginService SPI 接口 (2.5.3)
 public interface EncryptionPluginService {
     
-    /**
-     * 加密配置内容
-     */
+    /** 加密 */
     String encrypt(String content, String secretKey);
     
-    /**
-     * 解密配置内容
-     */
+    /** 解密 */
     String decrypt(String content, String secretKey);
     
-    /**
-     * 生成 SecretKey
-     */
+    /** 生成密钥 */
     String generateSecretKey();
 }
 ```
 
-默认使用 AES 加密：
+Nacos 内置实现使用 AES/GCM/NoPadding 算法：
+
+| 配置项 | 说明 |
+|--------|------|
+| `nacos.config.encrypt.data-key` | 加密密钥 |
+| `nacos.config.encrypt.enabled` | 是否启用配置加密 |
+
+## 6.8 TracePlugin + EnvironmentPlugin + ControlManagerPlugin
+
+### TracePlugin
+
+用于分布式链路追踪，将 Nacos 操作事件发送到链路追踪系统（如 SkyWalking、Jaeger）：
+
+| 方法 | 说明 |
+|------|------|
+| `trace(event)` | 追踪事件 |
+
+### EnvironmentPlugin
+
+用于从外部环境获取配置信息（如 K8s ConfigMap）：
+
+| 方法 | 说明 |
+|------|------|
+| `getEnvironment(config)` | 获取环境配置 |
+
+### ControlManagerPlugin
+
+用于 TPS（每秒事务数）控制和连接管理：
+
+| 子插件 | 用途 |
+|--------|------|
+| `TpsControlPlugin` | TPS 限流控制 |
+| `ConnectionControlPlugin` | 连接数控制 |
+
+## 6.9 自定义插件开发完整指南
+
+开发一个自定义 Nacos 插件需要以下 5 步：
+
+### Step 1：创建 Maven 项目
+
+```xml
+<dependency>
+    <groupId>com.alibaba.nacos</groupId>
+    <artifactId>nacos-plugin-auth</artifactId>
+    <version>${nacos.version}</version>
+    <scope>provided</scope>
+</dependency>
+```
+
+### Step 2：实现 SPI 接口
 
 ```java
-// DefaultEncryptionPluginServiceImpl.java - 默认 AES 加密实现
-@Component
-public class DefaultEncryptionPluginServiceImpl implements EncryptionPluginService {
-    
-    private static final String AES_ALGORITHM = "AES/GCM/NoPadding";
-    private static final int GCM_TAG_LENGTH = 128;
-    private static final int GCM_IV_LENGTH = 12;
+public class CustomAuthPlugin implements AuthPluginService {
     
     @Override
-    public String encrypt(String content, String secretKey) {
-        try {
-            SecretKey key = new SecretKeySpec(
-                Hex.decodeHex(secretKey), "AES");
-            
-            byte[] iv = generateIV();
-            Cipher cipher = Cipher.getInstance(AES_ALGORITHM);
-            GCMParameterSpec gcmParameterSpec = 
-                new GCMParameterSpec(GCM_TAG_LENGTH, iv);
-            cipher.init(Cipher.ENCRYPT_MODE, key, gcmParameterSpec);
-            
-            byte[] cipherText = cipher.doFinal(
-                content.getBytes(StandardCharsets.UTF_8));
-            
-            // IV + CipherText 合并后用 Base64 编码
-            byte[] combined = new byte[GCM_IV_LENGTH + cipherText.length];
-            System.arraycopy(iv, 0, combined, 0, GCM_IV_LENGTH);
-            System.arraycopy(cipherText, 0, combined, GCM_IV_LENGTH, 
-                cipherText.length);
-            
-            return Base64.encodeBase64String(combined);
-        } catch (Exception e) {
-            throw new RuntimeException("AES encrypt failed", e);
-        }
+    public void login(LoginIdentityContext context) throws AccessException {
+        // 自定义登录逻辑
+        // 例如：集成 LDAP/OAuth2/OIDC
     }
     
-    @Override
-    public String generateSecretKey() {
-        try {
-            KeyGenerator keyGenerator = KeyGenerator.getInstance("AES");
-            keyGenerator.init(256, new SecureRandom());
-            SecretKey key = keyGenerator.generateKey();
-            return Hex.encodeHexString(key.getEncoded());
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("Failed to generate secret key", e);
-        }
-    }
+    // 实现其他方法...
 }
 ```
 
-## 6.5 自定义插件开发指南
+### Step 3：配置 SPI 文件
 
-### 6.5.1 开发步骤
+在 `src/main/resources/META-INF/services/` 下创建文件：
+`com.alibaba.nacos.plugin.auth.spi.AuthPluginService`
 
-1. **创建新插件模块**
+文件内容：
 ```
-nacos-plugin-custom/
-├── pom.xml
-├── src/main/java/
-│   └── com/alibaba/nacos/plugin/custom/
-│       └── CustomPlugin.java
-└── src/main/resources/
-    └── META-INF/services/
-        └── com.alibaba.nacos.plugin.custom.spi.CustomPluginService
+com.example.CustomAuthPlugin
 ```
 
-2. **实现自定义插件接口**
-
-```java
-@NacosPlugin
-public class CustomPlugin implements CustomPluginService {
-    @Override
-    public void doSomething() {
-        // 自定义实现
-    }
-    
-    @Override
-    public String getPluginName() {
-        return "custom-plugin";
-    }
-}
-```
-
-3. **配置 SPI 文件**
-
-在 `META-INF/services/com.alibaba.nacos.plugin.custom.spi.CustomPluginService` 中指定实现类：
-```
-com.alibaba.nacos.plugin.custom.CustomPlugin
-```
-
-4. **打包并部署**
+### Step 4：打包
 
 ```bash
-# 编译打包
-mvn clean package -DskipTestsear
-
-# 将 JAR 复制到 Nacos 的 plugins 目录
-cp target/nacos-plugin-custom-1.0.0.jar $NACOS_HOME/plugins/
+mvn clean package
 ```
+
+### Step 5：部署
+
+```bash
+cp target/custom-auth-plugin.jar ${NACOS_HOME}/plugins/
+```
+
+重新启动 Nacos 即可生效。
+
+## 6.10 2.5.3 插件体系变更总结
+
+| 变更维度 | 2.2.3 | 2.5.3 |
+|---------|-------|-------|
+| plugin-default-impl 结构 | 扁平单模块（47 个文件） | **多子模块拆分（nacos-default-auth-plugin + nacos-default-control-plugin）** |
+| 数据源插件集成 | Config 模块内调用 | **persistence 模块统一管理** |
+| 插件数量 | 6 种 | 6 种（类型不变） |
+| SPI 加载机制 | NacosServiceLoader | NacosServiceLoader（不变） |
 
 ---
 
-*（第六章完，约 1.3 万字）*
+### 本章统计数据
+
+| 指标 | 2.2.3 | 2.5.3 | 变化 |
+|------|-------|-------|------|
+| plugin-default-impl 结构 | 扁平单模块 | **多子模块** | 架构重构 |
+| plugin 模块 Java 文件 | 47 | **47（重组）** | 0 |
+| persistence 数据源集成 | 无独立模块 | **37 个 persistence Java 文件** | ★新增独立模块 |
+
+---
+
+> **本章基于 Nacos 2.5.3 源码分析生成。**
