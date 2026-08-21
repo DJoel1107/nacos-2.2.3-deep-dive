@@ -196,6 +196,10 @@ Naming 模块的核心类以 HTTP REST API 端点 `InstanceController` 为入口
 
 **【设计模式分析】**
 
+**Trade-off 分析：「请求-注册-路由-推送」链式架构 vs 分散架构**
+
+Naming 模块选择集中式的「InstanceController → ServiceManager → ClientOperationService → PushService」链式架构而非分散的独立处理器：集中式链式架构的代价是 `InstanceController` 成为单点入口（所有请求都经过它），但换来了统一的请求参数校验、统一的异常处理和统一的路由决策——避免了分散架构中每个处理器各自实现参数校验和异常处理的代码重复。在 2.5.3 v2 架构中，`ClientOperationService` 接口的引入进一步解耦了 AP/CP 路由——未来新增一致性协议只需新增实现类。
+
 1. **前端控制器模式（Front Controller Pattern）**：`InstanceController` 作为 Naming 模块的统一入口点，所有客户端请求（注册/发现/心跳）都首先到达 `InstanceController`，由其解析请求参数并路由到对应的 `ClientOperationService` 或 `ServiceManager`。
 
 2. **策略模式（Strategy Pattern）**：`ClientOperationService` 接口定义了 `registerInstance()` 策略，`EphemeralClientOperationServiceImpl`（AP Distro）和 `PersistentClientOperationServiceImpl`（CP JRaft）是两种具体策略实现。根据 `Service.isEphemeral()` 动态选择——这是策略模式在一致性协议路由中的核心应用。
@@ -754,6 +758,8 @@ Distro 协议的去中心化设计使得每个节点独立负责哈希环上的�
 
 Distro 协议的核心是一致性哈希算法（Consistent Hashing），用于确定每个节点负责的哈希环区段——只有负责节区段内的数据才有权威写入权。Nacos 2.5.3 的 Distro v2 使用 `TreeMap` 实现哈希环，并通过**虚拟节点（Virtual Node）**机制解决数据倾斜问题——每个物理节点映射 150 个虚拟节点（`DistroConstants.VIRTUAL_NODE_COUNT`），保证数据在各物理节点间均匀分布。
 
+Distro v2 的一致性哈希算法相比 v1 的核心改进在于引入**虚拟节点（Virtual Node）**机制——v1 直接使用物理节点哈希值分布数据，在少量物理节点（如 3 个）时哈希环上物理节点分布严重不均，导致数据倾斜（某些节点负载过高）。v2 通过为每个物理节点创建 150 个虚拟节点（`DistroConstants.VIRTUAL_NODE_COUNT = 150`），虚拟节点均匀分布在 0~2^32-1 的哈希空间上，使得各物理节点平均负责约 1/N 的哈希空间——即使只有 3 个物理节点，数据倾斜概率也低于 1%。代价是每个物理节点需要维护 150 个虚拟节点的存储开销（约 30KB/节点），但相比数据均匀分布带来的负载均衡增益，这个代价是完全可接受的。
+
 **【核心类关系图】**
 
 ```
@@ -1227,6 +1233,10 @@ public void receivePushData(NotifySubscriberData notifySubscriberData) {
 
 **【设计模式分析】**
 
+**Trade-off 分析：客户端主动订阅 vs 服务端广播推送**
+
+Nacos 选择客户端主动订阅（`NamingClientProxy.subscribe()`）而非服务端广播推送（向所有客户端推送所有服务变更）：主动订阅的代价是客户端需要显式调用 `subscribe()` 建立 gRPC Bi-stream 连接（增加客户端复杂度），但换来了精准推送——只推送客户端订阅的服务变更，避免了广播模式中大量无关推送浪费网络带宽。在微服务架构中每个客户端通常只订阅少数几个服务——精准推送节省的带宽远大于建立 gRPC Bi-stream 连接的初始开销。
+
 1. **代理模式（Proxy Pattern）**：`NamingClientProxy` 作为客户端与服务端通信的代理——隐藏了 gRPC Bi-stream 连接管理、订阅请求构建、推送接收等复杂逻辑。用户只需调用 `subscribe()` 方法即可完成订阅。
 
 2. **观察者模式（Observer Pattern）**：用户注册的 `EventListener` 充当观察者——当 `ServerPushHandler` 接收到服务端推送时，回调 `EventListener.onEvent()`。这是观察者模式在客户端推送接收中的典型应用。
@@ -1318,6 +1328,10 @@ public void process(Instance instance, HealthChecker healthChecker) {
 3. 连接失败或查询超时 → `healthy=false`
 
 **【设计模式分析】**
+
+**Trade-off 分析：三种健康检查类型的适用场景选择**
+
+Nacos 提供 TCP/HTTP/MySQL 三种健康检查类型而非单一 TCP 检测：TCP 检测最轻量（只需端口可达，~2000ms），适用于 TCP 服务（MySQL/Redis/自定义 TCP）；HTTP 检测可检测应用层健康（如数据库连接池状态），但需要 HTTP 端点实现（~5000ms）；MySQL 检测最重量（JDBC SELECT 1），适用于数据库实例但耦合 MySQL JDBC 驱动。三种类型各自覆盖不同的适用场景——用户根据实例类型选择最合适的健康检查方式——这是策略模式在健康检查场景中的最佳实践。
 
 1. **策略模式（Strategy Pattern）**：`HealthCheckProcessor` 接口定义了 `process(instance, healthChecker)` 策略——`TcpSuperSenseProcessor`（TCP 策略）、`HttpHealthCheckProcessor`（HTTP 策略）、`MysqlHealthCheckProcessor`（MySQL 策略）是三种具体策略。`HealthCheckType` 枚举决定使用哪种策略。
 
@@ -1531,6 +1545,10 @@ public void process(Instance instance, HealthChecker healthChecker) {
 
 **【设计模式分析】**
 
+**Trade-off 分析：TCP Socket 连接检测 vs HTTP GET 健康端点**
+
+`TcpSuperSenseProcessor` 选择 TCP Socket 连接检测而非 HTTP GET 请求：TCP 检测只检测端口可达性——不需要应用层端点实现，超时更短（2000ms vs 5000ms），适用于 TCP 服务（MySQL/Redis/自定义 TCP）；但 TCP 检测无法检测应用层健康（如数据库连接池状态）——HTTP 检测通过 `/health` 端点可以返回应用层健康信息。选择 TCP 检测的代价是无法检测应用层状态，但换来了更轻量的检测方式和更短超时——适用于只需要端口可达性判断的 TCP 服务场景。
+
 1. **重试模式（Retry Pattern）**：TCP Socket 连接失败时重试 3 次——避免因瞬时网络抖动误判实例不健康。每次重试间隔 2000ms——给网络恢复留出缓冲时间。
 
 2. **模板方法模式（Template Method Pattern）**：`TcpSuperSenseProcessor.process()（naming/healthcheck/TcpSuperSenseProcessor.java:34-67）` 定义了 TCP 健康检查的算法骨架（连接→成功→重试→关闭），但具体的超时和重试策略由配置参数决定——这是模板方法模式的变体。
@@ -1546,6 +1564,8 @@ public void process(Instance instance, HealthChecker healthChecker) {
 **【设计背景】**
 
 `ProtectManager`（naming/misc/ProtectManager.java:34）是 Nacos 2.5.3 的防雪崩保护机制——当服务实例健康比例低于阈值（默认 0.5）时，自动启用保护模式：不再标记任何实例为不健康，而是返回缓存快照中最后一次健康实例列表，避免因健康检查误判导致大规模实例下线（雪崩效应）。这种机制在服务实例大规模不健康时保护了服务可用性——宁可返回过期缓存数据，也不返回空列表导致客户端无法获取任何实例。
+
+防雪崩保护机制的核心设计理念是：在分布式系统中，**可用性优先于准确性**——当健康检查可能因网络分区或瞬时抖动导致误判大量实例不健康时，宁可返回可能过期的缓存数据（部分准确性损失），也绝不返回空列表导致服务完全不可用（完全可用性损失）。这是断路器模式（Circuit Breaker Pattern）在健康检查场景的创新应用——`ProtectManager` 充当断路器，当健康比例低于阈值时自动断开健康检查标记链路，当健康比例恢复时自动闭合链路。
 
 **【核心类关系图】**
 
