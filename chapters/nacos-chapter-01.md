@@ -513,7 +513,23 @@ Nacos 2.5.3 的启动流程从 `Nacos.main()` 开始，分为以下核心机制�
 
 **四、SpringApplication.run()：启动 Spring 容器**
 
-`SpringApplication.run(Nacos.class, args)` 触发 Spring Boot 的完整启动流程：创建 `ApplicationContext` → 加载 `Environment` → 执行 `ApplicationRunner`/`CommandLineRunner` → 发布 `ApplicationReadyEvent`。Nacos 各模块通过监听 `ApplicationReadyEvent` 事件来执行各自的初始化逻辑（如 `GrpcSdkServer.start()` 绑定 gRPC 端口）。
+`SpringApplication.run(Nacos.class, args)`：
+
+```java
+// Nacos.main()（console/src/main/java/com/alibaba/nacos/Nacos.java:42-49）
+@SpringBootApplication
+@ComponentScan(basePackages = "com.alibaba.nacos", excludeFilters = {
+    @Filter(type = FilterType.CUSTOM, classes = {NacosTypeExcludeFilter.class}),
+    @Filter(type = FilterType.CUSTOM, classes = {TypeExcludeFilter.class}),
+    @Filter(type = FilterType.CUSTOM, classes = {AutoConfigurationExcludeFilter.class})})
+public class Nacos {
+    public static void main(String[] args) {
+        SpringApplication.run(Nacos.class, args);
+    }
+}
+```
+
+触发 Spring Boot 的完整启动流程：创建 `ApplicationContext` → 加载 `Environment` → 执行 `ApplicationRunner`/`CommandLineRunner` → 发布 `ApplicationReadyEvent`。Nacos 各模块通过监听 `ApplicationReadyEvent` 事件来执行各自的初始化逻辑（如 `GrpcSdkServer.start()` 绑定 gRPC 端口）。
 
 **【设计模式分析】**
 
@@ -1031,6 +1047,7 @@ Nacos 2.5.3 的五层级数据模型通过 Namespace（租户隔离）→ Group�
 ```java
 if (instances[0].isEphemeral()) {
     ephemeralConsistencyService.put(key, instances);  // AP → Distro
+// DelegateConsistencyServiceImpl.put()（naming/.../DelegateConsistencyServiceImpl.java:67-78）
 } else {
     raftConsistencyService.put(key, instances);  // CP → JRaft
 }
@@ -1201,21 +1218,22 @@ Nacos 2.5.3 内部模块间通信的核心机制是 `NotifyCenter`（common/src/
 
 **一、NotifyCenter 核心机制**
 
-`NotifyCenter` 内部维护 `Map<Class<? extends Event>, List<Subscriber>>` 注册表——每个 Event 类型对应一个 Subscriber 列表。核心方法：
+`NotifyCenter` 内部维护 `Map<Class<? extends Event>, List<Subscriber>>` 注册表。核心方法：
 
 ```java
-// 发布事件
+// NotifyCenter.publishEvent()（common/src/main/java/com/alibaba/nacos/common/notify/NotifyCenter.java）
 public static void publishEvent(Event event) {
     Class<? extends Event> eventType = event.getClass();
     List<Subscriber> subscribers = subscriberMap.get(eventType);
     if (subscribers != null) {
         for (Subscriber subscriber : subscribers) {
-            subscriber.onEvent(event);
+            subscriber.onEvent(event);  // 同步逐个通知所有订阅者
         }
     }
 }
+```
 
-// 注册 Subscriber
+注册 Subscriber
 public static void registerSubscriber(Subscriber subscriber, Class<? extends Event> eventType) {
     subscriberMap.computeIfAbsent(eventType, k -> new ArrayList<>()).add(subscriber);
 }
