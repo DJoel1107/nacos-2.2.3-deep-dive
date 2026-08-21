@@ -58,7 +58,7 @@ Nacos 2.5.3 的三大核心能力在源码层面有明确的模块边界：
 1. `InstanceController.register()`（:88-95）解析请求参数：`namespaceId`、`groupName`、`serviceName`，调用 `parseInstance()` 从请求体中解析出 `Instance` 对象
 2. `ServiceManager.getOrCreateService(namespaceId, groupName, serviceName)`（naming/src/main/java/com/alibaba/nacos/naming/core/v2/ServiceManager.java:45-52）在 `serviceMap`（`Map<String, Service>`）中惰性创建或获取 Service 对象
 3. `Service.addInstance(clusterName, instance)`（:102）将 Instance 添加到对应 Cluster 的 `ephemeralInstances`（临时实例 Map）或 `persistentInstances`（持久化实例 Map）
-4. `DelegateConsistencyServiceImpl.put(key, instances)`（naming/src/main/java/com/alibaba/nacos/naming/consistency/DelegateConsistencyServiceImpl.java:67-78）根据 `ephemeral` 字段路由：`true` → AP（Distro 协议去中心化同步），`false` → CP（JRaft 协议 Raft 日志复制）
+4. `EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）.put(key, instances)`（naming/src/main/java/com/alibaba/nacos/naming/consistency/EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）.java:67-78）根据 `ephemeral` 字段路由：`true` → AP（Distro 协议去中心化同步），`false` → CP（JRaft 协议 Raft 日志复制）
 
 服务发现的查询入口为 `InstanceController.list()`，返回过滤健康实例的 JSON 响应。
 
@@ -74,7 +74,7 @@ Nacos 2.5.3 本身不内置流量控制引擎，而是通过与 Sentinel 集成�
 
 **【设计模式分析】**
 
-1. **分层解耦模式**：Naming 和 Config 模块通过 `ConsistencyService` 接口与引擎层解耦。Naming 模块不关心底层一致性协议的实现细节——只需调用 `ConsistencyService.put()` 方法，`DelegateConsistencyServiceImpl` 根据 `ephemeral` 字段自动路由到 AP 或 CP 实现。这是策略模式（Strategy Pattern）的典型应用：`EphemeralConsistencyService`（Distro）和 `RaftConsistencyServiceImpl`（JRaft）是两种具体的共识策略，`DelegateConsistencyServiceImpl` 充当上下文持有一个策略引用。
+1. **分层解耦模式**：Naming 和 Config 模块通过 `ClientOperationService` 接口与引擎层解耦。Naming 模块不关心底层一致性协议的实现细节——只需调用 `ClientOperationService.registerInstance()` 方法，`EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）` 根据 `ephemeral` 字段自动路由到 AP 或 CP 实现。这是策略模式（Strategy Pattern）的典型应用：`EphemeralClientOperationServiceImpl`（Distro）和 `PersistentClientOperationServiceImpl`（JRaft）是两种具体的共识策略，`EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）` 充当上下文持有一个策略引用。
 
 2. **观察者模式（Observer Pattern）**：`NotifyCenter`（common/src/main/java/com/alibaba/nacos/common/notify/NotifyCenter.java）是 Nacos 内部事件驱动的核心。`ConfigDataChangeEvent` 发布时，所有订阅了该事件类型的 `Subscriber` 都会收到通知并执行相应的回调（如 `AsyncNotifyService` 向集群其他节点发送 HTTP 通知）。这种设计使得配置发布和通知逻辑完全解耦。
 
@@ -206,7 +206,7 @@ Nacos 2.5.3 采用严格的四层架构设计：接入层（Access Layer）、�
 │ │  InstanceController │  │  ConfigController     │        │
 │ │  ServiceManager     │  │  ConfigCacheService   │        │
 │ │  HealthCheck        │  │  LongPollingService  │        │
-│ │  ConsistencyService  │  │  AsyncNotifyService  │        │
+│ │ ClientOperationService │  │  AsyncNotifyService  │        │
 │ └──────────┬─────────┘  └───────┬────────────────┘        │
 ├────────────┼───────────────────────┼──────────────────────────┤
 │            │       引擎层 (Engine Layer)                        │
@@ -257,7 +257,7 @@ Nacos 2.5.3 的四层架构在源码层面通过模块边界和包结构严格�
 **Naming 模块**（naming/，247 个 Java 文件）提供完整的服务注册与发现能力。核心组件：
 - `InstanceController.register()`（naming/src/main/java/com/alibaba/nacos/naming/controllers/InstanceController.java:88-145）：接收客户端服务注册请求
 - `ServiceManager`（naming/src/main/java/com/alibaba/nacos/naming/core/v2/ServiceManager.java）：服务注册表核心数据结构，维护 `serviceMap`（`Map<String, Service>`），通过 `getOrCreateService()` 方法实现惰性创建
-- `ConsistencyService`（naming/src/main/java/com/alibaba/nacos/naming/consistency/ConsistencyService.java）：一致性服务接口，根据 Instance 的 `ephemeral` 字段路由到 AP（DistroConsistencyServiceImpl）或 CP（RaftConsistencyServiceImpl）
+- `ClientOperationService`（naming/src/main/java/com/alibaba/nacos/naming/core/v2/service/ClientOperationService.java）：一致性服务接口，根据 Instance 的 `ephemeral` 字段路由到 AP（EphemeralClientOperationServiceImpl）或 CP（PersistentClientOperationServiceImpl）
 
 **Config 模块**（config/，217 个 Java 文件）提供完整的配置管理能力。核心组件：
 - `ConfigController.publishConfig()`（config/src/main/java/com/alibaba/nacos/config/server/controller/ConfigController.java:156-200）：接收客户端配置发布请求
@@ -278,13 +278,13 @@ public boolean dump(String dataId, String group, String tenant, String content, 
 负责配置的本地缓存、MD5 对比和持久化触发
 - `LongPollingService`（config/src/main/java/com/alibaba/nacos/config/server/service/LongPollingService.java）：长轮询核心引擎，客户端订阅配置后，服务端持有请求 29.5 秒，有变更时立即返回
 
-业务层通过接口与引擎层解耦：Naming 模块通过 `ConsistencyService` 接口调用引擎层的一致性协议能力，Config 模块通过 `DataSourceService`（persistence/src/main/java/com/alibaba/nacos/persistence/datasource/DataSourceService.java）接口调用存储层持久化能力。
+业务层通过接口与引擎层解耦：Naming 模块通过 `ClientOperationService` 接口调用引擎层的一致性协议能力，Config 模块通过 `DataSourceService`（persistence/src/main/java/com/alibaba/nacos/persistence/datasource/DataSourceService.java）接口调用存储层持久化能力。
 
 **三、引擎层：集群、一致性、通信**
 
 引擎层（core/，230 个 Java 文件）提供底层基础能力：
 
-1. **一致性服务**：`DelegateConsistencyServiceImpl`（naming/src/main/java/com/alibaba/nacos/naming/consistency/DelegateConsistencyServiceImpl.java）根据 `ephemeral` 字段路由到 AP（Distro）或 CP（JRaft）。Distro 协议通过一致性哈希算法分发数据，JRaft 通过 Leader 选举和日志复制保证强一致性。
+1. **一致性服务**：`EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）`（naming/src/main/java/com/alibaba/nacos/naming/consistency/EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）.java）根据 `ephemeral` 字段路由到 AP（Distro）或 CP（JRaft）。Distro 协议通过一致性哈希算法分发数据，JRaft 通过 Leader 选举和日志复制保证强一致性。
 
 2. **集群管理**：`ServerMemberManager`（core/src/main/java/com/alibaba/nacos/core/cluster/ServerMemberManager.java）管理集群成员信息，`ServerListManager` 维护服务端地址列表。集群节点间通过 gRPC 集群通道（`GrpcClusterServer`，core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcClusterServer.java）进行节点间数据同步。
 
@@ -304,7 +304,7 @@ public boolean dump(String dataId, String group, String tenant, String content, 
 
 **【设计模式分析】**
 
-1. **分层架构模式（Layered Architecture）**：四层架构严格分离关注点，每层只依赖其直接下层。引擎层通过 `ConsistencyService` 和 `DataSourceService` 接口向上暴露能力，业务层仅依赖接口而非具体实现——这是依赖倒置原则（Dependency Inversion Principle）的典型应用。当存储层从 Derby 切换到 MySQL 时，业务层代码无需任何修改，这验证了分层架构的可替换性。
+1. **分层架构模式（Layered Architecture）**：四层架构严格分离关注点，每层只依赖其直接下层。引擎层通过 `ClientOperationService` 和 `DataSourceService` 接口向上暴露能力，业务层仅依赖接口而非具体实现——这是依赖倒置原则（Dependency Inversion Principle）的典型应用。当存储层从 Derby 切换到 MySQL 时，业务层代码无需任何修改，这验证了分层架构的可替换性。
 
 2. **模板方法模式（Template Method Pattern）**：`BaseGrpcServer`（core/src/main/java/com/alibaba/nacos/core/remote/grpc/BaseGrpcServer.java）定义了 gRPC 服务端的通用启动流程（端口绑定、拦截器注册、Service 注册），`GrpcSdkServer` 和 `GrpcClusterServer` 作为子类实现各自的特定逻辑（SDK 服务 vs 集群同步服务）。这种设计避免了代码重复，并为未来的新 gRPC 服务类型提供了扩展点。
 
@@ -417,7 +417,7 @@ Nacos 2.5.3 的 22 个 Maven 模块按职责可划分为四个层级：
 
 | 模块 | 文件数 | 职责 | 核心组件 |
 |------|--------|------|---------|
-| `naming` | 247 | 注册中心：服务注册/发现、健康检查、一致性协议路由 | `InstanceController`、`ServiceManager`、`DelegateConsistencyServiceImpl` |
+| `naming` | 247 | 注册中心：服务注册/发现、健康检查、一致性协议路由 | `InstanceController`、`ServiceManager`、`EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）` |
 | `config` | 217 | 配置中心：配置发布/订阅、灰度发布、长轮询 | `ConfigController`、`ConfigCacheService`、`LongPollingService` |
 
 **三、引擎与基础设施层（8 个模块）**
@@ -430,7 +430,7 @@ Nacos 2.5.3 的 22 个 Maven 模块按职责可划分为四个层级：
 | `plugin` | 7 | SPI 扩展点接口定义 | `AuthPluginService`、`DataSourcePluginService` |
 | `plugin-default-impl` | 60 | 默认插件实现 | `NacosDefaultAuthPluginServiceImpl` |
 | `address` | 8 | 节点寻址服务（Address Server） | `AddressServerGeneratorManager` |
-| `consistency` | 23 | 一致性协议 API（JRaft/Distro 抽象） | `ConsistencyService` |
+| `consistency` | 23 | 一致性协议 API（JRaft/Distro 抽象） | `ClientOperationService` |
 | `cmdb` | 9 | CMDB（配置管理数据库）集成 | `LabelEntry` |
 
 **四、辅助与部署层（9 个模块）**
@@ -684,7 +684,7 @@ Nacos 2.5.3 的启动初始化是一个严格分阶段的过程：从 Spring 容
 │ 阶段 4: 一致性协议启动 (Consistency Protocol Init)          │
 │ → RaftCore.init() — JRaft Leader 选举 + 日志回放          │
 │ → DistroProtocol.init() — 一致性哈希环构建                  │
-│ → DelegateConsistencyServiceImpl — AP/CP 路由就绪             │
+│ → EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久） — AP/CP 路由就绪             │
 ├─────────────────────────────────────────────────────────────────┤
 │ 阶段 5: 通信层启动 (Communication Layer Start)               │
 │ → GrpcSdkServer.start() — gRPC SDK 服务端口绑定            │
@@ -748,7 +748,7 @@ public void init() {
 
 - **JRaft（CP 模式）**：`RaftCore.init()` 启动 JRaft 状态机：(1) 从本地日志文件回放未提交的日志条目；(2) 发起 Leader 选举（如果当前集群无 Leader）；(3) 启动 JRaft RPC 服务绑定端口（默认 `server.port + 2000`）
 - **Distro（AP 模式）**：`DistroProtocol.init()` 构建一致性哈希环：读取集群成员列表 → 为每个成员分配虚拟节点（默认 20 个虚拟节点/物理节点）→ 构建 TreeMap 哈希环。每个节点只负责其哈希环区段内的数据同步
-- `DelegateConsistencyServiceImpl` 根据配置初始化 AP/CP 路由表
+- `EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）` 根据配置初始化 AP/CP 路由表
 
 **阶段 5：通信层启动**
 
@@ -780,7 +780,7 @@ public void init() {
 
 2. **观察者模式（Observer Pattern）**：各模块通过监听 `ApplicationReadyEvent` 事件触发初始化，而非直接调用彼此的初始化方法。这种设计使得模块间完全解耦——Config 模块不需要知道 Naming 模块的初始化时机，只需监听同一个事件即可。
 
-3. **门面模式（Facade Pattern）**：`DelegateConsistencyServiceImpl` 作为一致性协议的门面，封装了 AP（Distro）和 CP（JRaft）两种协议的选择逻辑。启动阶段只需初始化 `DelegateConsistencyServiceImpl`，其内部根据配置决定实际初始化 Distro 还是 JRaft（或两者）。
+3. **门面模式（Facade Pattern）**：`EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）` 作为一致性协议的门面，封装了 AP（Distro）和 CP（JRaft）两种协议的选择逻辑。启动阶段只需初始化 `EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）`，其内部根据配置决定实际初始化 Distro 还是 JRaft（或两者）。
 
 **【小结】**
 
@@ -1053,7 +1053,7 @@ Group 是 Namespace 下的二级分类单元。在 Naming（注册中心）中�
 
 1. **组合模式（Composite Pattern）**：五层级数据模型（Namespace→Group→Service→Cluster→Instance）本质上是组合模式的树状结构——Namespace 包含多个 Group，Group 包含多个 Service，Service 包含多个 Cluster，Cluster 包含多个 Instance。每层可以独立管理其下层元素的生命周期。
 
-2. **策略模式（Strategy Pattern）**：`ephemeral` 字段决定了 Instance 的一致性协议策略：`true` → `EphemeralConsistencyService`（Distro API），`false` → `RaftConsistencyServiceImpl`（CP JRaft）。`DelegateConsistencyServiceImpl`（naming/src/main/java/com/alibaba/nacos/naming/consistency/DelegateConsistencyServiceImpl.java:67-78）根据此字段动态选择一致性协议。
+2. **策略模式（Strategy Pattern）**：`ephemeral` 字段决定了 Instance 的一致性协议策略：`true` → `EphemeralClientOperationServiceImpl`（Distro API），`false` → `PersistentClientOperationServiceImpl`（CP JRaft）。`EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）`（naming/src/main/java/com/alibaba/nacos/naming/consistency/EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）.java:67-78）根据此字段动态选择一致性协议。
 
 3. **不可变对象模式（Immutable Object Pattern）**：`Instance` 的 `instanceId` 由不可变的 `ip#port#clusterName#serviceName` 构成，确保了 Instance 全局唯一且不可变——一旦注册，`instanceId` 不再变化（除非注销后重新注册），避免了实例标识冲突。
 
@@ -1101,11 +1101,11 @@ Nacos 2.5.3 的五层级数据模型通过 Namespace（租户隔离）→ Group�
             │               │
             ▼               ▼
    ┌────────────────────────────────────┐
-   │  DelegateConsistencyServiceImpl    │
+   │  EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）    │
    │  .put(key, instances)            │
    │  → 根据 ephemeral 路由到:         │
-   │    EphemeralConsistencyService    │
-   │    或 RaftConsistencyServiceImpl  │
+   │    EphemeralClientOperationServiceImpl    │
+   │    或 PersistentClientOperationServiceImpl  │
    └────────────────────────────────────┘
 ```
 
@@ -1119,27 +1119,27 @@ Nacos 2.5.3 的五层级数据模型通过 Namespace（租户隔离）→ Group�
 
 **二、AP/CP 路由决策**
 
-`DelegateConsistencyServiceImpl`（naming/src/main/java/com/alibaba/nacos/naming/consistency/DelegateConsistencyServiceImpl.java:67-78）的 `put(key, instances)` 方法根据 `instances[0].isEphemeral()` 路由：
+`EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）`（naming/src/main/java/com/alibaba/nacos/naming/consistency/EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）.java:67-78）的 `put(key, instances)` 方法根据 `instances[0].isEphemeral()` 路由：
 
 ```java
 if (instances[0].isEphemeral()) {
-    ephemeralConsistencyService.put(key, instances);  // AP → Distro
-// DelegateConsistencyServiceImpl.put()（naming/.../DelegateConsistencyServiceImpl.java:67-78）
+    ephemeralClientOperationService.registerInstance(service, instance, clientId);  // AP → Distro
+// EphemeralClientOperationServiceImpl.registerInstance()（naming/.../EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）.java:67-78）
 } else {
-    raftConsistencyService.put(key, instances);  // CP → JRaft
+    persistentClientOperationService.registerInstance(service, instance, clientId);  // CP → JRaft
 }
 ```
 
 **三、AP 模式（ephemeral=true）：Distro 去中心化同步**
 
-临时实例使用 Distro 协议（naming/src/main/java/com/alibaba/nacos/naming/consistency/ephemeral/EphemeralConsistencyService.java）：
+临时实例使用 Distro 协议（naming/src/main/java/com/alibaba/nacos/naming/consistency/ephemeral/EphemeralClientOperationServiceImpl.java）：
 1. 一致性哈希算法将服务数据按哈希环分发到不同节点，每个节点只负责其哈希区段内的数据权威写入
 2. 数据变更后，负责节点通过 gRPC 向哈希环上的目标节点发送增量数据同步
 3. 客户端心跳超时（默认 15 秒未刷新），`ClientBeatCheckTask`（naming/src/main/java/com/alibaba/nacos/naming/healthcheck/ClientBeatCheckTask.java）自动剔除过期临时实例
 
 **四、CP 模式（ephemeral=false）：JRaft 强一致性**
 
-持久化实例使用 JRaft 协议（naming/src/main/java/com/alibaba/nacos/naming/consistency/persistent/RaftConsistencyServiceImpl.java）：
+持久化实例使用 JRaft 协议（naming/src/main/java/com/alibaba/nacos/naming/consistency/persistent/PersistentClientOperationServiceImpl.java）：
 1. Proposal 提交到 JRaft Leader，Leader 将日志条目复制到所有 Follower
 2. Leader 在收到多数 Follower 确认后，将日志条目应用到状态机（持久化到 MySQL/Derby）
 3. 持久化实例不会自动剔除——客户端断开后，实例数据仍持久化存储，直到手动注销
@@ -1154,7 +1154,7 @@ if (instances[0].isEphemeral()) {
 
 **【设计模式分析】**
 
-1. **策略模式（Strategy Pattern）**：`DelegateConsistencyServiceImpl` 作为上下文，`EphemeralConsistencyService`（Distro 策略）和 `RaftConsistencyServiceImpl`（JRaft 策略）是两种具体的一致性协议策略。`put(key, instances)` 方法根据 `ephemeral` 字段动态选择策略——这是策略模式的典型应用。
+1. **策略模式（Strategy Pattern）**：`EphemeralClientOperationServiceImpl（临时）/ PersistentClientOperationServiceImpl（持久）` 作为上下文，`EphemeralClientOperationServiceImpl`（Distro 策略）和 `PersistentClientOperationServiceImpl`（JRaft 策略）是两种具体的一致性协议策略。`put(key, instances)` 方法根据 `ephemeral` 字段动态选择策略——这是策略模式的典型应用。
 
 2. **状态模式（State Pattern）**：`ephemeral` 字段本质上是 Instance 的状态标识——`true`（临时状态）触发自动心跳检测和超时剔除行为；`false`（持久化状态）触发持久化存储和手动注销行为。同一个 Instance 在生命周期中可能切换状态（如从临时实例转持久化实例）。
 
@@ -1326,7 +1326,7 @@ Nacos 2.5.3 中的核心 Event 类型：
 | `ServiceChangeEvent` | `ServiceManager` | `PushService` | 服务实例注册/注销/健康状态变更 |
 | `ConnectionRegisteredEvent` | `ConnectionManager` | `PushService` | 客户端建立 gRPC 连接 |
 | `ConnectionDisconnectEvent` | `ConnectionManager` | `PushService` | 客户端断开 gRPC 连接 |
-| `LocalDataChangeEvent` | `DistroProtocol` | `EphemeralConsistencyService` | Distro 数据同步完成 |
+| `LocalDataChangeEvent` | `DistroProtocol` | `EphemeralClientOperationServiceImpl` | Distro 数据同步完成 |
 
 **三、同步 vs 异步发布**
 
