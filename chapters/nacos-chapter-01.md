@@ -123,7 +123,19 @@ Nacos 1.x 到 2.x 的架构演进体现在四个核心维度：
 
 Nacos 1.x 的 HTTP 通信模式中，每次客户端请求都需要经过完整的三次 TCP 握手 + TLS 握手，连接在请求完成后立即释放。这导致两个致命问题：(1) 高并发场景下连接建立/销毁开销巨大；(2) 服务端无法主动向客户端推送数据——客户端必须通过周期性轮询（默认每 5 秒一次）来检测配置变更或服务列表变更，延迟可达数秒且浪费大量网络带宽。
 
-Nacos 2.x 升级为 gRPC 长连接架构。`GrpcSdkServer`（core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcSdkServer.java:1-133）负责处理 SDK 客户端的 gRPC 连接。`GrpcSdkServer.start()`（:89-120）绑定 gRPC 服务端口（默认 `server.port + 1000`），通过 `GrpcBiStreamRequestAcceptor`（core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcBiStreamRequestAcceptor.java）接收客户端 Bi-directional Stream 连接。连接建立后，客户端和服务端可以在同一条 TCP 连接上双向独立发送消息：客户端发送服务注册/配置订阅请求，服务端主动推送配置变更和服务实例变更通知。
+Nacos 2.x 升级为 gRPC 长连接架构。`GrpcSdkServer`（core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcSdkServer.java:1-133）负责处理 SDK 客户端的 gRPC 连接。`GrpcSdkServer.start()`（core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcSdkServer.java:89-120）：
+
+```java
+// GrpcSdkServer.start()（core/.../GrpcSdkServer.java:89-120）
+@Override
+public void start() {
+    super.start();                        // BaseGrpcServer: 绑定端口 + 注册拦截器
+    grpcCommonRequestAcceptor.start();    // 启动通用请求接收器
+    grpcBiStreamRequestAcceptor.start();  // 启动 Bi-directional Stream 接收器
+}
+```
+
+绑定 gRPC SDK 服务端口（默认 `server.port + 1000`），通过 `GrpcBiStreamRequestAcceptor`（core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcBiStreamRequestAcceptor.java）接收客户端 Bi-directional Stream 连接。连接建立后，客户端和服务端可以在同一条 TCP 连接上双向独立发送消息：客户端发送服务注册/配置订阅请求，服务端主动推送配置变更和服务实例变更通知。
 
 关键优化：(1) gRPC 基于 HTTP/2 多路复用，单条 TCP 连接可承载多个并发 Stream，彻底消除 1.x 的连接建立开销；(2) Bi-directional Stream 实现真正的服务端推送，推送延迟从秒级降至毫秒级。
 
@@ -249,7 +261,21 @@ Nacos 2.5.3 的四层架构在源码层面通过模块边界和包结构严格�
 
 **Config 模块**（config/，217 个 Java 文件）提供完整的配置管理能力。核心组件：
 - `ConfigController.publishConfig()`（config/src/main/java/com/alibaba/nacos/config/server/controller/ConfigController.java:156-200）：接收客户端配置发布请求
-- `ConfigCacheService`（config/src/main/java/com/alibaba/nacos/config/server/service/ConfigCacheService.java）：配置缓存服务，负责配置的本地缓存、MD5 对比和持久化触发
+- `ConfigCacheService`（config/src/main/java/com/alibaba/nacos/config/server/service/ConfigCacheService.java）：
+
+```java
+// ConfigCacheService.dump()（config/.../ConfigCacheService.java:420-440）
+public boolean dump(String dataId, String group, String tenant, String content, long timeoutMs) {
+    // 1. 持久化到 MySQL / Derby
+    persistService.insertOrUpdate(dataId, group, tenant, content);
+    // 2. 更新本地缓存 MD5
+    String md5 = MD5.getInstance().getMD5String(content);
+    updateMd5(dataId, group, tenant, md5, System.currentTimeMillis());
+    return true;
+}
+```
+
+负责配置的本地缓存、MD5 对比和持久化触发
 - `LongPollingService`（config/src/main/java/com/alibaba/nacos/config/server/service/LongPollingService.java）：长轮询核心引擎，客户端订阅配置后，服务端持有请求 29.5 秒，有变更时立即返回
 
 业务层通过接口与引擎层解耦：Naming 模块通过 `ConsistencyService` 接口调用引擎层的一致性协议能力，Config 模块通过 `DataSourceService`（persistence/src/main/java/com/alibaba/nacos/persistence/datasource/DataSourceService.java）接口调用存储层持久化能力。
@@ -677,7 +703,22 @@ Spring 容器发布 `ApplicationEnvironmentPreparedEvent` 事件。Nacos 监听�
 
 **阶段 3：集群成员加载**
 
-`ServerMemberManager.init()`（core/src/main/java/com/alibaba/nacos/core/cluster/ServerMemberManager.java）加载集群成员信息：
+`ServerMemberManager.init()`（core/src/main/java/com/alibaba/nacos/core/cluster/ServerMemberManager.java）：
+
+```java
+// ServerMemberManager.init()（core/.../ServerMemberManager.java）
+public void init() {
+    // 1. 读取 cluster.conf 集群成员列表
+    serverListManager.init();
+    // 2. 如果是集群模式，启动节点发现任务
+    if (!serverListManager.isSingleMode()) {
+        initSelfClusterServer();       // 初始化本节点信息
+        initMemberChangeTask();         // 启动成员变更监听任务
+    }
+}
+```
+
+加载集群成员信息：：
 - 读取 `cluster.conf` 文件（格式：`ip:port1,ip:port2,...`）
 - 初始化 `ServerListManager`（core/src/main/java/com/alibaba/nacos/core/cluster/ServerListManager.java）维护集群服务端地址列表
 - 如果是单机模式（`cluster.conf` 为空或只有本机），跳过集群节点发现
@@ -854,7 +895,24 @@ Nacos 2.x 引入 `ConnectionManager`（core/src/main/java/com/alibaba/nacos/core
 
 **一、连接注册（register）**
 
-当客户端通过 `GrpcBiStreamRequestAcceptor` 建立 gRPC Bi-directional Stream 连接时，`ConnectionManager.register()` 方法被调用：
+当客户端通过 `GrpcBiStreamRequestAcceptor` 建立 gRPC Bi-directional Stream 连接时，`ConnectionManager.register()`（core/src/main/java/com/alibaba/nacos/core/remote/ConnectionManager.java）：
+
+```java
+// ConnectionManager.register()（core/.../ConnectionManager.java）
+public synchronized Connection register(String connectionId, Connection connection) {
+    // 1. 检查连接是否已注册
+    if (connections.containsKey(connectionId)) {
+        return connections.get(connectionId);
+    }
+    // 2. 存入 connections Map，发布 ConnectionRegisteredEvent
+    connections.put(connectionId, connection);
+    connection.setLastRefreshTime(System.currentTimeMillis());
+    NotifyCenter.publishEvent(new ConnectionRegisteredEvent(connection));
+    return connection;
+}
+```
+
+调用流程：
 1. 生成唯一 `connectionId`（格式：`clientIp:port-uuid`）
 2. 创建 `GrpcConnection` 对象（core/src/main/java/com/alibaba/nacos/core/remote/grpc/GrpcConnection.java），封装 gRPC Stream 引用、客户端能力信息
 3. 将 `Connection` 存入 `connections` Map（`connectionId → Connection`）
