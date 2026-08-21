@@ -57,15 +57,30 @@
 - **扩展点**：SPI 插件体系、事件总线、过滤器链
 - **安全机制**：JWT、AK-SK、RBAC、Tantor
 
-## 📂 文件说明
+## 📂 目录结构
 
 ```
 .
-├── README.md                   # 本文件
-├── outline.md                  # 简要大纲（已更新为 2.5.3）
-├── nacos-doc-outline.md      # 详细大纲（含各章小节规划，已更新）
-├── writing-spec.md            # 写作规范
-├── nacos-writing-guide.md    # 写作指南
+├── README.md                     # 项目说明
+├── PROGRESS.md                  # 任务进度跟踪
+├── meta/                         # 规范与配套文档
+│   ├── glossary.md               # 术语表（91 个术语 / 16 分类）
+│   ├── nacos-writing-guide.md    # 写作工程指南
+│   ├── writing-spec.md           # 写作规范
+│   ├── source-reference-spec.md  # 源码引用规范（待产出）
+│   ├── quality-checklist.md      # 质检清单（待产出）
+│   ├── nacos-doc-outline.md     # 详细大纲（15 章 / 163 小节）
+│   └── outline.md                # 旧版大纲（归档）
+├── chapters/                     # 各章正文
+│   ├── nacos-chapter-01.md
+│   ├── ...
+│   └── nacos-chapter-15.md
+├── analysis/                     # 分析报告
+│   └── nacos-2.2.3-to-2.5.3-diff.md
+├── src/                         # 自定义代码 / 脚本
+├── assets/                      # 图片 / 图表 / 截图
+├── refs/                        # 外部参考资料 / 论文
+└── build/                       # 构建 / 导出 / 合并脚本
 ```
 
 ## 📝 文档特点

@@ -1,6 +1,6 @@
 # Nacos 2.5.3 深度研究 — 任务进度跟踪
 
-> 最后更新：2026-08-21 10:41 GMT+8
+> 最后更新：2026-08-21 11:01 GMT+8
 
 ---
 
@@ -39,6 +39,8 @@
 
 ### 🟡 中优先级
 - [ ] 旧版本引用清理（各章版本对比表格中的 "2.2.3" 处理）
+- [ ] P0 配套文档：`source-reference-spec.md`（源码引用规范）
+- [ ] P0 配套文档：`quality-checklist.md`（质检清单）
 
 ### 🟢 低优先级
 - [ ] `kafka3-nacos-hotreload` 项目分析（samples/kafka3-nacos-hotreload/，仅有骨架代码）
@@ -47,37 +49,42 @@
 
 ## 文件清单
 
+### chapters/
+
 | 文件 | 行数 | 状态 |
 |------|------|------|
-| `nacos-2.2.3-to-2.5.3-diff.md` | 322 | ✅ |
-| `nacos-doc-outline.md` | — | ✅ |
-| `nacos-chapter-01.md` | 351 | ✅ |
-| `nacos-chapter-02.md` | 410 | ✅ |
-| `nacos-chapter-03.md` | 434 | ✅ |
-| `nacos-chapter-04.md` | 365 | ✅ |
-| `nacos-chapter-05.md` | 471 | ✅ |
-| `nacos-chapter-06.md` | 379 | ✅ |
-| `nacos-chapter-07.md` | 306 | ✅ |
-| `nacos-chapter-08.md` | 195 | ✅ |
-| `nacos-chapter-09.md` | 423 | ✅ |
-| `nacos-chapter-10.md` | 220 | ✅ |
-| `nacos-chapter-11.md` | 223 | ✅ |
-| `nacos-chapter-12.md` | 294 | ✅ |
-| `nacos-chapter-13.md` | — | ⬜ |
-| `nacos-chapter-14.md` | — | ⬜ |
-| `nacos-chapter-15.md` | — | ⬜ |
+| `chapters/nacos-chapter-01.md` | 351 | ✅ |
+| `chapters/nacos-chapter-02.md` | 410 | ✅ |
+| `chapters/nacos-chapter-03.md` | 434 | ✅ |
+| `chapters/nacos-chapter-04.md` | 365 | ✅ |
+| `chapters/nacos-chapter-05.md` | 471 | ✅ |
+| `chapters/nacos-chapter-06.md` | 379 | ✅ |
+| `chapters/nacos-chapter-07.md` | 306 | ✅ |
+| `chapters/nacos-chapter-08.md` | 195 | ✅ |
+| `chapters/nacos-chapter-09.md` | 423 | ✅ |
+| `chapters/nacos-chapter-10.md` | 220 | ✅ |
+| `chapters/nacos-chapter-11.md` | 223 | ✅ |
+| `chapters/nacos-chapter-12.md` | 294 | ✅ |
+| `chapters/nacos-chapter-13.md` | — | ⬜ |
+| `chapters/nacos-chapter-14.md` | — | ⬜ |
+| `chapters/nacos-chapter-15.md` | — | ⬜ |
 
 **已完成总行数**：4,071 行
 
----
+### analysis/
 
-## 辅助文件
+| 文件 | 行数 | 状态 |
+|------|------|------|
+| `analysis/nacos-2.2.3-to-2.5.3-diff.md` | 322 | ✅ |
+
+### meta/
 
 | 文件 | 说明 |
 |------|------|
-| `README.md` | 项目说明文档 |
-| `outline.md` | 旧版大纲（12章，已废弃） |
-| `nacos-doc-outline.md` | 新版详细大纲（15章 / 163小节） |
-| `writing-spec.md` | 写作规范 |
-| `nacos-writing-guide.md` | 写作指南 |
-| `PROGRESS.md` | 本文件 |
+| `meta/nacos-doc-outline.md` | 新版详细大纲（15章 / 163小节） |
+| `meta/nacos-writing-guide.md` | 写作工程指南 |
+| `meta/writing-spec.md` | 写作规范 |
+| `meta/glossary.md` | 术语表（91 个术语 / 16 分类） |
+| `meta/outline.md` | 旧版大纲（归档） |
+| `meta/source-reference-spec.md` | 源码引用规范（待产出） |
+| `meta/quality-checklist.md` | 质检清单（待产出） |
