@@ -77,6 +77,8 @@
 │   └── nacos-chapter-15.md
 ├── analysis/                     # 分析报告
 │   └── nacos-2.2.3-to-2.5.3-diff.md
+├── upstream/                    # 上游源码
+│   └── nacos-2.5.3/             # Nacos 2.5.3 源码（2,460 Java 文件）
 ├── src/                         # 自定义代码 / 脚本
 ├── assets/                      # 图片 / 图表 / 截图
 ├── refs/                        # 外部参考资料 / 论文
