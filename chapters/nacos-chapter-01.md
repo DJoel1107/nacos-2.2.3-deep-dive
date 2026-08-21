@@ -318,7 +318,26 @@ Nacos 2.5.3 的四层架构通过严格的模块边界和接口契约实现了�
 
 **【设计背景】**
 
-Nacos 2.5.3 采用 Maven 多模块工程结构，共 22 个 Maven 模块（相比 2.2.3 的 20 个模块新增 2 个：`persistence/` 独立持久化模块和 `logger-adapter-impl/` 日志适配器模块）。每个模块有明确的职责边界和依赖关系，通过 Maven `<dependency>` 管理模块间依赖。根 POM（`pom.xml`）通过 `<modules>` 声明所有子模块，统一管理版本号（`<revision>` 属性控制整体版本）。
+Nacos 2.5.3 采用 Maven 多模块工程结构，共 22 个 Maven 模块（相比 2.2.3 的 20 个模块新增 2 个：`persistence/` 独立持久化模块和 `logger-adapter-impl/` 日志适配器模块）。每个模块有明确的职责边界和依赖关系，通过 Maven `<dependency>` 管理模块间依赖。根 POM（`pom.xml`）：
+
+```xml
+<!-- nacos-2.5.3/pom.xml（项目根 POM，modules 声明） -->
+<groupId>com.alibaba.nacos</groupId>
+<artifactId>nacos-all</artifactId>
+<version>${revision}</version>
+<modules>
+    <module>config</module>         <!-- 配置管理模块 -->
+    <module>naming</module>         <!-- 服务发现模块 -->
+    <module>core</module>           <!-- 核心模块 -->
+    <module>console</module>        <!-- 控制台模块 -->
+    <module>client</module>         <!-- 客户端 SDK -->
+    <module>persistence</module>    <!-- 独立持久化模块（新增于 2.5.3） -->
+    <module>plugin</module>         <!-- 插件模块 -->
+    <!-- ...其他 15 个子模块 -->
+</modules>
+```
+
+通过 `<modules>` 声明所有子模块：，统一管理版本号（`<revision>` 属性控制整体版本）。
 
 **【核心类关系图】**
 
