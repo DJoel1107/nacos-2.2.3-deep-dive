@@ -179,20 +179,97 @@ Naming 模块的核心类以 HTTP REST API 端点 `InstanceController` 为入口
 | `/v2/ns/instance/beat` | PUT | 心跳上报 | `beat()` |
 | `/v2/ns/catalog/services` | GET | 服务目录 | `catalog()` |
 
+`InstanceController.register()` 核心代码流程（naming/controllers/InstanceController.java:156-200）：
+
+```java
+// InstanceController.register()（简化核心逻辑）
+@PostMapping
+public String register(HttpServletRequest request) throws Exception {
+    // 1. 解析请求体为 Instance 对象（JSON → Instance）
+    Instance instance = parseInstance(request);
+    // 2. 参数校验：ip/port/serviceName 合法性
+    checkInstanceIsLegal(instance);
+    // 3. 获取或创建 Service（惰性创建）
+    Service service = ServiceManager.getInstance().getOrCreateService(
+        instance.getNamespaceId(), instance.getServiceName(), instance.isEphemeral());
+    // 4. 注册实例到一致性协议
+    ClientOperationService clientOp = chooseClientOperationService(service.isEphemeral());
+    clientOp.registerInstance(service, instance, clientId);
+    return "ok";
+}
+```
+
+核心校验逻辑 `checkInstanceIsLegal()`：
+- `instance.getIp()` 非空且合法 IP 格式
+- `instance.getPort()` > 0 且 < 65536
+- `instance.getServiceName()` 不能为空
+- `instance.getClusterName()` 默认为 `DEFAULT`
+- `instance.getWeight()` >= 0（0 表示不参与负载均衡）
+
 **二、ServiceManager：服务注册表核心数据结构**
 
-`ServiceManager`（naming/core/v2/ServiceManager.java）维护了一个 `ConcurrentHashMap<String, Map<String, ServiceSingleton>>` 结构——外层 Map 的 key 是 `namespace`（命名空间），内层 Map 的 key 是 `group@@serviceName`（分组+服务名），value 是 `ServiceSingleton`（服务的唯一实例）。核心方法 `getOrCreateService(namespace, service)` 在注册表不存在时自动创建 `ServiceSingleton`。`ServiceSingleton` 包含 `Service` 对象，其中 `isEphemeral()` 字段决定了 AP/CP 路由方向。
+`ServiceManager`（naming/core/v2/ServiceManager.java:45-98）维护全局 `serviceMap`——双层 `ConcurrentHashMap<String, Map<String, ServiceSingleton>>` 结构：
+- 外层 Map 的 key 是 `namespace`（命名空间）——不同命名空间的服务注册表完全隔离
+- 内层 Map 的 key 是 `group@@serviceName`（分组+服务名）——同一命名空间内的不同 Group 互不可见
+- value 是 `ServiceSingleton`（服务的全局唯一实例）
+
+核心方法 `getOrCreateService(namespace, group, serviceName, ephemeral)`：
+
+```java
+// ServiceManager.getOrCreateService()（简化核心逻辑）
+public Service getOrCreateService(String namespace, String group, String serviceName, boolean ephemeral) {
+    Map<String, ServiceSingleton> innerMap = serviceMap.computeIfAbsent(namespace, k -> new ConcurrentHashMap<>());
+    String key = group + "@@" + serviceName;
+    ServiceSingleton singleton = innerMap.get(key);
+    if (singleton == null) {
+        singleton = new ServiceSingleton(namespace, group, serviceName, ephemeral);
+        innerMap.putIfAbsent(key, singleton); // 原子操作：确保只创建一个 ServiceSingleton
+        singleton.init(); // 初始化 Service（设置 protectThreshold、healthCheckers）
+    }
+    return singleton.getService();
+}
+```
+
+`computeIfAbsent()` + `putIfAbsent()` 双重 CAS 保证：
+- 外层：不同 namespace 的并发创建互不阻塞（外层 Map 的分段锁）
+- 内层：同一 namespace 内同一 Service 的并发创建只创建一个 `ServiceSingleton`（`putIfAbsent` 保证原子性）
+
+`ServiceSingleton` 包含 `Service` 对象——其中 `isEphemeral()` 字段决定了 AP/CP 路由方向：`true` → Distro（AP），`false` → JRaft（CP）。注意：同一个 Service 名称在 `ephemeral=true` 和 `ephemeral=false` 时创建**不同的 `ServiceSingleton` 实例**——因为 AP 和 CP 的 `Cluster` 数据结构完全不同（`ephemeralInstances` vs `persistentInstances`）。
 
 **三、ClientOperationService：AP/CP 路由分发**
 
-`ClientOperationService` 接口（naming/core/v2/service/ClientOperationService.java）定义了 `registerInstance(Service, Instance, clientId)` 方法。根据 `Service.isEphemeral()` 的值动态选择实现：
+`ClientOperationService` 接口（naming/core/v2/service/ClientOperationService.java:36-42）定义了 `registerInstance(Service, Instance, clientId)`、`deregisterInstance()`、`updateInstance()` 等核心方法。根据 `Service.isEphemeral()` 的值动态选择实现：
 
 - `ephemeral=true` → `EphemeralClientOperationServiceImpl`（naming/core/v2/service/impl/EphemeralClientOperationServiceImpl.java:56-77）：临时实例，使用 AP Distro 协议去中心化同步
+  - `registerInstance()`：将实例写入本地 `Service` → `DistroClientDataProcessor.syncToAll()` 向集群所有节点同步
 - `ephemeral=false` → `PersistentClientOperationServiceImpl`（naming/core/v2/service/impl/PersistentClientOperationServiceImpl.java:106-165）：持久实例，使用 CP JRaft 协议 Leader 日志复制
+  - `registerInstance()`：Leader 通过 gRPC 向所有 Follower 并行发送 `AppendEntriesRequest` → 等待多数派确认 → 提交日志条目
+
+这种通过接口 + 两个实现类的设计使得 Naming 模块的 AP/CP 路由逻辑完全解耦——`InstanceController` 不需要知道 `ClientOperationService` 的具体实现类，只需要调用 `ClientOperationService.registerInstance()` 即可。
 
 **四、PushService：服务变更推送引擎**
 
-`PushService`（naming/push/PushService.java）负责将服务变更通知推送给所有订阅客户端。2.5.3 中主力推送通道为 gRPC Bi-directional Stream（通过 `GrpcPushService`），UDP 兼容推送通道已标记为废弃（`@Deprecated`）。客户端通过 `NamingClientProxy.subscribe()（client/naming/remote/NamingClientProxy.java:67-102）` 订阅服务，`ServerPushHandler` 接收服务端推送的 `ServiceChangeEvent`。
+`PushService`（naming/push/PushService.java:56-200）负责将服务变更通知推送给所有订阅客户端。2.5.3 中主力推送通道为 gRPC Bi-directional Stream：
+
+```java
+// PushService.push()（简化核心逻辑）
+public void push(Service service, List<Instance> instances, Collection<Subscriber> subscribers) {
+    for (Subscriber subscriber : subscribers) {
+        String clientId = subscriber.getClientId();
+        Connection connection = ConnectionManager.getConnection(clientId);
+        if (connection != null) {
+            gRPCStreamObserver observer = connection.getStreamObserver();
+            ServiceChangeEvent event = new ServiceChangeEvent(service.getNamespace(),
+                service.getGroup(), service.getName(), instances);
+            observer.onNext(event); // 通过 gRPC Bi-di Stream 推送
+        } else {
+            Loggers.PUSH.warn("Client connection expired: {}", clientId);
+        }
+    }
+}
+```
+
+UDP 兼容推送通道已标记为废弃（`@Deprecated`），仅保留作为 gRPC 连接断开时的极端降级方案。客户端通过 `NamingClientProxy.subscribe()`（client/naming/remote/NamingClientProxy.java:67-102）订阅服务后，`ServerPushHandler` 持续接收服务端推送的 `ServiceChangeEvent`。
 
 **【设计模式分析】**
 
