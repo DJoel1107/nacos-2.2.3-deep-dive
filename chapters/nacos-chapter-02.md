@@ -339,23 +339,31 @@ Naming 模块的核心类以 `InstanceController` → `ServiceManager` → `Clie
 
 **一、parseInstance()：请求参数解析**
 
-`InstanceController.register()`（naming/controllers/InstanceController.java:87）接收 HTTP POST 请求体，`parseInstance()` 方法将 JSON 请求体解析为 `Instance` 对象（naming/src/main/java/com/alibaba/nacos/naming/core/Instance.java）。`Instance` 核心字段：
-- `ip`（String）：实例 IP 地址（IPv4/IPv6）
-- `port`（int）：实例端口（0-65535）
-- `serviceName`（String）：服务名（格式：`group@@serviceName`）
-- `ephemeral`（boolean）：临时实例标志——决定 AP/CP 路由
-- `weight`（double）：权重（0-10000，默认 1.0）
-- `healthy`（boolean）：健康状态（默认 true）
-- `clusterName`（String）：集群名称（同 Service 内分组）
-- `metadata`（`Map<String, String>`）：扩展元数据（版本/地域等）
+`InstanceController.register()`（naming/controllers/InstanceController.java:87）接收 HTTP POST 请求体，`parseInstance()` 方法将 JSON 请求体解析为 `Instance` 对象。核心字段及默认值：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `ip` | String | ✅ | - | 实例 IP 地址（支持 IPv4/IPv6）|
+| `port` | int | ✅ | - | 实例端口（0-65535）|
+| `serviceName` | String | ✅ | - | 服务名（格式：`group@@serviceName`）|
+| `ephemeral` | boolean | ✅ | - | 临时实例标志→AP/CP路由 |
+| `weight` | double | ❌ | 1.0 | 权重（0-10000）|
+| `healthy` | boolean | ❌ | true | 健康状态 |
+| `clusterName` | String | ❌ | `DEFAULT` | 集群名称 |
+| `metadata` | Map | ❌ | `{}` | 扩展元数据（版本/地域等）|
+
+`parseInstance()` 内部使用 Jackson `ObjectMapper.readValue()` 反序列化 JSON 请求体——通过 `@JsonProperty` 注解自动映射字段名（如 JSON 中的 `serviceName` → Java 字段 `serviceName`）。如果请求体 JSON 格式错误（如 `port` 传入字符串而非数字），Jackson 抛出 `JsonParseException` → `InstanceController` 捕获后返回 HTTP 400 Bad Request。
 
 **二、checkInstanceIsLegal()：实例合法性校验**
 
-`NamingUtils.checkInstanceIsLegal()`（naming/src/main/java/com/alibaba/nacos/api/naming/utils/NamingUtils.java）执行以下校验：
-- `ip` 格式校验（正则 `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}` 或 IPv6）
-- `port` 范围校验（0 ≤ port ≤ 65535）
-- `weight` 范围校验（0 ≤ weight ≤ 10000）
-- `metadata` 大小校验（总字节数 ≤ 32768）
+`NamingUtils.checkInstanceIsLegal()`（naming/src/main/java/com/alibaba/nacos/api/naming/utils/NamingUtils.java:85-130）执行以下校验：
+- `ip` 格式校验：正则 `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`（IPv4）或 `[a-fA-F0-9:]+`（IPv6）——不支持 IPv4-mapped IPv6（如 `::ffff:192.168.1.100`）
+- `port` 范围校验：`1 ≤ port ≤ 65535`（不允许 port=0，因为 0 表示随机端口不适合固定服务注册）
+- `serviceName` 非空校验：不能为空字符串或纯空白字符
+- `weight` 范围校验：`0.0 ≤ weight ≤ 10000.0`——weight=0 表示该实例不参与负载均衡（用于灰度发布场景：先将 weight 设为 0 摘除流量，观察无异常后再注销）
+- `metadata` 大小校验：序列化为 JSON 后的总字节数 ≤ 32768（32KB）——防止超大 metadata 导致内存浪费
+
+校验失败时抛出 `IllegalArgumentException` → `InstanceController` 捕获后返回 HTTP 400 + 错误消息（而非 HTTP 200 + 错误消息体）——严格遵循 RESTful API 最佳实践（用 HTTP 状态码表达错误类型）。
 
 **三、AP/CP 路由决策**
 
@@ -499,11 +507,46 @@ public ServiceSingleton getOrCreateService(String namespace, String groupName, S
 }
 ```
 
-**三、ConcurrentHashMap 并发安全保障**
+**三、ServiceSingleton 内部读写锁机制**
 
-- `namespaceMap` 使用 `ConcurrentHashMap`——分段锁机制保证多线程并发安全
-- `putIfAbsent()` 保证原子性——避免了多个线程同时创建重复的 `ServiceSingleton`
-- `ServiceSingleton` 对象内部使用 `ReentrantReadWriteLock` 保护实例列表的并发读写
+`ServiceSingleton` 内部维护两个列表——`ephemeralInstances`（临时实例）和 `persistentInstances`（持久实例），使用 `ReentrantReadWriteLock` 保护并发读写：
+
+```java
+// ServiceSingleton 内部结构（简化）
+public class ServiceSingleton {
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+    private volatile Map<String, Instance> ephemeralInstances = new ConcurrentHashMap<>();
+    private volatile Map<String, Instance> persistentInstances = new ConcurrentHashMap<>();
+    
+    public List<Instance> getAllIPs() {
+        lock.readLock().lock(); // 读锁——允许多线程并发读
+        try {
+            List<Instance> result = new ArrayList<>(ephemeralInstances.values());
+            result.addAll(persistentInstances.values());
+            return result;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+    
+    public void updateInstance(Instance instance) {
+        lock.writeLock().lock(); // 写锁——独占修改
+        try {
+            if (instance.isEphemeral()) {
+                ephemeralInstances.put(instance.getInstanceId(), instance);
+            } else {
+                persistentInstances.put(instance.getInstanceId(), instance);
+            }
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+}
+```
+
+`ReentrantReadWriteLock` 的核心优势：
+- **读操作（`getAllIPs()`）**：多线程并发读不加锁（允许多个读者同时访问）——适合"读多写少"场景（服务发现查询频繁但实例变更相对少）
+- **写操作（`updateInstance()`）**：独占写锁——修改实例列表时阻塞所有读操作——保证数据一致性
 
 **四、removeSingleton() 服务注销**
 
@@ -526,6 +569,8 @@ public void removeSingleton(String namespace, String groupName, String serviceNa
 1. **双层 ConcurrentHashMap vs 单一 HashMap + Lock**：`ServiceManager` 使用 `ConcurrentHashMap<String, Map<String, Service>>` 双层 Map 结构——外层按 namespace 分段锁，不同 namespace 的服务注册查询互不阻塞。代价是增加了内存开销（双层 Map 的冗余元数据），但在成千上万个服务时，并发度从全局锁的串行变为按 namespace 分组的并行——写入密集型场景下 TPS 提升约 3x。
 
 2. **ServiceSingleton 单例 vs 多实例共享**：多个 `Instance` 共享同一个 `ServiceSingleton` 享元对象，避免了 `ephemeral` 字段的冗余存储——100 万个临时实例只需存储一次 `ephemeral=true`，而非 100 万次。但代价是所有 Instance 必须共享同一 `ephemeral` 值——同一 Service 下不能混合临时和永久实例，灵活性受限。
+
+3. **命名空间懒加载 vs 预初始化**：`namespaceMap` 采用懒加载策略——只有首次访问某个 namespace 时才创建对应的内层 Map。优势是节省内存——如果集群配置了 100 个 namespace 但实际只有 5 个被使用，只创建 5 个内层 Map。代价是首次访问新 namespace 时需要 `putIfAbsent()` 的 CAS 操作——在高并发下可能多个线程同时尝试创建同一个 namespace 的内层 Map——`putIfAbsent()` 保证只有一个线程成功创建，其他线程复用已创建的 Map——这是一种"乐观创建"策略。
 
 **【设计模式分析】**
 
@@ -669,7 +714,9 @@ public List<Instance> allIPs() {
 3. **细粒度锁模式（Fine-Grained Lock Pattern）**：两个 `ConcurrentHashMap` 分别独立加锁——对 `ephemeralInstances` 的操作不阻塞 `persistentInstances`，反之亦然。这比单一 Map 加全局锁的并发性能提升了约 2 倍（在写入密集型场景下）。
 
 
-**四、实例清理与内存优化**
+3. **实例过期清理的主动推送 vs 被动扫描**：对于 `persistentInstances`（ephemeral=false），Nacos 不自动清理过期实例——需要运维人员手动调用 `InstanceController.deregister()` 注销。这种设计避免了误判风险（JRaft 节点因网络分区被错误剔除后需要重新全量同步），但代价是如果运维人员忘记手动清理僵尸实例，`persistentInstances` 中残留过期实例——导致服务发现返回已不存在的实例。对于 `ephemeralInstances`（ephemeral=true），`ClientBeatCheckTaskV2` 自动清理超时实例（默认 30 秒未心跳）——适合临时实例的自动生命周期管理。
+
+**五、实例清理与内存优化**
 
 `Cluster` 的实例清理策略：
 
