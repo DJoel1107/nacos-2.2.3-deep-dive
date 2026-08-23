@@ -225,7 +225,7 @@ if (isHealthServer) {
 1. `InstanceController.register()（:88-95）` 参数校验：解析 namespaceId、groupName、serviceName
 2. `ServiceManager.getInstance().getOrCreateService(namespaceId, groupName, serviceName)（naming/src/main/java/.../ServiceManager.java:45-52）` 获取或创建服务
 3. `Service.addInstance(clusterName, instance)（:102）` 向 Cluster 添加 Instance
-4. `DelegateConsistencyServiceImpl.put(key, instances)（consistency/src/main/java/.../DelegateConsistencyServiceImpl.java:67-78）` 根据 ephemeral 字段路由到 AP 或 CP 一致性协议
+4. `EphemeralClientOperationServiceImpl.registerInstance(service, instance, clientId)（naming/core/v2/service/impl/EphemeralClientOperationServiceImpl.java:47-71）` 临时实例注册——通过 Distro v2 协议同步到集群全部节点
 ```
 
 ### 5.2 配置中心源码引用示例

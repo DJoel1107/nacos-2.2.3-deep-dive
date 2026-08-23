@@ -1,4 +1,4 @@
-# Nacos 2.2.3 深度研究文档——写作规范
+# Nacos 2.5.3 深度研究文档——写作规范
 
 > 适用对象：技术分析类书籍/深度技术文档
 > 参考标准：专业技术编辑规范
@@ -135,8 +135,8 @@ public void checkServerConfig() {
 | 大纲 | `nacos-doc-outline.md` | 已完成 |
 | 写作规范 | `writing-spec.md` | 本文档 |
 | 各章节 | `nacos-chapter-NN.md` | `nacos-chapter-01.md` |
-| 汇总文档 | `nacos-2.2.3-deep-research.md` | 最终合并文件 |
+| 汇总文档 | `nacos-2.5.3-deep-research.md` | 最终合并文件 |
 
 ---
 
-> 本规范基于专业技术编辑标准制定，适用于 Nacos 2.2.3 深度研究文档的全部 15 章编写。
+> 本规范基于专业技术编辑标准制定，适用于 Nacos 2.5.3 深度研究文档的全部 15 章编写。
