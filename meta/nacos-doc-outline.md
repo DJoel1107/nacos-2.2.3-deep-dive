@@ -37,60 +37,61 @@
 | 小节 | 内容 | 字数 |
 |------|------|------|
 | 2.1 | Naming 模块 10 个子包全景 | 5,000 |
-| 2.2 | 核心类关系图（InstanceController→ServiceManager→Cluster→ConsistencyService→PushService） | 6,000 |
+| 2.2 | 核心类关系图（InstanceController→ServiceStorage→ClientOperationService→DistroProtocol→PushExecutorDelegate） | 6,000 |
 | 2.3 | InstanceController REST API 入口：register() + parseInstance() 源码走读 | 8,000 |
 | 2.4 | ServiceManager：服务注册表核心数据结构（serviceMap + getOrCreateService） | 8,000 |
 | 2.5 | Cluster 数据结构：ephemeralInstances vs persistentInstances 双 Map 设计 | 6,000 |
-| 2.6 | DelegateConsistencyServiceImpl：AP/CP 路由分发机制 | 6,000 |
-| 2.7 | AP 模式：EphemeralConsistencyService + Distro 协议去中心化同步 | 10,000 |
-| 2.8 | Distro 一致性哈希算法：虚拟节点 + TreeMap 哈希环 | 6,000 |
-| 2.9 | CP 模式：RaftConsistencyServiceImpl + JRaft Leader 选举 + 日志复制 | 10,000 |
+| 2.6 | ClientOperationService 接口 + Ephemeral/持久化双实现：AP/CP 路由分发机制（EphemeralClientOperationServiceImpl / PersistentClientOperationServiceImpl） | 6,000 |
+| 2.7 | AP 模式：EphemeralClientOperationServiceImpl + Distro v2 协议去中心化同步 | 10,000 |
+| 2.8 | Distro 数据分布算法：DistroMapper.distroHash(tag) % servers.size() 取模分发 + healthyList 维护 | 6,000 |
+| 2.9 | CP 模式：PersistentClientOperationServiceImpl + JRaft（core/distributed/raft/JRaftProtocol 外部库）Leader 选举 + 日志复制 | 10,000 |
 | 2.10 | 服务发现流程：InstanceController.list → 健康过滤 → JSON 响应构建 | 8,000 |
-| 2.11 | PushService：gRPC Bi-directional Stream 推送 vs UDP 兼容推送 | 8,000 |
-| 2.12 | 客户端订阅机制：NamingClientProxy.subscribe() + ServerPushHandler | 8,000 |
-| 2.13 | 健康检查架构：HealthCheckType 枚举 + 三种 HealthCheckProcessor | 6,000 |
-| 2.14 | ClientBeatCheckTask：心跳超时检测 + 过期实例自动清理 | 8,000 |
-| 2.15 | TcpSuperSenseProcessor：TCP Socket 连接检测实现 | 5,000 |
-| 2.16 | 防雪崩保护：ProtectManager + 健康比例阈值 + 缓存快照 | 8,000 |
+| 2.11 | PushExecutorDelegate：推送执行器 SPI 委派（PushExecutorRpcImpl gRPC 推送 + PushExecutorUdpImpl UDP 兼容 + SpiPushExecutor 扩展点） | 8,000 |
+| 2.12 | 客户端订阅机制：NamingClientProxyDelegate.subscribe() + 服务端 NamingSubscriberServiceV2Impl + 客户端 NamingPushRequestHandler | 8,000 |
+| 2.13 | 健康检查架构：HealthCheckProcessorV2Delegate + 四种处理器（Tcp/Http/Mysql/None） | 6,000 |
+| 2.14 | ClientBeatCheckTaskV2（naming/healthcheck/heartbeat/）：心跳超时检测 + InstanceBeatChecker / ExpiredInstanceChecker 过期实例自动清理 | 8,000 |
+| 2.15 | HealthCheckReactor：健康检查调度引擎 + HealthCheckStatus 状态管理（替代旧 TcpSuperSenseProcessor） | 5,000 |
+| 2.16 | 防雪崩保护：ServiceUtil.selectInstancesWithHealthyProtection + 健康比例阈值 + 实例过滤（替代旧 ProtectManager） | 8,000 |
 
 ### 第 3 章：配置中心 (Config) 源码深度分析（~102,000 字，323 个 Java 文件 + persistence 模块 72 个文件）
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
 | 3.1 | Config 模块 6 个子包全景 | 5,000 |
-| 3.2 | 核心类关系图（ConfigController→LongPollingService→AsyncNotifyService） | 6,000 |
+| 3.2 | 核心类关系图（ConfigController→LongPollingService→ConfigChangePublisher→ConfigClusterRpcClientProxy） | 6,000 |
 | 3.3 | ConfigController.publishConfig() 完整源码走读（参数解析 + MD5 校验 + 持久化 + 事件发布） | 8,000 |
 | 3.4 | ConfigChangePublisher：配置变更发布引擎（通知长轮询 + 集群同步） | 6,000 |
 | 3.5 | MySQL 持久化：ExternalDataSourceServiceImpl + config_info 表结构详解 | 8,000 |
-| 3.6 | Derby 嵌入式存储：EmbeddedStoragePersistServiceImpl + MERGE SQL | 6,000 |
+| 3.6 | Derby 嵌入式存储：persistence/ 独立模块 LocalDataSourceServiceImpl + EmbeddedConfigInfoPersistServiceImpl 系列（MERGE SQL） | 6,000 |
 | 3.7 | LongPollingService：长轮询核心引擎（allSubs 队列 + 29.5 秒超时） | 10,000 |
 | 3.8 | ClientLongPolling：客户端长轮询任务（MD5 对比 + 超时取消 + 响应 JSON 生成） | 8,000 |
 | 3.9 | 长轮询流程图（客户端 ↔ 服务端交互时序） | 5,000 |
-| 3.10 | AsyncNotifyService：集群间 HTTP 异步通知机制 | 8,000 |
-| 3.11 | CommunicationController：集群间配置变更通知接收端点 | 4,000 |
+| 3.10 | ConfigClusterRpcClientProxy：基于 gRPC 集群通道的配置变更同步（syncConfigChange）；AsyncNotifyService 保留为 HTTP 兼容/辅助通知 | 8,000 |
+| 3.11 | CommunicationController：仅只读诊断端点（configWatchers 查询订阅者 + watcherConfigs 查询订阅配置） | 4,000 |
 | 3.12 | 配置历史版本管理：HistoryConfigInfoService + 回滚机制 | 6,000 |
 | 3.13 | 配置导入导出：ZIP 压缩包格式（按 group/dataId 组织目录结构） | 6,000 |
-| 3.14 | Beta 配置发布：betaIps 白名单 + stopBeta 切换回正式配置 | 6,000 |
-| 3.15 | Tag 配置发布：按标签灰度下发配置 | 5,000 |
-| 3.16 | 配置加密插件：AES/GCM/NoPadding 加密实现 | 5,000 |
+| 3.14 | 灰度配置发布：grayName + grayRule 规则 + config_info_gray 统一表（替代独立 Beta 表） | 6,000 |
+| 3.15 | 灰度策略类型：Beta 白名单 / Tag 标签均承载于 config_info_gray 表（gray_name 区分） | 5,000 |
+| 3.16 | 配置加密插件：EncryptionPluginService SPI 契约 + EncryptionHandler（仅接口契约，无默认内核实现） | 5,000 |
+| 3.17 | persistence 独立模块深度架构：DataSourceService 抽象层（External/Local/Dynamic）+ EmbeddedConfigInfoPersistServiceImpl 嵌入式 SQL 生成 + DerbyUtils LIMIT/OFFSET 方言适配 + Hook 钩子（DerbyImportEvent/RaftDbErrorEvent）+ 条件加载器 ConditionOnEmbeddedStorage | 8,000 |
 
 ### 第 4 章：一致性协议 (JRaft & Distro) 深度分析（~78,000 字）
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 4.1 | 一致性协议概述：AP vs CP 的 CAP 权衡矩阵 | 5,000 |
-| 4.2 | Distro 协议设计哲学：去中心化、最终一致性、高可用、水平扩展 | 6,000 |
-| 4.3 | Distro 核心数据结构：dataMap + Notifier 校验任务 | 8,000 |
-| 4.4 | Distro 增量同步：put() → syncToTargetServerAsync() 异步复制链路 | 8,000 |
-| 4.5 | Distro 全量同步：新节点加入时的分批全量数据同步 | 8,000 |
-| 4.6 | Distro 数据校验机制：Notifier.run() 定期校验最终一致性 | 8,000 |
-| 4.7 | Distro 一致性哈希算法详解：VIRTUAL_NODES + TreeMap 哈希环 | 6,000 |
-| 4.8 | JRaft 简介：Leader 选举 + 日志复制 + Snapshot + 线性一致性读 | 5,000 |
-| 4.9 | Nacos 中 JRaft 集成架构：RaftCore + RaftStore + NacosFSM | 8,000 |
-| 4.10 | RaftCore：CP 模式核心引擎（ReentrantLock + redirectToLeader） | 8,000 |
-| 4.11 | NacosFSM：有限状态机（onApply + onSnapshotSave + onSnapshotLoad） | 6,000 |
+| 4.1 | 一致性协议概述：AP vs CP 的 CAP 权衡矩阵 + Nacos 2.5.3 一致性抽象分层 | 5,000 |
+| 4.2 | consistency/ 独立模块：协议 SPI 接口层（ConsistencyProtocol + APProtocol + CPProtocol + Serializer + SnapshotOperation） | 6,000 |
+| 4.3 | Distro v2 数据面：DistroClientDataProcessor + DistroClientTransportAgent + DistroClientVerifyInfo | 8,000 |
+| 4.4 | Distro v2 客户端注册与数据同步：DistroClientComponentRegistry + DistroClient 数据分发链路 | 8,000 |
+| 4.5 | Distro v2 校验与容错：DistroClientTaskFailedHandler + 数据校验的一致性保障 | 8,000 |
+| 4.6 | core/distributed/distro 通用框架：component / task / monitor / entity 分层设计 | 8,000 |
+| 4.7 | Distro 数据分布算法详解：DistroMapper.distroHash(tag) % servers.size() 取模 + healthyList 动态健康列表 | 6,000 |
+| 4.8 | JRaft 简介：Leader 选举 + 日志复制 + Snapshot + 线性一致性读（外部库集成） | 5,000 |
+| 4.9 | Nacos 中 JRaft 集成架构：core/distributed/raft/JRaftProtocol（实现 CPProtocol）+ JRaftServer 实例管理 | 8,000 |
+| 4.10 | NacosStateMachine：有限状态机（onApply + 快照加载/保存，替代旧 NacosFSM）+ JSnapshotOperation 快照管理 | 8,000 |
+| 4.11 | RaftConfig + RaftSysConstants + JRaftMaintainService：JRaft 参数与运维接口 | 8,000 |
 | 4.12 | Leader 选举过程详解：Pre-Vote → RequestVote → Log Replication 三阶段 | 5,000 |
-| 4.13 | 脑裂处理机制：Pre-Vote 防反复选举 + Leader 存活检测 | 5,000 |
+| 4.13 | 脑裂处理机制：Pre-Vote 防反复选举 + Leader 存活检测 + 多数派仲裁 | 5,000 |
 
 ### 第 5 章：集群管理 (Core) + 客户端 SDK 深度分析（~92,000 字）
 
@@ -105,10 +106,10 @@
 | 5.7 | Member 模型：ip/port/state/extendInfo + 状态转换 | 5,000 |
 | 5.8 | ClusterRpcClientProxy：集群间 gRPC 通信代理（同步/异步/广播） | 8,000 |
 | 5.9 | NacosConfigService：配置客户端核心实现（getConfig + addListener） | 8,000 |
-| 5.10 | ClientWorker：长轮询工作线程（LongPollingRunnable + checkServerConfig） | 10,000 |
+| 5.10 | ClientWorker（client/config/impl/ClientWorker.java）：长轮询工作线程（LongPollingRunnable + checkServerConfig） | 10,000 |
 | 5.11 | NacosNamingService：注册客户端核心实现（registerInstance + subscribe） | 8,000 |
-| 5.12 | BeatReactor：客户端心跳引擎（BeatTask + 动态心跳间隔） | 6,000 |
-| 5.13 | 本地缓存快照机制：LocalConfigInfoProcessor 持久化到 ~/nacos/config/ | 5,000 |
+| 5.12 | 客户端心跳机制：基于 gRPC 长连接心跳上报 + 服务端 InstanceBeatChecker / ClientBeatProcessorV2 处理（旧 BeatReactor 已移除） | 6,000 |
+| 5.13 | 本地缓存快照机制：LocalConfigInfoProcessor（client/config/impl/）持久化到 ~/nacos/config/ | 5,000 |
 | 5.14 | NacosServiceLoader：Java SPI 服务加载器 + @Order 排序 | 5,000 |
 
 ---
@@ -173,6 +174,7 @@
 | 8.18 | Istio 集成配置（enabled / mcp.server.addr / sync.period / domain.suffix） | 4,000 |
 | 8.19 | 监控与 Metrics 配置（prometheus / jmx / elasticsearch / access.log / slow.sql） | 6,000 |
 | 8.20 | 日志配置（logback.xml 完整配置：5 个 appender + 4 个 logger） | 6,000 |
+| 8.21 | logger-adapter-impl 日志适配器模块（2.5.3 新增）：Log4j2NacosLoggingAdapter + LogbackNacosLoggingAdapter + NacosClientPropertiesLookup + 动态日志级别热切换 | 5,000 |
 
 ### 第 9 章：生产环境部署架构（~75,000 字）
 
@@ -248,11 +250,11 @@
 | 13.3 | 配置不生效排查：4 步排查流程图（控制台检查→客户端订阅→MD5 对比→长轮询超时） | 8,000 |
 | 13.4 | 长轮询超时排查：客户端增大 configLongPollTimeout + clientWorker 线程堆栈分析 | 6,000 |
 | 13.5 | 服务注册异常排查：4 步排查命令（curl 查实例→grep 心跳→curl 健康→手动注册测试） | 8,000 |
-| 13.6 | 客户端心跳排查：BeatReactor 源码走读 + 手动心跳检测代码 | 6,000 |
+| 13.6 | 客户端心跳排查：gRPC 长连接心跳链路源码走读 + 手动心跳检测代码 | 6,000 |
 | 13.7 | 集群脑裂排查：3 步检查命令（cluster/nodes→raft/leader→DistroVerify） | 8,000 |
 | 13.8 | 脑裂恢复步骤：3 种情况处理（少数派隔离 / 多数派有 Leader / 双 Leader） | 8,000 |
 | 13.9 | JVM 内存泄漏排查：jstat → jmap HeapDump → Eclipse MAT 分析 | 8,000 |
-| 13.10 | 常见内存泄漏场景表：gRPC 连接泄漏 / Distro 数据积压 / LongPolling OOM / PushService OOM | 6,000 |
+| 13.10 | 常见内存泄漏场景表：gRPC 连接泄漏 / Distro 数据积压 / LongPolling OOM / 推送执行器 OOM（PushExecutorDelegate） | 6,000 |
 | 13.11 | CPU 飙高排查：top -H → jstack → async-profiler 火焰图 | 8,000 |
 
 ---
@@ -279,7 +281,7 @@
 | 小节 | 内容 | 字数 |
 |------|------|------|
 | 15.1 | API 速查表：配置管理 8 接口 + 服务管理 7 接口 + 集群管理 3 接口 + 认证鉴权 6 接口 | 10,000 |
-| 15.2 | SQL 表结构速查：config_info / his_config_info / config_info_beta / config_info_tag / users / roles / permissions / tenant_info | 10,000 |
+| 15.2 | SQL 表结构速查：config_info / his_config_info / config_info_gray / users / roles / permissions / tenant_info | 10,000 |
 | 15.3 | 日常运维命令大全：curl API + grep 日志分析 + jstack / jmap + async-profiler + kubectl | 10,000 |
 | 15.4 | 性能基线参考值表：小型 / 中型 / 大型集群的 12 项核心性能指标 | 8,000 |
 | 15.5 | Nacos 1.x → 2.x 迁移要点：5 大差异项（通信协议 / 端口 / 客户端 SDK / 配置兼容 / 双写兼容） | 8,000 |
