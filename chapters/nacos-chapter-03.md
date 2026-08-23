@@ -836,7 +836,7 @@ ClientLongPolling (LongPollingService 内部类, implements Runnable)
 
 **（1）入队与超时登记：run()**
 
-`ClientLongPolling.run()` 是整个任务的主体，执行顺序非常讲究——**先登记超时回调，再入队**。它先调用 `ConfigExecutor.scheduleLongPolling(() -> {...}, timeoutTime, TimeUnit.MILLISECONDS)` 把超时回调登记为定时任务并取得 `asyncTimeoutFuture` 存入字段；超时回调内部：记录 `retainIps`、尝试 `allSubs.remove(this)`，只有 remove 成功（即该连接尚未被变更路径提前摘除）才调用 `sendResponse(null)` 让它超时返回，否则打 warn 日志。随后 `allSubs.add(this)` 把自身加入队列，进入挂起态。
+`ClientLongPolling.run()` 是整个任务的主体，执行顺序遵循严格约束——**先登记超时回调，再入队**。它先调用 `ConfigExecutor.scheduleLongPolling(() -> {...}, timeoutTime, TimeUnit.MILLISECONDS)` 把超时回调登记为定时任务并取得 `asyncTimeoutFuture` 存入字段；超时回调内部：记录 `retainIps`、尝试 `allSubs.remove(this)`，只有 remove 成功（即该连接尚未被变更路径提前摘除）才调用 `sendResponse(null)` 让它超时返回，否则打 warn 日志。随后 `allSubs.add(this)` 把自身加入队列，进入挂起态。
 
 「先登记超时、后入队」这个顺序避免了一个竞态：假如先入队再登记超时，那么在「入队」与「登记超时完成」之间，恰好有变更事件触发 `DataChangeTask` 遍历 `allSubs` 匹配到该连接并调用 `sendResponse`，而此时 `asyncTimeoutFuture` 仍为 null，超时取消逻辑（`if (null != asyncTimeoutFuture) asyncTimeoutFuture.cancel(false)`）会跳过取消，导致超时回调过后仍触发，对一个已响应的连接重复调 `complete()`。先登记可保证 `asyncTimeoutFuture` 在入队前已非空。引用：
 
@@ -876,8 +876,8 @@ ClientLongPolling (LongPollingService 内部类, implements Runnable)
 
 **关键 Trade-off 分析**
 
-- **Trade-off A：变更命中用「订阅 key 包含」而非「MD5 重算比对」**。方案一是挂起期间周期性重算各分组最新内容 MD5，与 `clientMd5Map` 比较判断是否变化——精确但成本高（需不断读存储/缓存、计算 MD5）；方案二是当前采用的「变更分组 key ∈ 订阅清单 即唤醒」——零内容读取、仅 Map 查找，但语义是「分组发生过变更」，而非「这个客户端当前持有的 MD5 确实过期」。若某客户端订阅后、变更前曾自行用最新内容刷新过本地（虽罕见），`containsKey` 仍会误唤醒它一次。Nacos 接受少量「空唤醒」，换取每连接每次挂起 O(1) 的唤醒判断成本，在大量连接下收益远超空唤醒的微小开销。
-- **Trade-off B：先登记超时再入队 vs 先入队再登记超时**。前文已述，`asyncTimeoutFuture` 必须在 `allSubs.add` 前就位，否则变更路径与超时路径可能竞态导致同一连接重复 `complete()`。这是明确的确定性排序策略：牺牲「登记超时」这一不可见操作的微小前置延迟，换取状态机转移的原子安全。实际耗时差异在微秒级，而避免的竞态可能导致响应损坏或容器异常，故排序取向非常清晰。
+- **Trade-off A：变更命中用「订阅 key 包含」而非「MD5 重算比对」**。方案一是挂起期间周期性重算各分组最新内容 MD5，与 `clientMd5Map` 比较判断是否变化——精确但成本高（需不断读存储/缓存、计算 MD5）；方案二是当前采用的「变更分组 key ∈ 订阅清单 即唤醒」——零内容读取、仅 Map 查找，但语义是「分组发生过变更」，而非「该客户端当前持有的 MD5 确实过期」。若某客户端订阅后、变更前曾自行用最新内容刷新过本地（虽罕见），`containsKey` 仍会误唤醒它一次。Nacos 接受少量「空唤醒」，换取每连接每次挂起 O(1) 的唤醒判断成本，在大量连接下收益远超空唤醒的微小开销。
+- **Trade-off B：先登记超时再入队 vs 先入队再登记超时**。前文已述，`asyncTimeoutFuture` 必须在 `allSubs.add` 前就位，否则变更路径与超时路径可能竞态导致同一连接重复 `complete()`。这是明确的确定性排序策略：牺牲「登记超时」这一不可见操作的微小前置延迟，换取状态机转移的原子安全。实际耗时差异在微秒级，而避免的竞态可能导致响应损坏或容器异常，故确定性排序策略是必要的安全保证。
 - **Trade-off C：变更响应只回分组 key、客户端二次拉取 vs 直接下发配置内容 JSON**。若变更时直接回推完整配置 JSON，可省去客户端第二次 `GET /configs`，减少一次往返（延迟可降毫秒级）；但服务端需在响应路径同步读取并组装配置内容，把读放大到所有被唤醒的连接上，且在长轮询响应体里传大内容会显著拉长单连接占用与网络负担。当前实现只回分组 key 列表（体积极小），让客户端按需拉取，把「内容传输」与「变更通知」解耦——这是「少一次往返」与「通知路径轻量、内容按需获取」之间的权衡，Nacos 选择了后者以保护服务端在高变更频率下的稳定性。
 - **Trade-off D：`complete()` 空响应表示超时 vs 显式 304 状态**。任务描述中常提到「304 Not Modified」，但 2.5.3 源码的超时路径并不 setStatus(304)，而是直接 `asyncContext.complete()` 返回空内容（连接正常结束），客户端以「收到空响应」识别超时并重发探测；仅即时快路径与非挂起的短轮询兼容路径才可能返回 200 空体。这一选择的代价是 HTTP 语义不标准（无法用状态码向中间层表达「未修改」），收益是超时通道零响应体写入、实现极简。这里如实记录源码行为，纠正「长轮询超时返回 304」的常见误述。
 
