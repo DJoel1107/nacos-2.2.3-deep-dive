@@ -26,7 +26,7 @@ Nacos 2.5.3 的一致性架构并非一蹴而就，而是经历了一条清晰�
 
 #### 4.1.1.3 本章范围界定
 
-本章聚焦 Nacos 2.5.3 一致性抽象的两条主线的**协议层与数据面**：4.1 建立全局视角（CAP 权衡矩阵 + 抽象分层）；4.2 剖析独立 `consistency/` 协议 SPI 接口层；4.3 深入 Distro v2 数据面的三个核心类；4.4 剖析 Distro v2 客户端注册与同步的完整分发链路。CRaft 相关实现类（JRaftServer、StateMachineAdapter 等）与持久化存储（persistence 模块）不在本章核心范围内，仅在 4.1.4 分层图中标注其位置。
+本章聚焦 Nacos 2.5.3 一致性抽象的两条主线的**协议层与数据面**：4.1 建立全局视角（CAP 权衡矩阵 + 抽象分层）；4.2 剖析独立 `consistency/` 协议 SPI 接口层；4.3 深入 Distro v2 数据面的三个核心类；4.4 剖析 Distro v2 客户端注册与同步的完整分发链路。JRaft 相关实现类（JRaftServer、NacosStateMachine 等）与持久化存储（persistence 模块）不在本章核心范围内，仅在 4.1.4 分层图中标注其位置。关于持久化模块的深度分析，参见第 6 章持久化层深度分析。
 
 ### 4.1.2 AP vs CP 的 CAP 权衡矩阵
 
@@ -58,19 +58,21 @@ CP 的写延迟至少包含一次 RTT（Leader→Follower 复制并得到多数�
 
 （3）**数据量承载对比**
 
-CP 方案将每次操作写入 Raft Log，日志在快照压缩前持续增长，磁盘与 IO 开销随操作数线性增长；AP 方案仅传输"变化的 Client 数据"（增量）与周期批量校验，稳态下带宽占用以 `Client × revision` 为主。对于高频心跳驱动的临时数据面，AP 的稳态成本显著低于 CP。
+CP 方案将每次操作写入 Raft Log，日志在快照压缩前持续增长，磁盘与 IO 开销随操作数线性增长；AP 方案仅传输"变化的 Client 数据"（增量）与周期批量校验，稳态下带宽占用以 `Client × revision` 为主。对于高频心跳驱动的临时数据面，AP 的稳态成本低于 CP。
 
 #### 4.1.2.3 决策边界：什么数据走 AP、什么数据走 CP
 
 Nacos 2.5.3 的决策边界不依据"配置 vs 服务"这种粗粒度划分，而依据**数据是否可被重建**与**一致性强诉求**：
 
-- 临时实例：客户端心跳可重建，丢失后可通过重新注册恢复，选择 AP（Distro v2）。
+- 临时实例：客户端心跳可重建，丢失后可通过重新注册恢复，选择 AP（Distro v2）。实例模型的详细定义参见第 2 章注册中心源码分析。
 - 持久化实例：代表明确的运维意图，一旦丢失不可自动恢复，选择 CP（JRaft）。
 - 服务/实例元数据、持久健康状态、订阅等：具备强一致诉求，选择 CP（JRaft）。
 
 在该边界下，`ClientManager` 会在同步入口处做类型过滤：`DistroClientDataProcessor.isInvalidClient()` 仅放行 `Client.isEphemeral()` 为真的客户端，持久化客户端的数据同步交给 JRaft 通道。这一过滤在 4.3、4.4 中会进一步展开。
 
 ### 4.1.3 核心类关系图：Nacos 2.5.3 一致性抽象分层
+
+图 4-1 展示了 Nacos 2.5.3 一致性协议的 5 层抽象分层架构（业务接入→协议接口→协议实现→组件注册与任务引擎→外部依赖）：
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -112,7 +114,7 @@ Nacos 2.5.3 的决策边界不依据"配置 vs 服务"这种粗粒度划分，�
 - **B2 协议抽象接口层（consistency/ 独立模块）**：定义一致性协议的统一契约，与具体实现解耦，这也是 4.2 的主题。
 - **B3 协议实现层（core/distributed）**：提供 AP（DistroProtocol）与 CP（JRaftProtocol）两个具体实现，分别实现 `APProtocol` 与 `CPProtocol`。
 - **B4 组件注册表与任务引擎层**：支撑 AP 实现的组件发现、延迟调度与执行调度。
-- **B5 外部依赖与基础设施层**：成员管理、集群 RPC、外部 JRaft 库与持久化存储。
+- **B5 外部依赖与基础设施层**：成员管理、集群 RPC、外部 JRaft 库与持久化存储。关于集群管理与成员发现机制，参见第 5 章集群管理源码分析。
 
 ### 4.1.4 源码走读
 
@@ -207,6 +209,8 @@ Nacos 2.5.3 通过 `ConsistencyProtocol` 统一契约 + AP/CP 双实现，将"CA
 这一"接口与实体模型分离、协议实现归 core"的布局，是本章 4.1 所述分层架构在模块粒度上的落地。
 
 ### 4.2.2 核心类关系图
+
+图 4-2 展示了 `consistency/` 模块核心接口体系：协议抽象 `ConsistencyProtocol`←→`APProtocol`/`CPProtocol`、请求处理器 `RequestProcessor` 层级、序列化 `Serializer` 与快照 `SnapshotOperation` 抽象：
 
 ```
 consistency/ 独立模块（仅接口 + 抽象 + 工厂）
@@ -356,6 +360,8 @@ Distro v2 约定资源类型常量 `public static final String TYPE = "Nacos:Nam
 
 ### 4.3.2 核心类关系图
 
+图 4-3 展示了 Distro v2 数据面核心类 `DistroClientDataProcessor`（同时实现 `SmartSubscriber` + `DistroDataStorage` + `DistroDataProcessor`）及其与传输代理 `DistroClientTransportAgent` 的协作关系：
+
 ```
                     naming 业务事件（Client 连接/断开/变更/校验失败）
                                    │ NotifyCenter 事件总线
@@ -492,7 +498,7 @@ Distro v2 约定资源类型常量 `public static final String TYPE = "Nacos:Nam
 
 | 决策点 | Trade-off |
 |---|---|
-| 同步单元 Client vs Datum | Client 粒度使"一次变更同步一个连接的全部实例"，消息数大幅下降；但单个 `ClientSyncData` 载荷变大，大批量发布时单包体积/网络带宽上升 |
+| 同步单元 Client vs Datum | Client 粒度使"一次变更同步一个连接的全部实例"，消息数下降；但单个 `ClientSyncData` 载荷变大，大批量发布时单包体积/网络带宽上升 |
 | verify 只传 clientId+revision vs 全量明细 | 校验流量被压缩到两个字段（几十字节/客户端）；代价是校验粒度变粗——仅当版本不一致时才需补传明细，多一次往返 |
 | 传输同时支持同步与回调 vs 仅同步 | 回调路径可对结果做 TPS 监控与失败发布（驱动自愈），代价是需同时维护两套回调实现、超时参数（sync/verify 分离） |
 | 健康预检（UP + isRunning）才发送 vs 直接发送 | 减少向故障节点无效投递与告警噪音；代价是预检本身有开销，且 `NodeState.UP` 判定滞后可能短暂跳过本应可送达的节点 |
@@ -527,6 +533,8 @@ Distro v2 的客户端数据分发包含三条相互作用但职责分明的子�
 数据同步需要"延迟聚合"与"并发执行"两种语义：变更事件高频到达，若每次立即发送会造成消息风暴，因此先进入**延迟任务引擎**按 key 聚合并延迟一定时间（默认 `syncDelayMillis=1000ms`）；延迟到点后再进入**执行任务引擎**真正并发发送。两级引擎由 `DistroTaskEngineHolder` 同时持有，是 4.4 链路的核心骨架。
 
 ### 4.4.2 核心类关系图
+
+图 4-4 展示了 Distro v2 组件注册与数据分发链路的两层结构：① `DistroClientComponentRegistry` 装配层 + ② 增量同步链路（事件→DataProcessor→DistroProtocol→两级任务引擎）：
 
 ```
 ① 装配层：DistroClientComponentRegistry（@Component，@PostConstruct）
@@ -698,7 +706,7 @@ Distro 链路全部时序参数集中在 `DistroConfig`（core/.../distro/Distro
 
 （4）**模板方法模式（Template Method）**：`AbstractDistroExecuteTask` 定义 `run()` 骨架并推迟 `getDataOperation()` 与 `doExecute()/doExecuteWithCallback()` 到 `DistroSyncChangeTask`/`DistroSyncDeleteTask`；`DistroVerifyTimedTask` 与 `DistroVerifyExecuteTask` 亦为模板化任务。收益：任务执行流程统一（取数据→发送/回调→失败处理）；代价：子类需遵循骨架的"先取数据后发送"约定。
 
-（5）**两阶段延迟-执行队列**：延迟任务引擎做"聚合 + 延迟"，执行任务引擎做"并发 + 直发"。收益：高频变更事件在延迟窗口内按 key 合并，显著削减消息数；代价：延迟引入同步滞后（默认 1s），且需要两套引擎的一致生命周期管理。
+（5）**两阶段延迟-执行队列**：延迟任务引擎做"聚合 + 延迟"，执行任务引擎做"并发 + 直发"。收益：高频变更事件在延迟窗口内按 key 合并，削减消息数；代价：延迟引入同步滞后（默认 1s），且需要两套引擎的一致生命周期管理。
 
 **Trade-off 量化对比**：
 
@@ -1402,7 +1410,7 @@ Distro v2 的数据分布机制由 `naming/core/DistroMapper.java` 单一承载�
 ### 4.7.2 核心类关系图
 
 ```
-图 4-X  DistroMapper 核心类关系
+图 4-7  DistroMapper 核心类关系
 
 ┌──────────────────────────────────────────────────────────┐
 │                    NotifyCenter                          │
@@ -1757,7 +1765,7 @@ Nacos 2.5.3 以 **外部依赖** 方式接入 JRaft 库（`com.alipay.sofa:jraft
 ### 4.8.2 核心类关系图
 
 ```
-图 4-X  JRaft 接入层核心类关系图
+图 4-8  JRaft 接入层核心类关系图
 
 ┌────────────────────────────────────────────────────────────────────┐
 │                    consistency/ 接口层（仅接口定义）                    │
@@ -2450,7 +2458,7 @@ private void adapterToJRaftSnapshot(Collection<SnapshotOperation> userOperates) 
 |----------|--------------------|----------|----------|
 | 状态机职责 | 仅分发日志给业务 processor | 状态机极薄、易于替换/调试 | 多一次委托调用开销（可忽略） |
 | 读处理策略 | Follower 跳过 ReadRequest | 减少无意义的日志复制 | 线性读仍需走 ReadIndex/Leader |
-| 快照默认周期 | 1800s（30 分钟） | 显著降低磁盘与网络开销 | 崩溃恢复日志回放时间变长 |
+| 快照默认周期 | 1800s（30 分钟） | 降低磁盘与网络开销 | 崩溃恢复日志回放时间变长 |
 | 快照多操作串行 | 顺序执行全部 operations | 语义简单、顺序确定 | 单操作故障整链路失败 |
 | 无快照处理器 | interval 置 0 关闭快照 | 避免无意义快照 I/O | 日志无限增长风险需自担 |
 | 错误回滚 | `setErrorAndRollback` | 状态机与日志索引强一致 | 回滚代价随失败索引跨度增大 |
@@ -2668,7 +2676,7 @@ public enum JRaftOps {
 |----------|--------------------|----------|----------|
 | 选举超时 | 默认 5000ms，下限保护 5000ms | 降低误选举概率 | 故障发现延迟增加 |
 | 心跳间隔 | electionTimeout / factor(10)=500ms | 心跳频率与超时匹配 | 常驻心跳网络流量 |
-| 快照周期 | 1800s | 大幅降低快照 I/O | 崩溃恢复回放日志变多 |
+| 快照周期 | 1800s | 降低快照 I/O | 崩溃恢复回放日志变多 |
 | 日志批大小 | apply_batch=32 | 批量落盘提升吞吐 | 单个批次等待引入延迟 |
 | fsync 策略 | 写日志 sync=true，元数据 sync_meta=false | 数据持久与性能折中 | 元数据丢失风险需容忍 |
 | `resetPeers` | 仅紧急场景用 | 极端情况下强行使集群恢复 | 有数据丢失/脑裂风险 |
@@ -2682,7 +2690,7 @@ public enum JRaftOps {
 
 ### 4.11.6 小结
 
-`RaftConfig`、`RaftSysConstants` 与 `JRaftMaintainService` 从**参数承载、默认值字典、运维分派**三个维度支撑 JRaft 的工程化落地。前者通过 Spring 配置绑定与 JRaft `RaftOptions` 桥接实现 "外部参数驱动共识行为"，后者以枚举策略让集群成员、Leader、快照等治理动作可编程下发。三者配合将 Nacos 对 JRaft 的控制力提升到"参数可调、拓扑可改、故障可恢复"的运维闭环，显著降低了分布式强一致组件的运维门槛。
+`RaftConfig`、`RaftSysConstants` 与 `JRaftMaintainService` 从**参数承载、默认值字典、运维分派**三个维度支撑 JRaft 的工程化落地。前者通过 Spring 配置绑定与 JRaft `RaftOptions` 桥接实现 "外部参数驱动共识行为"，后者以枚举策略让集群成员、Leader、快照等治理动作可编程下发。三者配合将 Nacos 对 JRaft 的控制力提升到"参数可调、拓扑可改、故障可恢复"的运维闭环，降低了分布式强一致组件的运维门槛。
 ## 4.12 Leader 选举过程详解：Pre-Vote → RequestVote → Log Replication
 
 ### 4.12.1 设计背景与技术定位
@@ -2708,7 +2716,7 @@ Raft 通过选举机制在任意时刻只有一个 Leader 负责接收写请求�
 | `election_heartbeat_factor` | 10 | 心跳间隔 = electionTimeout / factor ≈ 500ms |
 | `raft_election_timeout` 下限保护 | 5000 | 防止配置过小导致频繁空转选举 |
 
-**关键点**：随机化。Follower 的竞选超时为 `electionTimeout + random[0, maxElectionDelay]`，随机器制保证多个 Follower 不会同时发起竞选，显著降低投票分裂概率。
+**关键点**：随机化。Follower 的竞选超时为 `electionTimeout + random[0, maxElectionDelay]`，随机器制保证多个 Follower 不会同时发起竞选，降低投票分裂概率。
 
 ### 4.12.3 阶段一：Pre-Vote（预投票）
 
@@ -2801,7 +2809,7 @@ CompletableFuture<Response> commit(final String group, final Message data, final
 
 与日志复制紧密相关的是**线性一致读**的实现。`JRaftServer.get(ReadRequest)` 默认走 ReadIndex 路径（`node.readIndex(BytesUtil.EMPTY_BYTES, new ReadIndexClosure(){...})`），待节点确认当前提交索引安全后，在本地执行业务 `processor.onRequest(request)`，既保证读到已提交状态，又把读压力分散到各副本而非全部压向 Leader。当 readIndex 返回非 OK 状态（如 Leader 切换）时，代码回退到 `readFromLeader` 转发，并借助 `MetricsMonitor.raftReadIndexFailed()` / `raftReadFromLeader()` 埋点监控两种路径的触发比例。线性读策略由 `RaftOptionsBuilder.raftReadIndexType` 依据 `read_index_type` 决定——`ReadOnlySafe`（默认）或 `ReadOnlyLeaseBased`，前者严格线性一致但多一轮确认，后者依赖 Leader 时钟租约换取更低延迟，是典型的一致性/性能显式权衡。
 
-在实际运行中，选举与心跳由 JRaft 定时器驱动。`JRaftServer.init` 对 NodeOptions 设置 `setSharedElectionTimer(true)`、`setSharedVoteTimer(true)`、`setSharedStepDownTimer(true)`、`setSharedSnapshotTimer(true)`，使多个 Raft Group 复用同一套共享定时器，显著降低线程与定时器资源开销。JRaft 1.3.14 在 Pre-Vote 超时参数与日志批量复制上做了优化，配合 `max_election_delay_ms=1000` 的随机化，将误触发选举与分区恢复时的选举风暴控制在更低概率窗口，从而提升 Nacos CP 集群在高并发、高分区频次环境下的选举稳定性。
+在实际运行中，选举与心跳由 JRaft 定时器驱动。`JRaftServer.init` 对 NodeOptions 设置 `setSharedElectionTimer(true)`、`setSharedVoteTimer(true)`、`setSharedStepDownTimer(true)`、`setSharedSnapshotTimer(true)`，使多个 Raft Group 复用同一套共享定时器，降低线程与定时器资源开销。JRaft 1.3.14 在 Pre-Vote 超时参数与日志批量复制上做了优化，配合 `max_election_delay_ms=1000` 的随机化，将误触发选举与分区恢复时的选举风暴控制在更低概率窗口，从而提升 Nacos CP 集群在高并发、高分区频次环境下的选举稳定性。
 
 ### 4.12.6 Trade-off 量化分析与设计模式
 
