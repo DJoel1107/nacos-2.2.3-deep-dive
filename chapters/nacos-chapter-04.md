@@ -718,28 +718,117 @@ Distro v2 的客户端注册与数据同步由"装配-增量-校验-全量"四�
 
 ## 4.5 Distro v2 校验与容错：失败重试与数据校验的一致性保障
 
-### 4.5.1 定位与职责边界
 
-在 Nacos 2.5.3 中，Distro v2 是负责**临时实例（ephemeral client）数据集群内分布式同步与最终一致性收敛**的子系统，其实现集中在 `naming/consistency/ephemeral/distro/v2/` 包下。该包在 2.5.3 中仅包含 5 个高内聚类：`DistroClientComponentRegistry`（组件注册）、`DistroClientDataProcessor`（数据存取与校验的处理入口）、`DistroClientTransportAgent`（传输代理）、`DistroClientTaskFailedHandler`（失败重试）与 `DistroClientVerifyInfo`（校验信息载体）。
+### 4.5.1 设计背景
 
-本小节聚焦其中两个相互咬合的一致性保障机制：
+Nacos 2.5.3 的 Distro v2 子系统负责集群内临时实例（ephemeral client）数据的分布式同步与最终一致性收敛，其核心实现位于 `naming/consistency/ephemeral/distro/v2/` 包下。该包包含 5 个高内聚类：`DistroClientComponentRegistry`（组件注册入口）、`DistroClientDataProcessor`（数据处理与校验入口）、`DistroClientTransportAgent`（RPC 传输代理）、`DistroClientTaskFailedHandler`（失败重试）与 `DistroClientVerifyInfo`（校验信息载体）。
 
-1. **容错（Fault Tolerance）**——`DistroClientTaskFailedHandler` 在增量同步（Change/Delete）失败后，将任务重新放入延迟任务引擎，形成「失败即重试」的自愈闭环。
-2. **校验（Verification）**——周期性 `verify` 任务以「client 粒度 + revision 版本号」为校验单元，比对本地与远端同一 client 的数据是否一致，不一致时触发补偿同步。
+在 AP 模型下，Distro 通过异步复制实现去中心化数据同步。异步复制天然引入两类风险：（1）传输层网络不可达或目标节点不健康时，同步任务直接失败，若没有重试机制，数据将永久丢失；（2）多节点各自独立接受客户端变更，在无中心权威版本的情况下，同一 `clientId` 在不同节点的数据可能漂移。这两类问题若不加处理，集群将不断累积不一致直至不可恢复。
 
-职责边界必须明确：`DistroClientTaskFailedHandler` 只承担「重试动作的调度」，它不负责校验；校验由「定时采集（`getVerifyData`）→ 传输（`syncVerifyData`）→ 对端验证（`verifyClient`）→ 失败修复（`ClientVerifyFailedEvent`）」四段链路共同完成。二者共同回答了同一个问题：**在 AP 去中心化、异步复制的模型下，如何以可量化的成本逼近最终一致。**
+因此，2.5.3 在 Distro v2 中内置了相互咬合的两层保障机制：
 
-2.5.3 的关键事实：一致性单元是 `Client`（一条 `clientId` 对应一个注册到 Nacos 的连接/实例），而非 2.2.3 时代的 `Service datum`；`consistency/` 模块在 2.5.3 中仅保留协议接口定义（`ConsistencyProtocol`、`RequestProcessor`、`CPProtocol`/`APProtocol`），并不包含 `RaftCore`、`RaftStore`、`NacosFSM`、`DistroHash` 等 2.2.3 类，这些类在 2.5.3 源码中已不存在。
+1. **失败重试**：`DistroClientTaskFailedHandler` 在同步任务返回失败或抛出异常后，将任务重新封装为延迟任务并入队，形成"失败即重试"的自愈闭环，防止因瞬时网络故障或目标节点短暂不可用导致数据丢失。
+2. **数据校验**：周期性 `verify` 任务以 `clientId + revision` 为校验单元，比对本地与远端同一 client 的数据版本是否一致，不一致时触发补偿同步，在下一轮校验前修正漂移。
 
-### 4.5.2 失败重试链路：从执行引擎到重试入队
+职责边界：`DistroClientTaskFailedHandler` **仅承担重试动作的调度**，不负责校验也不负责通信；校验由"定时采集（`getVerifyData`）→ 传输（`syncVerifyData`）→ 对端验证（`processVerifyData`）→ 失败修复（`ClientVerifyFailedEvent` → `syncToVerifyFailedServer`）"四段链路共同完成。二者共同回答了同一个核心问题：**在 AP 去中心化、异步复制的模型下，如何以可量化的成本逼近最终一致。**
 
-同步失败的最原始起点在传输层。`DistroClientTransportAgent.syncData` 在以下三类场景返回失败：
+本小节的讨论限定于 v2 架构：一致性单元为 `Client`（一条 `clientId` 对应一个注册连接及其实例），而非 1.x 中的 `Service datum`。`consistency/` 模块在 2.5.3 中仅保留协议接口定义（`ConsistencyProtocol`、`RequestProcessor`、`CPProtocol`/`APProtocol`），不含 1.x 的 `RaftCore`、`RaftStore`、`NacosFSM`、`DistroConsistencyServiceImpl`、`DistroHash` 等已移除类。
 
-- 目标节点不在成员表（`isNoExistTarget` 返回 `true`，此时视为成功以规避死节点拖累）；
-- 目标节点状态非 `UP`，或 `ClusterRpcClientProxy.isRunning(member)` 为假；
-- `clusterRpcClientProxy.sendRequest` 抛出 `NacosException`。
+### 4.5.2 核心类关系图
 
-失败信号向上传递的骨架在 `AbstractDistroExecuteTask`，其 `run()` 先判断传输代理是否支持回调传输：
+图 4-5 展示了失败重试与数据校验两条链路涉及的核心类之间的调用关系。
+
+```
+                          ┌──────────────────────────────────┐
+                          │     DistroProtocol              │
+                          │  (定时调度 + onVerify 入口)      │
+                          └──────────┬───────────────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                       │
+     ┌────────▼─────────┐  ┌──────▼──────────┐  ┌───────▼──────────────┐
+     │ DistroVerifyTimed │  │AbstractDistro    │  │DistroClientData      │
+     │ Task (Runnable)   │  │ExecuteTask      │  │Processor              │
+     │                  │  │                 │  │                       │
+     │ run()            │  │ run()           │  │ implements:            │
+     │ └→getVerifyData()│  │ └→doExecute()  │  │ DistroDataStorage     │
+     │ └→syncVerifyData│  │ └→handleFailed│  │ DistroDataProcessor    │
+     └──────────────────┘  │ │   Task()       │  │ SmartSubscriber       │
+                          └────────┬────────┘  │                       │
+                                  │            │ + getVerifyData()     │
+                   ┌──────────────┘            │ + processVerifyData()  │
+                   │                           │ + onEvent()           │
+          ┌────────▼─────────┐                 │ + processData()       │
+          │handleFailedTask() │                 └───────────┬───────────┘
+          └────────┬─────────┘                             │
+                   │                                      │
+                   │  findFailedTaskHandler(type)          │
+                   ▼                                      │
+     ┌─────────────────────────────┐                    │
+     │ DistroClientTaskFailed     │                    │
+     │ Handler                    │                    │
+     │ implements               │                    │
+     │ DistroFailedTaskHandler   │                    │
+     │                            │                    │
+     │ retry(DistroKey,         │                    │
+     │   DataOperation)          │                    │
+     │ └→new DistroDelayTask    │                    │
+     │ └→addTask(engine)        │                    │
+     └─────────────────────────────┘                    │
+                                                        │
+     ┌──────────────────────────────────────────────────────┘
+     │
+     │  onEvent(ClientVerifyFailedEvent)
+     │  └→syncToVerifyFailedServer()
+     │
+     ▼
+  ┌───────────────────────────────────────────────┐
+  │  DistroClientTransportAgent                  │
+  │  implements DistroTransportAgent             │
+  │                                              │
+  │  + syncData(data, targetServer)              │
+  │  + syncData(data, target, callback)          │
+  │  + syncVerifyData(data, target)              │
+  │  + syncVerifyData(data, target, callback)    │
+  │                                              │
+  │  inner class DistroRpcCallbackWrapper         │
+  │  inner class DistroVerifyCallbackWrapper      │
+  └───────────────────────────────────────────────┘
+                              │
+                              │ 序列化传输
+                              ▼
+                   ┌─────────────────────┐
+                   │ DistroClientVerify  │
+                   │ Info                │
+                   │ implements          │
+                   │ Serializable        │
+                   │                    │
+                   │ - clientId: String │
+                   │ - revision: long   │
+                   └─────────────────────┘
+
+              图 4-5 失败重试与校验链路核心类关系图
+```
+
+**说明**：
+
+- `DistroProtocol` 为总调度者：启动 `DistroVerifyTimedTask` 定时校验，并作为 `onVerify` RPC 入口接收远端校验请求。
+- `AbstractDistroExecuteTask.run()` 在执行失败或抛异常时调用 `handleFailedTask()` → `DistroClientTaskFailedHandler.retry()`，生成 `DistroDelayTask` 重新入队延迟引擎。
+- `DistroClientDataProcessor` 承担双重角色：作为 `DistroDataStorage` 提供 `getVerifyData()`，作为 `DistroDataProcessor` 提供 `processVerifyData()`；同时作为 `SmartSubscriber` 订阅 `ClientVerifyFailedEvent` 触发补偿同步。
+- `DistroClientTransportAgent` 封装 gRPC 通信，通过内部类 `DistroRpcCallbackWrapper` / `DistroVerifyCallbackWrapper` 处理异步回调与 TPS 监控。
+- `DistroClientVerifyInfo` 作为校验载体仅含 `clientId` 与 `revision` 两个字段，序列化后体积控制在几十字节量级。
+
+### 4.5.3 源码走读
+
+### 4.5.3.1 失败重试链路：从执行引擎到重试入队
+
+同步失败的最原始触发点在传输层。`DistroClientTransportAgent.syncData(DistroData, String)`（`naming/.../distro/v2/DistroClientTransportAgent.java:80-98`）在以下三类场景返回 `false`：
+
+- 目标节点不在成员表：`isNoExistTarget(target)` 返回 `true`，此时直接返回 `true` 以规避对已下线节点的无谓同步；
+- 目标节点状态非 `UP` 或 `ClusterRpcClientProxy.isRunning(member)` 为假；
+- `clusterRpcClientProxy.sendRequest(member, request)` 抛出 `NacosException`，`catch` 块仅记录日志后返回 `false`。
+
+失败信号沿调用链向上传递至 `AbstractDistroExecuteTask`（`core/distributed/distro/task/execute/AbstractDistroExecuteTask.java:60-75`）。其 `run()` 方法固化了执行骨架：
 
 ```java
 @Override
@@ -756,27 +845,11 @@ public void run() {
         executeDistroTask();
     }
 }
-
-private void executeDistroTask() {
-    try {
-        boolean result = doExecute();
-        if (!result) {
-            handleFailedTask();
-        }
-        Loggers.DISTRO.info("[DISTRO-END] {} result: {}", toString(), result);
-    } catch (Exception e) {
-        Loggers.DISTRO.warn("[DISTRO] Sync data change failed.", e);
-        handleFailedTask();
-    }
-}
 ```
 
-由此可知失败重试有两条触发路径：
+`DistroClientTransportAgent.supportCallbackTransport()` 返回 `true`，因此 v2 走回调路径。`DistroExecuteCallback`（`AbstractDistroExecuteTask.java:127-145`）是内部类，其 `onFailed(Throwable)` 方法记录 `syncFail()` 统计并调用 `handleFailedTask()`。
 
-1. **同步返回**：`doExecute()`（即 `DistroSyncChangeTask`/`DistroSyncDeleteTask`）返回 `false`；
-2. **异常抛出**：执行过程中抛 `Exception`。
-
-两条路径最终都汇入 `handleFailedTask()`，其依据资源类型从 `DistroComponentHolder` 查找失败处理器，找不到则丢弃并告警：
+`handleFailedTask()`（`AbstractDistroExecuteTask.java:114-123`）通过 `DistroComponentHolder.findFailedTaskHandler(type)` 查找失败处理器：
 
 ```java
 protected void handleFailedTask() {
@@ -790,7 +863,14 @@ protected void handleFailedTask() {
 }
 ```
 
-`DistroClientTaskFailedHandler.retry()` 的完整实现是本节核心引用（`naming/.../distro/v2/DistroClientTaskFailedHandler.java`）：
+`DistroClientTaskFailedHandler` 在 `DistroClientComponentRegistry.doRegister()`（`naming/.../distro/v2/DistroClientComponentRegistry.java:71-75`）中注册：
+
+```java
+DistroClientTaskFailedHandler taskFailedHandler = new DistroClientTaskFailedHandler(taskEngineHolder);
+componentHolder.registerFailedTaskHandler(DistroClientDataProcessor.TYPE, taskFailedHandler);
+```
+
+`DistroClientTaskFailedHandler.retry()`（`naming/.../distro/v2/DistroClientTaskFailedHandler.java:43-48`）的实现极为精简：
 
 ```java
 @Override
@@ -801,7 +881,9 @@ public void retry(DistroKey distroKey, DataOperation action) {
 }
 ```
 
-它做了且仅做两件事：构造一个延迟时间为 `syncRetryDelayMillis`（默认 **3000ms**，`DistroConstants.DEFAULT_DATA_SYNC_RETRY_DELAY_MILLISECONDS`）的 `DistroDelayTask`，然后加入延迟任务引擎。关键在于 `addTask` 的**按 key 合并**语义——`DistroDelayTask.merge()`：
+它仅做两件事：构造一个延迟时间为 `syncRetryDelayMillis`（默认 **3000ms**，定义于 `DistroConstants.DEFAULT_DATA_SYNC_RETRY_DELAY_MILLISECONDS`）的 `DistroDelayTask`，然后调用 `addTask` 将任务加入延迟引擎。
+
+关键在于 `addTask` 的**按 key 合并**语义。`DistroDelayTask.merge(AbstractDelayTask)`（`core/distributed/distro/task/delay/DistroDelayTask.java: Hours73-82`）：
 
 ```java
 @Override
@@ -818,11 +900,13 @@ public void merge(AbstractDelayTask task) {
 }
 ```
 
-同一 `DistroKey`（resourceKey+resourceType+targetServer 三元组，`DistroKey.equals/hashCode` 已实现）的多次重试会被合并为单个延迟任务，动作优先级取创建更早的一次，从而在**高并发失败、同一 key 被反复调度**时自动去重、避免重试风暴。延迟到期后，`DistroDelayTaskProcessor` 依据 `DataOperation` 分派到 `DistroSyncDeleteTask`（DELETE）或 `DistroSyncChangeTask`（ADD/CHANGE），重新进入执行引擎，周而复始直至成功。
+`DistroKey` 的 `equals/hashCode` 已基于 `resourceKey + resourceType + targetServer` 三元组实现，同一 key 的多次重试会被合并为单个延迟任务。合并策略为：若新旧任务的 `DataOperation` 不同，保留创建时间更早的那一个。此设计在**高并发失败、同一 key 被反复调度**时自动去重，避免重试风暴。
 
-### 4.5.3 数据校验：revision 驱动的「采集—传输—验证—修复」闭环
+延迟到期后，`DistroDelayTaskProcessor` 依据 `DataOperation` 将任务分派到 `DistroSyncDeleteTask`（DELETE）或 `DistroSyncChangeTask`（ADD/CHANGE），重新进入 `DistroTaskEngineHolder` 的执行引擎，周而复始直至成功。整个重试链路形成闭环：**执行 → 失败 → handleFailedTask → retry → 构造延迟任务 → 合并去重 → 到期重入执行引擎**。
 
-校验以 `DistroProtocol` 的定时任务为总调度。`DistroProtocol` 构造时（非单机模式）即启动校验：
+### 4.5.3.2 校验闭环：采集 → 传输 → 验证 → 修复
+
+校验机制的总调度入口位于 `DistroProtocol` 构造时启动的定时任务（`core/distributed/distro/DistroProtocol.java:87-91`）：
 
 ```java
 private void startVerifyTask() {
@@ -832,11 +916,11 @@ private void startVerifyTask() {
 }
 ```
 
-`verifyIntervalMillis` 默认 **5000ms**。`DistroVerifyTimedTask.run()` 每轮执行：
+`verifyIntervalMillis` 默认 **5000ms**。`DistroVerifyTimedTask.run()`（`core/distributed/distro/task/verify/DistroVerifyTimedTask.java:57-71`）每轮执行：
 
-1. 取所有除本节点外的成员 `allMembersWithoutSelf()`；
+1. 获取除本节点外的所有成员 `serverMemberManager.allMembersWithoutSelf()`；
 2. 遍历 `distroComponentHolder.getDataStorageTypes()` 的每个资源类型；
-3. 对每个类型调用 `DistroVerifyTimedTask.verifyForDataStorage`。
+3. 对每个类型调用 `verifyForDataStorage`。
 
 ```java
 private void verifyForDataStorage(String type, List<Member> targetServer) {
@@ -859,9 +943,12 @@ private void verifyForDataStorage(String type, List<Member> targetServer) {
 }
 ```
 
-此处有两处工程要点值得强调：其一，**未完成全量加载（`isFinishInitial()==false`）的存储不参与校验**，避免在快照尚未就绪时产生误判；其二，针对每个远端成员都单独入队一个 `DistroVerifyExecuteTask`，实现「一份校验数据，对每个对等节点各校验一次」。
+此方法包含两个关键工程决策：
 
-校验数据的来源是 `DistroClientDataProcessor.getVerifyData()`，它只收集本节点**负责（responsible）**的临时 client，并取该 client 当前 `revision`：
+1. **未完成全量加载的数据存储不参与校验**（`isFinishInitial() == false` 时直接返回），避免在快照尚未就绪时误判一致性。此保证来源于 `DistroClientDataProcessor.finishInitial()` 被调用后才会设置标志位为 `true`。
+2. **对每个远端成员独立入队**一个 `DistroVerifyExecuteTask`，实现"一份校验数据，对每个对等节点各校验一次"，而非广播式单任务发送。
+
+校验数据的采集来自 `DistroClientDataProcessor.getVerifyData()`（`naming/.../distro/v2/DistroClientDataProcessor.java:245-265`）：
 
 ```java
 @Override
@@ -884,11 +971,25 @@ public List<DistroData> getVerifyData() {
 }
 ```
 
-`revision` 是客户端数据的单调递增版本号，任何一次实例注册/注销/批量发布都会使 `client.setRevision()` 递增。由于校验包只携带 `{clientId, revision}` 两个字段（`DistroClientVerifyInfo`），其体积被压缩到几十字节量级。
+采集逻辑有三层过滤：仅收集 ephemeral client（`client.isEphemeral()`）、仅收集本节点负责的 client（`clientManager.isResponsibleClient(client)`）、仅取 `clientId` 与 `revision` 两个字段构造 `DistroClientVerifyInfo`。`revision` 是 client 数据的单调递增版本号，每次实例注册/注销/批量发布均使其递增。
 
-`DistroVerifyExecuteTask.run()` 对每条校验数据，在支持回调传输时走 `doSyncVerifyDataWithCallback = transportAgent.syncVerifyData(data, targetServer, new DistroVerifyCallback())`。传输代理 `DistroClientTransportAgent.syncVerifyData` 有一个精巧设计：**把 verify 数据的 targetServer 替换为本节点地址**，使对端在回调时能定位数据源，随后向远端发送 `DataOperation.VERIFY` 请求。
+`DistroVerifyExecuteTask.run()` 对每条校验数据调用传输代理的回调同步校验。`DistroClientTransportAgent.syncVerifyData(DistroData, String, DistroCallback)`（`naming/.../distro/v2/DistroClientTransportAgent.java:145-163`）有一个精巧设计：**将 verify 数据的 targetServer 替换为本节点地址**（`verifyData.getDistroKey().setTargetServer(memberManager.getSelf().getAddress())`），使对端校验失败回调时能定向到数据源。随后发送 `DataOperation.VERIFY` RPC 请求，通过内部类 `DistroVerifyCallbackWrapper` 异步接收结果。
 
-对端收到后进入 `DistroProtocol.onVerify` → `findDataProcessor` → `DistroClientDataProcessor.processVerifyData`：
+对端收到 RPC 后路由至 `DistroProtocol.onVerify(DistroData, String)`（`core/distributed/distro/DistroProtocol.java:183-195`）：
+
+```java
+public boolean onVerify(DistroData distroData, String sourceAddress) {
+    String resourceType = distroData.getDistroKey().getResourceType();
+    DistroDataProcessor dataProcessor = distroComponentHolder.findDataProcessor(resourceType);
+    if (null == dataProcessor) {
+        Loggers.DISTRO.warn("[DISTRO] Can't find verify data process for received data {}", resourceType);
+        return false;
+    }
+    return dataProcessor.processVerifyData(distroData, sourceAddress);
+}
+```
+
+`DistroClientDataProcessor.processVerifyData(DistroData, String)`（`naming/.../distro/v2/DistroClientDataProcessor.java:230-242`）：
 
 ```java
 @Override
@@ -903,7 +1004,31 @@ public boolean processVerifyData(DistroData distroData, String sourceAddress) {
 }
 ```
 
-`clientManager.verifyClient` 比对远端上报的 `revision` 与本地该 `clientId` 的 `revision`：一致返回 `true`（校验通过），不一致说明数据漂移，返回 `false`。校验失败的信息经回调返回发送方，`DistroClientTransportAgent.DistroVerifyCallbackWrapper.onResponse` 中完成修复闭环：
+`clientManager.verifyClient(verifyData)` 委托至 `ConnectionBasedClientManager.verifyClient()`（`naming/.../manager/impl/ConnectionBasedClientManager.java:133-143`）：
+
+```java
+public boolean verifyClient(DistroClientVerifyInfo verifyData) {
+    ConnectionBasedClient client = clients.get(verifyData.getClientId());
+    if (null != client) {
+        if (0 == verifyData.getRevision() || client.getRevision() == verifyData.getRevision()) {
+            client.setLastRenewTime();
+            return true;
+        } else {
+            Loggers.DISTRO.info("[DISTRO-VERIFY-FAILED] ConnectionBasedClient[{}] revision local={}, remote={}",
+                    client.getClientId(), client.getRevision(), verifyData.getRevision());
+        }
+    }
+    return false;
+}
+```
+
+比对逻辑有三条路径：
+- `client == null`（本节点无此 client）：返回 `false`，需要从远端同步该 client 数据；
+- `verifyData.getRevision() == 0`：兼容旧版本节点校验（旧版本可能不带 revision），视为通过，同时刷新 `lastRenewTime`；
+- `client.getRevision() == verifyData.getRevision()`：版本一致，校验通过，刷新 `lastRenewTime`；
+- 版本不一致：记录日志后返回 `false`。
+
+校验失败信息通过 RPC 响应返回发送方。`DistroVerifyCallbackWrapper.onResponse(Response)`（`DistroClientTransportAgent.java:220-230`）完成修复闭环：
 
 ```java
 @Override
@@ -920,494 +1045,945 @@ public void onResponse(Response response) {
 }
 ```
 
-`ClientVerifyFailedEvent` 被 `DistroClientDataProcessor`（本身是 `SmartSubscriber`，订阅 `ClientChangedEvent`/`ClientDisconnectEvent`/`ClientVerifyFailedEvent`）订阅到：
+`ClientVerifyFailedEvent` 被 `DistroClientDataProcessor.onEvent(Event)`（`naming/.../distro/v2/DistroClientDataProcessor.java:93-97`）订阅处理：
+
+```java
+if (event instanceof ClientEvent.ClientVerifyFailedEvent) {
+    syncToVerifyFailedServer((ClientEvent.ClientVerifyFailedEvent) event);
+}
+```
+
+`syncToVerifyFailedServer()`（`naming/.../distro/v2/DistroClientDataProcessor.java:106-112`）：
 
 ```java
 private void syncToVerifyFailedServer(ClientEvent.ClientVerifyFailedEvent event) {
     Client client = clientManager.getClient(event.getClientId());
     if (isInvalidClient(client)) return;
     DistroKey distroKey = new DistroKey(client.getClientId(), TYPE);
-    // Verify failed data should be sync directly.
     distroProtocol.syncToTarget(distroKey, DataOperation.ADD, event.getTargetServer(), 0L);
 }
 ```
 
-校验失败立即以 `delay=0` 向故障端补推当前 client 数据，完成「识别漂移 → 立即修复」的对账闭环。同时 `DistroRecordsHolder` 记录 `verifyFail()`，`NamingTpsMonitor` 累加 `distroVerifyFail`，为观测收敛健康度提供指标。
+校验失败后以 **`delay=0`（立即）** 向故障端补推当前 client 数据，完成"识别漂移 → 立即修复"的对账闭环。`DistroRecordsHolder` 记录 `verifyFail()` 统计，`NamingTpsMonitor` 累加 `distroVerifyFail` 指标，为运维观测收敛健康度提供数据。
+
+### 4.5.3.3 两条子链路的协作时序
+
+在同一 client 的同步与校验过程中，两条子链路协同工作。以节点 A 向节点 B 同步 client 数据为例：
+
+1. 节点 A 的 `DistroClientDataProcessor.onEvent(ClientChangedEvent)` → `distroProtocol.sync(distroKey, DataOperation.CHANGE)`，将 `DistroSyncChangeTask` 入队执行引擎。
+2. `DistroClientTransportAgent.syncData(data, targetServer)` 执行 RPC 调用，若失败则触发 `handleFailedTask()` → `DistroClientTaskFailedHandler.retry()` → `DistroDelayTask` 入延迟队列，3000ms 后重试。
+3. 若同步成功，节点 B 接收到 RPC→ `DistroProtocol.onReceive()` → `processData()` → `handlerClientSyncData()`，更新本地 client 数据并递增 `revision`。
+4. 每 5000ms，节点 A 的 `DistroVerifyTimedTask` 采集 `getVerifyData()`，向节点 B 发送 `{clientId, revision=10}` 的校验请求。
+5. 节点 B 的 `processVerifyData()` 比对本地 `client.revision`（假设为 8），发现不一致，返回 `false`。
+6. 节点 A 收到验证失败回调 → 发布 `ClientVerifyFailedEvent` → `syncToVerifyFailedServer()` → 以 `delay=0` 立即补推当前 client 全量数据给节点 B。
+7. 下一轮校验（5s 后）再次比对，版本一致则校验通过。
+
+两条子链路的分工明确：失败重试解决的是**瞬时通信故障导致的数据丢失**；数据校验解决的是**多写并发导致的数据漂移**。失败重试保证同步动作"不因一次失败而放弃"，数据校验保证同步结果"不因版本漂移而永久不一致"。
 
 ### 4.5.4 设计模式分析
 
-本小节机制涉及四个可复用设计模式：
+本节涉及的机制可识别出四个可复用的设计模式：
 
-1. **模板方法（Template Method）**：`AbstractDistroExecuteTask` 固化了执行骨架（`run` → 回调/同步 → `handleFailedTask`），而 `doExecute()`、`doExecuteWithCallback()` 为抽象方法交由 `DistroSyncChangeTask`/`DistroSyncDeleteTask` 实现。失败处理对子类透明，新增一种操作只需实现两个方法。
-2. **策略 + 服务定位器（Strategy + Service Locator）**：`DistroFailedTaskHandler` 是策略接口，`DistroComponentHolder` 充当按类型路由的注册表（`findFailedTaskHandler(type)`）。v1/v2 可各自注册 handler，运行时按 `resourceType` 无侵入切换。
-3. **观察者（Observer）**：`ClientVerifyFailedEvent` 通过 `NotifyCenter` 发布/订阅，把「校验失败」这一事件与「补偿同步」这一动作解耦。触发方只需发布事件，无需知道谁在监听，扩展新的修复动作（如日志、告警）无需改动既有链路。
-4. **组合角色（Role Composition）**：`DistroClientDataProcessor` 同时实现 `DistroDataStorage` 与 `DistroDataProcessor` 两个接口，一个对象承担数据存取与校验处理双重职责，通过一致性入口接入框架，降低了注册与路由复杂度。
+**1. 模板方法（Template Method）**
 
-### 4.5.5 Trade-off 量化分析
+`AbstractDistroExecuteTask`（`core/distributed/distro/task/execute/AbstractDistroExecuteTask.java`）固化了执行骨架：`run()` → 判断回调支持 → `doExecuteWithCallback()` 或 `executeDistroTask()` → `handleFailedTask()`。子类 `DistroSyncChangeTask`、`DistroSyncDeleteTask` 只需实现 `doExecute()` 与 `doExecuteWithCallback()` 两个抽象方法，失败处理对子类完全透明。新增一种 `DataOperation` 只需实现两个方法，无需关心重试调度逻辑。
 
-**重试策略：固定延迟 vs 指数退避。** 2.5.3 采用固定 `syncRetryDelayMillis=3000ms`、无重试次数上限。量化对比：若对端持续不可用 60s，同一 key 将产生约 20 次无效重试请求；而指数退避（如 3s→6s→12s…）在 60s 内仅约 7 次。固定延迟的优点是实现确定、收敛节奏可预期、配合 `merge()` 去重后负载可控；缺点是故障持续时对故障节点有恒定压力。选择固定延迟的合理性在于：Distro 的同步通常是微服务实例级轻量数据，单次体量小，恒定重试成本可接受，而退避的随机性会拉大收敛时延的不可预测性。
+**2. 策略 + 服务定位器（Strategy + Service Locator）**
 
-**校验周期：5000ms 即最终一致性收敛时延上界。** 正常情况下，一次漂移通过校验被发现的时延 ≤ `verifyIntervalMillis`（5s）+ 传输往返。缩短周期（如 1s）可将收敛上界压至 1s 级，但校验网络流量 = `O(client数 × peer数 / 周期)`，5 倍提速意味着 5 倍校验开销；拉长周期（如 30s）则降低开销、但把故障暴露窗口拉大 6 倍。5000ms 是 Nacos 在「秒级收敛」与「可负担校验成本」间的默认平衡点，且该值可由 `nacos.core.protocol.distro.data.verify.intervalMs` 动态调整。
+`DistroFailedTaskHandler`（`core/distributed/distro/component/DistroFailedTaskHandler.java`）是策略接口，`DistroClientTaskFailedHandler` 是其 v2 的唯一实现。`DistroComponentHolder` 充当按类型路由的注册表，通过 `registerFailedTaskHandler(type, handler)` 注册、`findFailedTaskHandler(type)` 按 `resourceType` 查找。v1/v2 可各自注册独立 handler，运行时无侵入切换，实现"对扩展开放、对修改关闭"。
 
-**校验粒度：client + revision vs 服务 datum。** 以 client 为单元并携带 revision，使校验数据仅为 `{clientId, revision}`，对账可在 O(1) 内完成，无需传输全量实例数据；代价是 client 数量（实例 × 关注项）通常远大于服务数量，校验包数量上升。相对于直接比对 datum 内容，revision 方案以「极小校验包 + 极快比对」换取了「需维护单调递增版本号」的额外状态。
+**3. 观察者（Observer）**
 
-**校验失败即时修复 vs 等待下轮。** 校验失败以 `delay=0` 立即补推，收敛更迅速，但会瞬时增加一条到故障端的同步请求；若改为等待下轮校验，吞吐平稳但把修复时延放大到周期量级。Nacos 选择即时修复，因为校验失败本质是低频异常，即时修复的额外负载可忽略。
+`ClientVerifyFailedEvent` 通过 `NotifyCenter.publishEvent()` / `subscribeTypes()` 实现发布/订阅解耦。`DistroClientTransportAgent.DistroVerifyCallbackWrapper.onResponse()` 仅负责发布事件，不关心谁在监听；`DistroClientDataProcessor` 通过 `SmartSubscriber` 订阅 `ClientVerifyFailedEvent` 触发补偿同步。若未来需扩展新的修复动作（如告警、日志审计），只需新增订阅者，无需改动验证回调链路。
 
-**非成员节点视为成功。** `isNoExistTarget(target)` 返回 true 时直接视为同步成功，避免对象已下线节点的无谓重试；但存在成员表未及时刷新的瞬时窗口内「误判为成功」而短暂丢失数据。由于 verify 会兜底，该丢失会被下一轮校验收敛，属于「以最终一致性容忍瞬时漏同步」的策略取舍。
+**4. 组合角色（Role Composition）**
 
-### 4.5.6 边界场景与工程实践
+`DistroClientDataProcessor` 同时实现 `DistroDataStorage` 与 `DistroDataProcessor` 两个接口，并继承 `SmartSubscriber`。一个对象承担数据存取（`getDistroData`、`getDatumSnapshot`、`getVerifyData`）、数据处理（`processData`、`processVerifyData`、`processSnapshot`）与事件订阅（`subscribeTypes`、`onEvent`）三重职责。通过角色组合，框架仅需注册一个对象即可接入 Distro 协议，降低了注册与路由的复杂度。
 
-- **节点刚加入、快照未就绪**：`isFinishInitial()` 为 false 时校验被跳过，避免在半初始化状态下误判一致性。这是「校验必须先于全量数据就绪」的强次序保证。
-- **防自愈风暴**：校验失败虽会触发补偿同步，但补偿成功后本地 revision 与远端对齐，下一轮校验（5s 后）不再触发，因此自愈流量是自限的，不会形成持续风暴。
-- **健康观测**：生产环境应盯 `DistroRecordsHolder.getFailedSyncCount()` / `getFailedVerifyCount()`。同步失败持续增长通常意味着网络分区、目标节点状态漂移非 UP，或 gRPC 通道不可用；此时结合 `NamingTpsMonitor.distroSyncFail/failVerify` 定位具体 peer 地址。
-- **与 2.2.3 的差异提示**：2.5.3 校验单元是 `Client`（含 `revision`），而 2.2.3 是 `Service datum`；`DistroClientTaskFailedHandler` 与 `DistroClientVerifyInfo` 均为 v2 新增类型，2.2.3 中的 `DistroVerifyTask`/`batchSyncData` 等概念在 2.5.3 中已被 `core/distributed/distro` 通用框架 + v2 客户端数据处理器取代。
+### 4.5.5 Trade-off 分析
 
----
+**3.1 重试策略：固定延迟 vs 指数退避**
 
-## 4.6 core/distributed/distro 通用框架：component / task / monitor / entity 分层设计
+2.5.3 采用固定 `syncRetryDelayMillis = 3000ms`、无重试次数上限的策略。量化对比：若目标节点持续不可用 60s，固定延迟方案约产生 **20 次**无效重试（60s / 3s）；指数退避（如 3s → 6s → 12s → 24s → 48s → 96s，累积超过 60s）约产生 **4-5 次**无效重试。
 
-### 4.6.1 定位与分层全景
+固定延迟的优势：
+- 实现确定：收敛节奏固定、可精确预测最大延迟；
+- 配合 `merge()` 去重后同一 key 在引擎中仅存在一个待处理任务，有效负载为 `O(key 数 × 失败频率)`，在正常规模集群（数百 client）下可忽略；
+- Distro 同步的典型负载是微服务实例级轻量数据，单次 RPC 体量通常 ≤ 数 KB，恒定重试成本可接受。
 
-`core/src/main/java/com/alibaba/nacos/core/distributed/distro/` 在 2.5.3 中是 Distro 协议的**协议无关通用内核**——它不与具体业务数据绑定，而是抽象出「数据结构、传输、处理、失败、监控」五类角色，供 naming 等业务方按 `resourceType` 注册自己的实现。这与 v1/v2 业务实现（`naming/consistency/ephemeral/distro/v2`）形成「通用内核 + 业务适配」的分层结构，是 Nacos 把 Distro 从 naming 中解耦的重要演进。
+固定延迟的劣势：
+- 故障持续时对故障节点持续施加恒定压力，不如指数退避对故障节点"友好"；
+- 在极端大集群（万级别 client）下，若无合理的 key 数量控制，固定延迟的重试请求量可能线性增长。
 
-完整目录分层如下：
+选择固定延迟的合理性：指数退避的随机性会拉大收敛时延的不可预测性，而在正常运维场景下，集群成员的状态变更频率远低于重试间隔（3s），绝大多数重试在 1-3 轮内即可成功，因此固定延迟的重试开销在工程实践中可忽略。
+
+**3.2 校验周期：5000ms 即最终一致性收敛时延上界**
+
+正常情况下一次漂移通过校验发现的最大时延 = `verifyIntervalMillis`（5000ms）+ 传输往返延迟（通常 < 50ms）+ 补偿同步延迟。若缩短周期至 1000ms，收敛上界可从约 5s 降至约 1s，但校验网络流量 = `O(client 数量 × peer 数量 / 周期)`，5 倍提速即 5 倍校验开销。对于 3 节点集群、1000 个 client，5000ms 周期下每秒约 200 条校验消息（每 client 向 2 个 peer 各发送 1 次 / 5s）；降至 1000ms 则每秒约 1000 条。拉长周期至 30000ms 则将故障暴露窗口放大至 30s 级。
+
+5000ms 是 Nacos 在"秒级收敛"与"可负担校验成本"间的默认平衡点。该值可通过配置 `nacos.core.protocol.distro.data.verify.intervalMs` 动态调整，适应不同规模集群的需求。
+
+**3.3 校验粒度：client + revision vs 全量 datum**
+
+以 `{clientId, revision}` 为校验单元，校验包体积极小（两个字段，序列化后通常 ≤ 100 字节），对比操作 O(1)（两次 long 值相等判断）。相对的，若直接比对全量 datum（包含命名空间、分组、服务列表、实例发布信息等），单条校验包可能达到 KB 级，对操作需要深层次对象遍历。
+
+代价：`client` 数量（实例 × 关注维度）通常远多于服务数量，校验包数量更高。例如 1000 个 client × 2 个 peer = 2000 条校验消息/轮。此外，需要维护 `revision` 的单调递增语义，增加了 client 的额外状态字段。
+
+选择 `client + revision` 方案的理由：校验的本质是发现漂移，确认一致只需最小信息（"你的版本和我的一样吗？"），而非全量数据（"你的数据和我的数据一样吗？"）。revision 方案以极小的校验包（O(1)）和极快的比对（O(1)）换取了需维护单调递增多一个字段的代价，这是典型的时间换空间权衡。
+
+**3.4 校验失败即时修复 vs 等待下轮校验**
+
+校验失败后以 `delay=0` 立即补推，收敛更迅速。但会瞬时增加一条到故障端的同步请求。若改为等待下轮校验（5s 后），吞吐更平稳，但修复时延放大到 5000ms + RTT。
+
+Nacos 选择即时修复的理由：校验失败本质是异常低频事件——正常情况下所有节点 `revision` 应一致，校验不应失败。校验失败意味着数据确实漂移了，尽快修复比"等待"更具价值。且补偿同步成功后，下一轮校验不再触发，自愈流量是自限的。
+
+**3.5 非成员节点视为成功**
+
+`isNoExistTarget(target)` 返回 `true` 时直接视为同步成功。此设计的合理性在于：若节点已不在集群成员表中，向其同步注定失败；与其不断失败重试最终丢弃，不如直接标记成功、节省重试资源。风险是成员表更新存在瞬时窗口期（节点已下线但成员表尚未刷新）内"误判为成功"而短暂丢失数据，但由于 verify 机制每 5s 兜底，该丢失会被下一轮校验收敛。属于"以最终一致性容忍瞬时漏同步"的策略取舍。
+
+### 4.5.6 小结
+
+本节围绕 Distro v2 中相互咬合的两个一致性保障机制展开分析：
+
+- **失败重试机制**：`DistroClientTaskFailedHandler.retry()` 在同步失败后将任务重新封装为 `DistroDelayTask` 并加入延迟执行引擎，利用 `DistroDelayTask.merge()` 的按 key 合并语义自动去重，防止重试风暴；延迟到期后重新进入执行引擎，形成"执行 → 失败 → 重试入队 → 到期重新执行"的自愈闭环。
+- **数据校验机制**：以 `DistroVerifyTimedTask` 为定时调度器，每 5000ms 采集本节点负责的 client 的 `{clientId, revision}` 校验包，经由 `DistroClientTransportAgent.syncVerifyData()` 发送至各对等节点；对端通过 `processVerifyData()` 调用 `ConnectionBasedClientManager.verifyClient()` 比对 `revision`；不一致时通过 `ClientVerifyFailedEvent` → `syncToVerifyFailedServer()` 立即补推全量 client 数据，完成"发现漂移 → 立即修复"的对账闭环。
+- **两者分工**：失败重试解决瞬时通信故障导致的数据丢失，数据校验解决多写并发导致的数据漂移；前者保证动作"不因一次失败而放弃"，后者保证结果"不因版本漂移而永久不一致"。
+
+工程实践要点：
+- 观测指标应盯 `DistroRecordsHolder.getFailedSyncCount()` / `getFailedVerifyCount()`，同步失败持续增长通常意味着网络分区或目标节点不健康；结合 `NamingTpsMonitor.distroSyncFail` / `distroVerifyFail` 定位具体 peer 地址。
+- 校验间隔 `nacos.core.protocol.distro.data.verify.intervalMs` 可按集群规模动态调整：小集群可缩短至 2000ms 加速收敛，大集群可拉长至 10000ms 降低校验开销。
+- 节点刚加入时 `isFinishInitial() == false` 会跳过校验，避免半初始化状态下的误判一致性，此为"校验必须先于全量数据就绪"的强次序保证。
+### 4.6.1 设计背景
+
+在 Nacos 2.2.3 的 v1 Distro 机制中，分布式数据同步的粒度是"服务"（Service），每个服务实例信息被封装为一条 Datum，Distro 协议负责在各节点间同步这些 Datum。这一模型在实例数量级达到 10^5~10^6 时暴露出两个核心问题：(1) 每条服务实例变更都需要独立的网络请求，大规模集群中的网络请求量随实例数线性增长；(2) 每个节点的全量对账粒度是单个 Datum，校验包数量与服务数成正比，校验网络开销不可忽略。
+
+Nacos 2.5.3 在 v2 Distro 中引入了"以客户端为同步粒度"的新模型：一条 `Client` 记录同时涵盖该客户端订阅的所有服务和发布的所有实例，将同步粒度从"服务 × 实例数"压缩为"客户端数"。这一粒度变更需要一套全新的组件注册流程、数据分发处理逻辑和失败重试机制——这正是 `DistroClientComponentRegistry` 和 `DistroClientDataProcessor` 的核心设计动机。
+
+同时，Nacos 2.5.3 将 Distro 协议的通用内核（任务引擎、延迟合并、校验调度、数据载体）抽取到 `core/distributed/distro/` 下形成"协议无关"框架层，仅定义角色接口（`DistroTransportAgent`、`DistroDataStorage`、`DistroDataProcessor`、`DistroFailedTaskHandler`），由 naming 模块的 v2 实现通过 `DistroComponentHolder` 注册。这种"通用内核 + 业务适配"分层架构将 Distro 从 naming 单体实现升级为可复用的基础设施，本小节聚焦命名模块 v2 实现在通用框架之上的注册、注入和数据分发全链路。
+
+### 4.6.2 核心类关系图
 
 ```
-core/distributed/distro/
-├── DistroProtocol.java          # 门面/编排者（对外唯一入口）
-├── DistroConfig.java            # 动态配置单例（延迟/超时/重试/校验）
-├── DistroConstants.java         # 配置键与默认值常量
-├── component/                   # 组件接口：TransportAgent/DataStorage/DataProcessor/
-│                                #   FailedTaskHandler/Callback/ComponentHolder
-├── task/                        # 任务：两级引擎 Holder + delay/execute/load/verify 子包
-├── entity/                      # 数据载体：DistroKey / DistroData
-├── monitor/                     # 监控：DistroRecord / DistroRecordsHolder
-└── exception/                   # DistroException
+                          ┌─────────────────────────────┐
+                          │  DistroClientComponentRegistry │  @PostConstruct
+                          │  .doRegister()              │
+                          └─────────────┬───────────────┘
+                                        │
+                    ┌───────────────────┼───────────────────────┐
+                    │                   │                       │
+                    ▼                   ▼                       ▼
+     ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐
+     │ DistroClient     │  │ DistroClient     │  │ DistroClient         │
+     │ DataProcessor    │  │ TransportAgent   │  │ TaskFailedHandler    │
+     │ (SmartSubscriber)│  │                  │  │                      │
+     └────────┬─────────┘  └────────┬─────────┘  └──────────┬───────────┘
+              │                    │                        │
+    ┌─────────┴─────────┐         │                        │
+    │ implements        │         │                        │
+    ▼                  ▼         ▼                        ▼
+┌────────────┐ ┌────────────┐ ┌─────────────────┐ ┌──────────────────────┐
+│ DistroData │ │ DistroData │ │ DistroTransport │ │ DistroFailedTask     │
+│ Storage    │ │ Processor  │ │ Agent           │ │ Handler              │
+│ (interface)│ │(interface) │ │ (interface)     │ │ (interface)          │
+└────────────┘ └────────────┘ └─────────────────┘ └──────────────────────┘
+                    │                    │                        │
+                    └────────────────────┼────────────────────────┘
+                                        │
+                                        ▼
+                         ┌──────────────────────────┐
+                         │  DistroComponentHolder    │  (Service Locator)
+                         │  Map<type, impl>         │
+                         └────────────┬─────────────┘
+                                      │
+                    ┌─────────────────┼─────────────────┐
+                    ▼                 ▼                 ▼
+          ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+          │ DistroDelay  │ │DistroExecute │ │DistroProtocol│
+          │ TaskEngine   │ │TaskEngine    │ │ (Facade)     │
+          └──────────────┘ └──────────────┘ └──────────────┘
+                    图 4-6 Distro v2 组件注册与数据分发链路类关系图
 ```
 
-五类角色对应关系如下表：
+`DistroClientComponentRegistry` 作为注册网关，在容器启动时将 v2 四个角色一次性注入 `DistroComponentHolder`。`DistroClientDataProcessor` 同时实现 `DistroDataStorage`、`DistroDataProcessor` 和 `SmartSubscriber` 三个接口，是数据分发的「读写调度枢纽」：写路径（获取同步数据、快照、校验包）通过 `DistroDataStorage` 接口供框架查询调用；读路径（处理远端同步、校验、快照数据）通过 `DistroDataProcessor` 接口接收框架回调；事件驱动通过 `SmartSubscriber` 订阅 `ClientEvent` 触发同步。`DistroClientTransportAgent` 封装了基于 gRPC 的集群内数据收发，`DistroClientTaskFailedHandler` 将失败任务重新投递到两级引擎的重试队列。
 
-| 分层 | 核心类型 | 职责 |
-|------|----------|------|
-| **entity** | `DistroKey`、`DistroData` | 数据定位键与数据载体 |
-| **component** | `DistroTransportAgent`、`DistroDataStorage`、`DistroDataProcessor`、`DistroFailedTaskHandler`、`DistroCallback`、`DistroComponentHolder` | 可插拔角色定义与注册中心 |
-| **task** | `DistroDelayTask`、`DistroExecuteTask`、`DistroLoadDataTask`、`DistroVerifyTimedTask` 等 | 延迟调度、执行、加载、校验四类任务 |
-| **monitor** | `DistroRecord`、`DistroRecordsHolder` | 同步/校验/加载计数监控 |
-| **入口** | `DistroProtocol`、`DistroConfig` | 门面编排与全局配置 |
+### 4.6.3 源码走读
 
-### 4.6.2 entity 层：数据载体设计
+### 4.6.3.1 DistroClientComponentRegistry：组件注册入口
 
-`DistroKey` 是数据定位三元组（`resourceKey`、`resourceType`、`targetServer`），重写了 `equals`/`hashCode`，是任务去重与路由的基础。`DistroData` 封装 `DistroKey + DataOperation type + byte[] content`，`type` 复用 `com.alibaba.nacos.consistency.DataOperation`（ADD/CHANGE/DELETE/VERIFY/SNAPSHOT/QUERY）。将「数据的键」与「数据的内容」分离，使任务引擎可以做**仅依赖 key 的合并与路由**，而把内容序列化推迟到真正传输时——这是两级任务引擎能高效合并的关键。
-
-### 4.6.3 component 层：可插拔角色与注册中心
-
-五个角色接口各司其职：
-
-- `DistroTransportAgent`：网络传输抽象，定义 `syncData`、`syncVerifyData`、`getData`、`getDatumSnapshot`，并提供 `supportCallbackTransport()` 判定是否走异步回调路径；
-- `DistroDataStorage`：数据存储抽象，定义 `getDistroData`、`getDatumSnapshot`、`getVerifyData`、`isFinishInitial`、`finishInitial`；
-- `DistroDataProcessor`：接收侧处理抽象，定义 `processType`、`processData`、`processVerifyData`、`processSnapshot`；
-- `DistroFailedTaskHandler`：失败重试抽象，定义 `retry(DistroKey, DataOperation)`；
-- `DistroCallback`：异步回调抽象，定义 `onSuccess` / `onFailed`。
-
-`DistroComponentHolder` 充当**注册中心（Service Locator）**，以 `Map<resourceType,...>` 管理各角色：
+`DistroClientComponentRegistry.doRegister()`（`naming/src/main/java/com/alibaba/nacos/naming/consistency/ephemeral/distro/v2/DistroClientComponentRegistry.java:67-76`）以 `@PostConstruct` 触发，依次创建 v2 的四个组件实例并注册到 `DistroComponentHolder`：
 
 ```java
-private final Map<String, DistroTransportAgent> transportAgentMap = new HashMap<>();
-private final Map<String, DistroDataStorage> dataStorageMap = new HashMap<>();
-private final Map<String, DistroFailedTaskHandler> failedTaskHandlerMap = new HashMap<>();
-private final Map<String, DistroDataProcessor> dataProcessorMap = new HashMap<>();
-// register* / find* 方法依 type 存取
-```
-
-业务方通过 `DistroClientComponentRegistry.doRegister()`（`@PostConstruct`）在启动时注册 v2 实现：
-
-```java
-componentHolder.registerDataStorage(DistroClientDataProcessor.TYPE, dataProcessor);
-componentHolder.registerDataProcessor(dataProcessor);
-componentHolder.registerTransportAgent(DistroClientDataProcessor.TYPE, transportAgent);
-componentHolder.registerFailedTaskHandler(DistroClientDataProcessor.TYPE, taskFailedHandler);
-```
-
-`DistroClientDataProcessor.TYPE = "Nacos:Naming:v2:ClientData"` 即资源类型标识，贯穿注册、路由、监控全链路。正因为角色通过注册中心解耦，v1（旧 datum 实现）与 v2（client 实现）可以并存，框架本身无需关心数据语义。
-
-### 4.6.4 task 层：两级任务引擎
-
-任务层是框架的心脏，采用**「延迟任务 —— 执行任务」两级引擎**结构，由 `DistroTaskEngineHolder` 统一持有：
-
-```java
-@Component
-public class DistroTaskEngineHolder implements DisposableBean {
-    private final DistroDelayTaskExecuteEngine delayTaskExecuteEngine = new DistroDelayTaskExecuteEngine();
-    private final DistroExecuteTaskExecuteEngine executeWorkersManager = new DistroExecuteTaskExecuteEngine();
-    public DistroTaskEngineHolder(DistroComponentHolder distroComponentHolder) {
-        DistroDelayTaskProcessor defaultDelayTaskProcessor = new DistroDelayTaskProcessor(this, distroComponentHolder);
-        delayTaskExecuteEngine.setDefaultTaskProcessor(defaultDelayTaskProcessor);
-    }
-    public DistroDelayTaskExecuteEngine getDelayTaskExecuteEngine() { return delayTaskExecuteEngine; }
-    public DistroExecuteTaskExecuteEngine getExecuteWorkersManager() { return executeWorkersManager; }
+@PostConstruct
+public void doRegister() {
+    DistroClientDataProcessor dataProcessor = new DistroClientDataProcessor(clientManager, distroProtocol);
+    DistroTransportAgent transportAgent = new DistroClientTransportAgent(clusterRpcClientProxy,
+            serverMemberManager);
+    DistroClientTaskFailedHandler taskFailedHandler = new DistroClientTaskFailedHandler(taskEngineHolder);
+    componentHolder.registerDataStorage(DistroClientDataProcessor.TYPE, dataProcessor);
+    componentHolder.registerDataProcessor(dataProcessor);
+    componentHolder.registerTransportAgent(DistroClientDataProcessor.TYPE, transportAgent);
+    componentHolder.registerFailedTaskHandler(DistroClientDataProcessor.TYPE, taskFailedHandler);
 }
 ```
 
-**第一级：延迟引擎（`DistroDelayTaskExecuteEngine`）。** `DistroProtocol.syncToTarget` 把同步请求包装成 `DistroDelayTask` 后 `addTask`。这里的关键是延迟任务的**合并语义**——同一 `DistroKey` 在延迟窗口内发生的多次 `CHANGE` 合并为一次，避免对同一数据的频繁网络请求。延迟任务到期由 `DistroDelayTaskProcessor` 分派：
+四步注册依次调用了 `DistroComponentHolder`（`core/src/main/java/com/alibaba/nacos/core/distributed/distro/component/DistroComponentHolder.java`）的对应 `register*` 方法。`DistroComponentHolder` 内部以四个 `HashMap<String, T>` 存储各角色的注册实例，其 key 均为 `resourceType` 字符串。对于 v2，所有注册项均使用 `DistroClientDataProcessor.TYPE = "Nacos:Naming:v2:ClientData"` 作为统一的资源类型标识，这意味着框架在运行时通过 `resourceType` 即可一站式查找到该类型对应的传输代理、数据存储、数据处理器和失败重试处理器。
+
+注意 `registerDataProcessor` 内部调用 `dataProcessorMap.putIfAbsent`（`DistroComponentHolder.java:65`），避免同名处理器被覆盖，而其余三个 `register*` 方法均使用 `put`（可覆盖），此差异的语义是：数据处理器应当对每个 `processType` 全局唯一，而传输代理等允许后续替换。
+
+构造器参数映射了 v2 组件对基础设施的依赖关系：`DistroClientDataProcessor` 依赖 `ClientManager`（v2 客户端管理器，负责客户端 CRUD 与路由判断）和 `DistroProtocol`（同步入口门面）；`DistroClientTransportAgent` 依赖 `ClusterRpcClientProxy`（集群内 RPC 代理）和 `ServerMemberManager`（集群成员管理器）；`DistroClientTaskFailedHandler` 依赖 `DistroTaskEngineHolder`（两级任务引擎持有者），用于将失败任务重新投递到延迟引擎。
+
+### 4.6.3.2 DistroClientDataProcessor：数据存储 + 数据分发双角色
+
+`DistroClientDataProcessor`（`naming/src/main/java/com/alibaba/nacos/naming/consistency/ephemeral/distro/v2/DistroClientDataProcessor.java`）是 v2 Distro 中最复杂的类——它同时实现了 `DistroDataStorage`、`DistroDataProcessor` 和 `SmartSubscriber` 三个接口，承担四个维度的职责：
+
+**角色一：SmartSubscriber（事件订阅与同步触发）。** 构造器中向 `NotifyCenter` 订阅三类事件：
 
 ```java
-switch (distroDelayTask.getAction()) {
-    case DELETE: executeWorkersManager.addTask(distroKey, new DistroSyncDeleteTask(distroKey, distroComponentHolder)); return true;
-    case CHANGE:
-    case ADD:   executeWorkersManager.addTask(distroKey, new DistroSyncChangeTask(distroKey, distroComponentHolder)); return true;
-    default: return false;
+public DistroClientDataProcessor(ClientManager clientManager, DistroProtocol distroProtocol) {
+    this.clientManager = clientManager;
+    this.distroProtocol = distroProtocol;
+    NotifyCenter.registerSubscriber(this, NamingEventPublisherFactory.getInstance());
 }
 ```
 
-**第二级：执行引擎（`DistroExecuteTaskExecuteEngine`，继承 `NacosExecuteTaskExecuteEngine`）。** 执行任务真正发起网络传输。`AbstractDistroExecuteTask` 是模板基类，`DistroSyncChangeTask`/`DistroSyncDeleteTask` 分别实现数据拉取传输与仅传 key 的删除传输。
-
-加载与校验作为特殊任务类型分列：
-
-- **加载**：`DistroLoadDataTask` 在节点启动时从对端成员拉取全量快照，核心方法 `loadAllDataSnapshotFromRemote(type)` 遍历 `allMembersWithoutSelf()`，通过 `transportAgent.getDatumSnapshot` 获取快照、`dataProcessor.processSnapshot` 灌入本地，成功后 `dataStorage.finishInitial()`。全部类型加载完成后回调 `onSuccess` 并置 `DistroProtocol.isInitialized=true`；未完成则以 `loadDataRetryDelayMillis`（默认 30000ms）重试。
-- **校验**：`DistroVerifyTimedTask`（定时触发）→ `DistroVerifyExecuteTask`（单成员单类型执行）→ `syncVerifyData`（传输校验包）。
-
-**两级引擎的并发与生命周期。** `DistroExecuteTaskExecuteEngine` 继承自 `NacosExecuteTaskExecuteEngine`，本质是一个「按 key 分桶、桶内串行、桶间并行」的执行器：同一 `DistroKey` 的执行任务串行处理，避免对同一数据的并发覆盖；不同 key 的任务可在独立 worker 上并行推进。两个引擎均实现 `DisposableBean`，`DistroTaskEngineHolder.destroy()` 在容器关闭时依次 `delayTaskExecuteEngine.shutdown()` 与 `executeWorkersManager.shutdown()`，保证任务队列有序终结、不残留孤儿线程。
-
-**执行结果的两条反馈路径。** 同步执行失败走 `handleFailedTask()` 重试；异步回调路径则在 `AbstractDistroExecuteTask.DistroExecuteCallback` 中，成功时累加计数并记录 key：
+`subscribeTypes()`（`DistroClientDataProcessor.java:85-92`）声明订阅 `ClientEvent.ClientChangedEvent`、`ClientEvent.ClientDisconnectEvent` 和 `ClientEvent.ClientVerifyFailedEvent`。每当客户端发生变更、断开或校验失败，`onEvent()` 被触发：
 
 ```java
-private class DistroExecuteCallback implements DistroCallback {
-    @Override
-    public void onSuccess() {
-        DistroRecord distroRecord = DistroRecordsHolder.getInstance().getRecord(getDistroKey().getResourceType());
-        distroRecord.syncSuccess();
-        Loggers.DISTRO.info("[DISTRO-END] {} result: true", getDistroKey().toString());
-    }
-    @Override
-    public void onFailed(Throwable throwable) {
-        // 累加失败计数并触发 handleFailedTask() 重试
-        handleFailedTask();
+@Override
+public void onEvent(Event event) {
+    if (EnvUtil.getStandaloneMode()) { return; }
+    if (event instanceof ClientEvent.ClientVerifyFailedEvent) {
+        syncToVerifyFailedServer((ClientEvent.ClientVerifyFailedEvent) event);
+    } else {
+        syncToAllServer((ClientEvent) event);
     }
 }
 ```
 
-成功/失败分支分别调用 `syncSuccess()` 与 `handleFailedTask()`，把「监控计数」与「失败自愈」两条逻辑精确挂在回调的成功/失败路径上，避免二者错位。
+单机模式下直接返回（无同步需求）。对于校验失败事件，走 `syncToVerifyFailedServer()`（`DistroClientDataProcessor.java:105-112`）：获取 client 校验有效性后构造 `DistroKey`，调用 `distroProtocol.syncToTarget(distroKey, DataOperation.ADD, event.getTargetServer(), 0L)`，以 `delay=0` 立即向故障节点补推当前 client 数据。对于普通事件，走 `syncToAllServer()`（`DistroClientDataProcessor.java:115-127`）：区分 `ClientDisconnectEvent`（发送 DELETE）与 `ClientChangedEvent`（发送 CHANGE），通过 `distroProtocol.sync(distroKey, action)` 向所有远端节点发起同步。每次同步前均通过 `isInvalidClient(client)` 过滤非临时客户端（持久客户端由 Raft 处理）和不归属本节点负责的客户端（由 `DistroMapper` 决定）。
 
-`DistroProtocol` 是任务层的编排门面，对外暴露 `sync`、`syncToTarget`、`queryFromRemote`、`onReceive`、`onVerify`、`onQuery`、`onSnapshot` 等方法，统一将请求路由到 `DistroComponentHolder` 找到的对应 processor/storage/agent。其 `sync(data, action, delay)` 对每个远端成员调用 `syncToTarget`，而 `syncToTarget` 内部会构造带 `targetServer` 的 `DistroKey` 副本再入延迟队列——**同一 data 对 N 个对等节点的同步被拆成 N 个带不同 targetServer 的独立任务**，天然支持「每个节点独立合并、独立重试」。
+**角色二：DistroDataStorage（数据提供）。** 提供四个方法供框架在需要获取本节点数据时调用：
 
-### 4.6.5 配置与监控
+`getDistroData(DistroKey distroKey)`（`DistroClientDataProcessor.java:248-256`）按 `distroKey.resourceKey`（即 `clientId`）查找 `Client`，序列化其 `generateSyncData()` 生成 `ClientSyncData`（包含该客户端所有命名空间、分组、服务名、实例发布信息和批量实例数据的聚合对象），返回 `DistroData`。此方法在远端节点通过 `DistroProtocol.onQuery()` 查询特定 client 数据时被调用。
 
-**配置：`DistroConfig`（单例 + 动态配置）。** 继承 `AbstractDynamicConfig`，字段覆盖同步延迟、同步超时、重试延迟、校验间隔、校验超时、加载重试、加载超时七项，可从环境变量/配置中心动态刷新（`getConfigFromEnv`）。默认值定义在 `DistroConstants`：
+`getDatumSnapshot()`（`DistroClientDataProcessor.java:258-273`）：遍历 `clientManager.allClientId()`，过滤非临时客户端，逐个调用 `generateSyncData()` 生成 `ClientSyncData` 列表，封装为 `ClientSyncDatumSnapshot` 序列化返回。此方法在新节点加入集群时由 `DistroLoadDataTask` 调用，从远端节点拉取全量客户端数据快照。
 
-| 配置键 | 默认值 | 含义 |
-|--------|--------|------|
-| `nacos.core.protocol.distro.data.sync.delayMs` | 1000ms | 增量同步延迟 |
-| `nacos.core.protocol.distro.data.sync.timeoutMs` | 3000ms | 同步超时 |
-| `nacos.core.protocol.distro.data.sync.retryDelayMs` | 3000ms | 失败重试延迟 |
-| `nacos.core.protocol.distro.data.verify.intervalMs` | 5000ms | 校验间隔 |
-| `nacos.core.protocol.distro.data.verify.timeoutMs` | 3000ms | 校验超时 |
-| `nacos.core.protocol.distro.data.load.retryDelayMs` | 30000ms | 加载失败重试延迟 |
-| `nacos.core.protocol.distro.data.load.timeoutMs` | 30000ms | 快照加载超时 |
+`getVerifyData()`（`DistroClientDataProcessor.java:274-293`）：遍历所有临时客户端，仅对 `clientManager.isResponsibleClient(client)`（即本节点负责的客户端），构造 `DistroClientVerifyInfo(clientId, revision)` 对象序列化后封装为 `DistroData`，标记 `DataOperation.VERIFY`。由于仅携带 `{clientId, revision}` 两个字段，单条校验数据体积极小（几十字节量级）。此方法由 `DistroVerifyExecuteTask` 定时调用，逐成员发送校验包。
 
-**监控：`DistroRecordsHolder`（单例）聚合各类型的 `DistroRecord`。** `DistroRecord` 维护 `totalSyncCount`、`successfulSyncCount`、`failedSyncCount`、`failedVerifyCount` 四类原子计数，`syncSuccess/syncFail/verifyFail` 由 `AbstractDistroExecuteTask` 回调与 `DistroVerifyExecuteTask` 回调在成功/失败时调用。`DistroRecordsHolder` 提供 `getTotalSyncCount`/`getFailedVerifyCount` 等聚合接口，供监控与运维观测同步健康度。
+`finishInitial()`（`DistroClientDataProcessor.java:79-81`）将 `isFinishInitial` 置为 true，仅在快照加载完成后调用来标记该类型数据已就绪，校验任务在 `isFinishInitial()=false` 时会跳过对该类型的校验，避免在半初始化状态下误判数据不一致。
 
-### 4.6.6 设计模式汇总与 Trade-off
+**角色三：DistroDataProcessor（数据接收与处理）。** 提供三个方法供框架在收到远端同步数据时回调：
 
-本框架集中体现了五种设计模式：
+`processData(DistroData distroData)`（`DistroClientDataProcessor.java:140-157`）根据 `distroData.getType()` 分发：`ADD`/`CHANGE` 时反序列化出 `ClientSyncData`，调用 `handlerClientSyncData()`；`DELETE` 时提取 `clientId`，直接调用 `clientManager.clientDisconnected(clientId)` 移除客户端。
 
-1. **门面（Facade）**：`DistroProtocol` 是业务侧唯一操作入口，隐藏任务引擎与组件注册的细节，业务方只调用 `sync`/`syncToTarget` 等高层方法。
-2. **策略（Strategy）**：`DistroTransportAgent`/`DistroDataStorage`/`DistroDataProcessor`/`DistroFailedTaskHandler` 均为策略接口，`resourceType` 决定选用的具体策略，v1/v2 可平滑替换。
-3. **服务定位器（Service Locator）**：`DistroComponentHolder` 以 map 按类型定位策略实现，避免工厂类随类型爆炸。
-4. **模板方法（Template Method）**：`AbstractDistroExecuteTask` 固化执行骨架，子类只实现数据操作细节。
-5. **单例（Singleton）**：`DistroConfig`、`DistroRecordsHolder` 以私有构造 + 静态 `INSTANCE`/`getInstance` 保证全局唯一，避免状态分散。
+`handlerClientSyncData()`（`DistroClientDataProcessor.java:158-164`）：调用 `clientManager.syncClientConnected()` 同步客户端属性（包含 revision），取到本地 `Client` 对象后调用 `upgradeClient()`（`DistroClientDataProcessor.java:167-194`）完成差异升级——核心逻辑是对比远端同步来的 `namespaces`/`groupNames`/`serviceNames`/`instances` 列表与本地数据，新增或更新到 `Client` 中，同时遍历本地所有已发布服务，将不在同步列表中的服务调用 `client.removeServiceInstance()` 移除，最后调用 `client.setRevision()` 更新版本号。`processBatchInstanceDistroData()`（`DistroClientDataProcessor.java:199-217`）是对批量实例发布场景的并行处理路径，逻辑结构与主处理一致，区别是从 `BatchInstanceData` 中按 `BatchInstancePublishInfo` 批量更新。
 
-**核心 Trade-off：两级任务引擎的合并收益 vs 延迟。** 引入延迟引擎本质是「以时间换合并、以延迟换吞吐」：把瞬时密集的同步请求先缓存并合并，到期统一发送，用 `syncDelayMillis=1000ms` 的延迟换取对同一 key 的请求收敛。量化：若同一 client 在 1s 内触发 5 次变更，未合并时产生 5 次网络请求；合并后仅 1 次，网络往返降低 80%，代价是数据到达远端的最坏时延增加最多 1000ms。这与 AP 模型「接受短暂不一致但拒绝过量请求」的取向一致。
+`processVerifyData(DistroData distroData, String sourceAddress)`（`DistroClientDataProcessor.java:227-237`）：反序列化出 `DistroClientVerifyInfo`，调用 `clientManager.verifyClient(verifyData)` 比对 revision。一致返回 true（校验通过），不一致返回 false，触发调用方（`DistroClientTransportAgent.DistroVerifyCallbackWrapper.onResponse`）发布 `ClientVerifyFailedEvent`，形成"识别漂移→发布事件→立即修复"的对账闭环。
 
-**框架通用性 vs 具体实现耦合的取舍**：将协议内核与业务实现分层，换来跨业务复用与测试便利，代价是多了一次 `distroComponentHolder` 查表间接层与角色接口的抽象成本。在 2.5.3 中，这一分层让 v1/v2 得以并存，且后续新增协议类型无需改动内核——这是把「naming 内置的 Distro」升格为「core 通用框架」的核心价值。
+`processSnapshot(DistroData distroData)`（`DistroClientDataProcessor.java:238-246`）：反序列化 `ClientSyncDatumSnapshot`，遍历其中每条 `ClientSyncData`，逐一调用 `handlerClientSyncData()` 灌入本地。快照数据可能包含数千条 client 数据，因此在节点启动时批量灌入可以一次性完成全量状态重建，避免逐条请求的额外网络开销。
 
----
+### 4.6.3.3 DistroClientTransportAgent：v2 集群传输代理
 
-## 4.7 Distro 数据分布算法详解：DistroMapper 取模分配与健康列表
+`DistroClientTransportAgent`（`naming/src/main/java/com/alibaba/nacos/naming/consistency/ephemeral/distro/v2/DistroClientTransportAgent.java`）实现了 `DistroTransportAgent` 接口的全部七个方法，将 Distro 框架的传输抽象映射到 Nacos 集群内部的 gRPC 通道。
 
-### 4.7.1 定位与前提澄清
+`supportCallbackTransport()`（`DistroClientTransportAgent.java:ADD/CHANGE/DELETE/VERIFY/SNAPSHOT/QUERY`）返回 `true`，表示该传输代理支持异步回调路径，使任务执行引擎在调用传输时走 `doExecuteWithCallback()` 分支以获取成功/失败反馈。
 
-Distro 的「数据该由谁负责」由 `naming/core/DistroMapper.java` 单一决定。2.5.3 必须澄清一个与流传说法不符的事实：**Distro 不是一致性哈希环（TreeMap + 虚拟节点）实现**——`core/distributed` 下并不存在 `DistroHash`、哈希环等类。2.5.3 采用的是**对节点列表求模的普通哈希**：`distroHash(tag) % servers.size()`，配合一个**动态维护、全节点排序一致的健康节点列表 `healthyList`**。这一选择与 JRaft 的 Raft 组、一致性哈希有本质区别，属于 AP 场景下「简单、确定、可预期」的分布策略。
+`syncData(DistroData data, String targetServer)`（`DistroClientTransportAgent.java:67-84`）：构造 `DistroDataRequest`，通过 `clusterRpcClientProxy.sendRequest(member, request)` 同步发送，调用 `checkResponse()` 校验响应码是否为 `ResponseCode.SUCCESS`。发送前两次安全检查：`isNoExistTarget()` 检查目标地址是否不存在于成员列表中（若不存在直接返回 true 视为成功）；`checkTargetServerStatusUnhealthy()` 检查目标节点状态是否为 UP 且 RPC 通道是否运行中（若不健康记录警告日志并返回 false）。
+
+`syncData(DistroData data, String targetServer, DistroCallback callback)`（`DistroClientTransportAgent.java:89-106`）：异步版本，通过 `clusterRpcClientProxy.asyncRequest(member, request, wrapper)` 发送请求，wrapper 类型为内部类 `DistroRpcCallbackWrapper`（`DistroClientTransportAgent.java:221-257`）。它在 `onResponse` 中校验成功后调用 `NamingTpsMonitor.distroSyncSuccess()` 并回调 `distroCallback.onSuccess()`；失败则调用 `NamingTpsMonitor.distroSyncFail()` 并回调 `distroCallback.onFailed()`。超时由 `DistroConfig.getSyncTimeoutMillis()`（默认 3000ms）控制。
+
+`syncVerifyData(DistroData verifyData, String targetServer)`（`DistroClientTransportAgent.java:111-126`）与 `syncVerifyData(DistroData verifyData, String targetServer, DistroCallback callback)`（`DistroClientTransportAgent.java:135-147`）：结构与同步方法一致，差异在于请求的 `DataOperation` 为 `VERIFY`。同步校验版本中有一处精巧设计：先将 `verifyData.getDistroKey().setTargetServer(memberManager.getSelf().getAddress())`，即把校验数据的 targetServer 替换为本节点地址，使对端在回调时能定位数据源向本节点发起补推。异步版本在失败回调中通过 `DistroVerifyCallbackWrapper`（`DistroClientTransportAgent.java:259-297`）的 `onResponse` 发布 `ClientEvent.ClientVerifyFailedEvent` 触发补偿同步。
+
+`getData(DistroKey key, String targetServer)`（`DistroClientTransportAgent.java:159-170`）：发送 `DataOperation.QUERY` 请求从远端拉取特定 client 数据。`getDatumSnapshot(String targetServer)`（`DistroClientTransportAgent.java:186-191`）：发送 `DataOperation.SNAPSHOT` 请求拉取全量快照，超时由 `DistroConfig.getLoadDataTimeoutMillis()`（默认 30000ms）控制。
+
+两个内部包装类各自指定执行器与超时：`DistroRpcCallbackWrapper` 使用 `GlobalExecutor.getCallbackExecutor()` 回调线程池、超时为 `DistroConfig.getSyncTimeoutMillis()`；`DistroVerifyCallbackWrapper` 使用同一回调线程池、超时为 `DistroConfig.getVerifyTimeoutMillis()`（默认 3000ms）。两者均通过 `NamingTpsMonitor` 记录成功/失败的 TPS 指标，供监控系统的 `distroSyncSuccess`/`distroSyncFail`/`distroVerifySuccess`/`distroVerifyFail` 四类监控指标。
+
+### 4.6.3.4 DistroClientTaskFailedHandler：失败重试处理
+
+`DistroClientTaskFailedHandler`（`naming/src/main/java/com/alibaba/nacos/naming/consistency/ephemeral/distro/v2/DistroClientTaskFailedHandler.java`）实现了 `DistroFailedTaskHandler` 接口，仅有一个 `retry()` 方法：
 
 ```java
-@Component("distroMapper")
-public class DistroMapper extends MemberChangeListener {
-    /** List of service nodes, you must ensure that the order of healthyList is the same for all nodes. */
-    private volatile List<String> healthyList = new ArrayList<>();
-    ...
+@Override
+public void retry(DistroKey distroKey, DataOperation action) {
+    DistroDelayTask retryTask = new DistroDelayTask(distroKey, action,
+            DistroConfig.getInstance().getSyncRetryDelayMillis());
+    distroTaskEngineHolder.getDelayTaskExecuteEngine().addTask(distroKey, retryTask);
 }
 ```
 
-### 4.7.2 分布核心：responsible 与 mapSrv
+重试策略的核心逻辑是：将失败的同步操作直接包装为新的 `DistroDelayTask`，以 `DistroConfig.getSyncRetryDelayMillis()`（默认 3000ms）作为延迟，重新投递到延迟引擎。由于延迟引擎对同一 `DistroKey` 的任务具有「合并语义」——同一 key 在延迟窗口内的多次投递会合并为一次——连续失败的重试不会造成请求风暴。此设计将重试间隔固定为 3000ms，确保执行引擎不会因重试而产生堆积，同时延迟合并又防止了同一 key 的重复投递。
 
-`DistroMapper` 暴露两个核心方法。其一是判断本节点是否负责某个 tag 的 `responsible()`：
+### 4.6.3.5 完整数据分发链路
+
+将上述各组件的协作串联起来，v2 Distro 的一条完整数据分发链路如下：
+
+**触发阶段：** 客户端注册/注销/发布实例时，`ClientManager` 内部更新 `Client` 对象并发布 `ClientEvent.ClientChangedEvent`。`DistroClientDataProcessor` 作为 `SmartSubscriber` 收到该事件，从 `onEvent()` 入口进入。
+
+**同步决策阶段：** `onEvent()` 调用 `syncToAllServer()`（或 `syncToVerifyFailedServer()`），通过 `ClientManager` 校验是否为临时客户端且本节点负责——非临时客户端不通过 Distro 同步（改走 Raft），不归属本节点的客户端也不应主动同步（防止冗余网络流量）。通过校验后构造 `DistroKey(clientId, "Nacos:Naming:v2:ClientData")` 并调用 `distroProtocol.sync(distKey, DataOperation.CHANGE)`。
+
+**任务入队阶段：** `DistroProtocol.sync()` 遍历所有远端成员，对每个目标 server 构造带 `targetServer` 的 `DistroKey` 副本，包装为 `DistroDelayTask`，以 `DistroConfig.getSyncDelayMillis()`（默认 1000ms）为延迟入队到 `DistroDelayTaskExecuteEngine`。若同一 `DistroKey` 在延迟窗口内多次入队，延迟引擎的合并机制将合并为一次执行。
+
+**传输执行阶段：** 延迟到期后 `DistroDelayTaskProcessor` 将延迟任务转换为 `DistroSyncChangeTask` 并投递到 `DistroExecuteTaskExecuteEngine`。`DistroSyncChangeTask` 内部通过 `DistroComponentHolder.findTransportAgent(type)` 找到 `DistroClientTransportAgent`，调用 `doExecuteWithCallback()` 走异步路径：本地查询 `DistroDataStorage.getDistroData(distroKey)` 构造 `DistroData`，然后调用 `transportAgent.syncData(data, targetServer, callback)`。
+
+**网络传输阶段：** `DistroClientTransportAgent.syncData()` 通过 `ClusterRpcClientProxy.sendRequest/asyncRequest` 将 `DistroDataRequest` 发送到目标节点。目标节点的 Nacos gRPC 服务端收到请求后路由到 `DistroProtocol.onReceive()` → `DistroComponentHolder.findDataProcessor(resourceType)` → `DistroClientDataProcessor.processData()`。
+
+**数据落地阶段：** `processData()` 根据操作类型分发：ADD/CHANGE 时反序列化 `ClientSyncData`，调用 `handlerClientSyncData()` → `upgradeClient()` 完成本节点 `Client` 状态升级——新增/更新实例信息、移除已不存在的旧服务、通过 `ClientOperationEvent` 发布事件通知 ServiceManager 刷新路由表。DELETE 时直接调用 `clientManager.clientDisconnected(clientId)`。
+
+**失败重试阶段：** 若传输失败（超时、网络不可达、目标节点非健康），异步回调 `onFailed()` 触发 `DistroExecuteCallback.onFailed()` → `handleFailedTask()` → `DistroComponentHolder.findFailedTaskHandler(type)` → `DistroClientTaskFailedHandler.retry()`，将失败任务以 `syncRetryDelayMillis=3000ms` 延迟重新投递到延迟引擎，进入下一轮重试。
+
+**校验阶段：** `DistroVerifyTimedTask` 定时（默认每 5000ms）遍历所有类型和远端成员，通过 `DistroDataStorage.getVerifyData()` 获取校验数据列表，逐条通过 `DistroVerifyExecuteTask` 发送校验包。远端收到后进入 `DistroProtocol.onVerify()` → `DistroClientDataProcessor.processVerifyData()` 比对 revision。不一致时回调发布 `ClientVerifyFailedEvent`，回到 `syncToVerifyFailedServer()` 以 `delay=0` 立即补推修复。
+
+### 4.6.4 设计模式分析
+
+本小节涉及六个可复用设计模式，分布在组件注册、数据分发的不同层面：
+
+1. **注册器模式（Registry Pattern）**：`DistroComponentHolder` 作为组件注册中心，以 `Map<String, T>` 存储各类角色实例，暴露 `register*`/`find*` 接口。`DistroClientComponentRegistry.doRegister()` 一次性注册 v2 全量组件——这是「注册与使用分离」的典范：框架在运行时通过 `resourceType` 查找到对应实现，无需知道具体实现类。v1（旧 Datum 实现）与 v2（新 Client 实现）通过不同的 `TYPE` 值在同一 `DistroComponentHolder` 中并存，实现零冲突共存。
+
+2. **策略模式（Strategy）**：`DistroTransportAgent`、`DistroDataStorage`、`DistroDataProcessor`、`DistroFailedTaskHandler` 均为策略接口。`DistroClientTransportAgent` 封装基于 gRPC 的传输策略；若未来需要切换 HTTP 或消息队列传输，只需实现新的 `DistroTransportAgent` 并按新的 `resourceType` 注册即可，无需改动框架和调用方。`DistroClientDataProcessor` 同时承担数据存取（`DistroDataStorage`）和数据消费（`DistroDataProcessor`）两个策略角色——在角色粒度上做了进一步正交：框架按需分别以 `findDataStorage(type)` 和 `findDataProcessor(type)` 获取同一个对象的不同能力面。
+
+3. **观察者模式（Observer）**：`DistroClientDataProcessor` 通过 `SmartSubscriber` 订阅 `ClientEvent`，将「数据变更」事件与「同步动作」解耦。`ClientManager` 发布事件时无需知道谁在监听，`DistroClientDataProcessor` 收到事件后自行触发同步。这使扩展新的同步监听者（如日志记录、审计）无需改动 `ClientManager`。`ClientVerifyFailedEvent` → `syncToVerifyFailedServer()` 的二次事件链路则构成了「事件 → 动作 → 事件」的级联发布-订阅链条。
+
+4. **组合模式（Composite）**：`DistroClientDataProcessor` 同时实现 `DistroDataStorage` 和 `DistroDataProcessor`，一个对象承担"数据读取"与"数据写入/校验"的双重职责。这不是多重继承的妥协，而是精心设计的组合——`DistroDataStorage` 提供数据的出站查询（`getDistroData`/`getDatumSnapshot`/`getVerifyData`），`DistroDataProcessor` 提供数据的入站处理（`processData`/`processVerifyData`/`processSnapshot`），二者在同一个 `ClientManager` 实例上操作同一份 `Client` 数据，保证读写一致性。
+
+5. **门面模式（Facade）**：`DistroProtocol` 是业务侧唯一操作入口。`DistroClientDataProcessor` 不需要了解延迟引擎、执行引擎、合并语义、重试策略的细节，只需调用 `distroProtocol.sync(key, action)`，框架内部完成 `DistroComponentHolder` 查表 → `DistroDelayTask` 入队 → `DistroDelayTaskProcessor` 分派 → `DistroExecuteTask` 执行 → `DistroClientTransportAgent` 传输 → `DistroDataProcessor.processData()` 的全链路编排。
+
+6. **模板方法模式（Template Method）**：`AbstractDistroExecuteTask` 固化了执行骨架（`run` → 回调/同步 → 成功累加计数 → `handleFailedTask`），而 `doExecute()` 和 `doExecuteWithCallback()` 由 `DistroSyncChangeTask`/`DistroSyncDeleteTask` 实现具体操作细节。`DistroClientTaskFailedHandler.retry()` 本身也是一个模板：它固定地将失败任务包装为 `DistroDelayTask` 重新入队，重试间隔由 `DistroConfig.getSyncRetryDelayMillis()` 决定，子类仅指定重试目标引擎。
+
+### 4.6.5 Trade-off 分析
+
+**单 TYPE 标识 vs 多 TYPE 拆分。** v2 将 `DistroClientDataProcessor.TYPE` 定义为单一 `"Nacos:Naming:v2:ClientData"`，使所有 client 数据的传输、存储、处理、失败重试共享同一个 `resourceType`。优点是一次注册即可覆盖全部 client 数据的同步全链路，注册简洁且查找效率 O(1)；代价是不同类型数据（如 client 元数据 vs client 实例数据）共享同一个处理器，`processData` 内部须通过 `switch(distroData.getType())` 分派——若未来需要独立优化某一子类型的处理逻辑（如批量实例独立线程池），则需要拆分 TYPE。当前 2.5.3 的选择是基于「client 数据粒度统一的假设」，若未来 client 数据分类膨胀，将 TYPE 细化为 `"ClientData:Instance"` 与 `"ClientData:Subscription"` 是低成本演进路径——只需新增注册项，框架本身无需变更。
+
+**SmartSubscriber 的订阅广度 vs 单事件处理器的风险。** `DistroClientDataProcessor.onEvent()` 同时处理 `ClientChangedEvent`（实例变更）和 `ClientDisconnectEvent`（客户端断开）两类事件，合并处理逻辑减少了一个事件订阅器的注册开销和事件分发跳数。代价是若未来需要差异化限流——例如实例变更需限流保护而断开事件需立即处理——则需拆分订阅器或在 `onEvent` 内部增加复杂的分支限流逻辑。权衡选择以简化代码为优先在当前规模是合理的：client 事件量级在万级别时单处理器可承载。
+
+**getVerifyData() 的全量遍历 vs 增量推送。** `DistroClientDataProcessor.getVerifyData()` 遍历 `clientManager.allClientId()` 对所有临时客户端均生成校验包，每次校验周期（默认 5s）均全量发送。优点是实现极其简单——无需维护"上次校验时间戳"的增量标记。代价是校验流量与客户端数成正比：若集群有 10^5 个客户端、5 个节点，校验包总数为 5×(10^5)=5×10^5 条每 5s，每条几十字节，总带宽约 8 Mbps（假定平均 100 字节/条），在千兆内网中负载可控。若客户端数增长到 10^6，校验带宽将升至约 80 Mbps，此时需考虑引入增量校验（仅发送自上次校验以来变更过的客户端）减少冗余校验流量——这可以通过给 `Client` 增加 `lastVerifiedRevision` 字段来实现。
+
+**固定延迟重试 vs 指数退避。** `DistroClientTaskFailedHandler.retry()` 以固定 3000ms 间隔重试，无最大重试次数限制。量化对比：若对端持续不可用 60s，同一 key 将产生约 20 次无效重试请求；若用指数退避（3s → 6s → 12s...），60s 内仅约 7 次。固定延迟的优点是实现确定、预测性强、配合合并机制后去重开销可控；缺点是故障持续时对故障节点有恒定压力。由于 Distro 同步数据体量小（单条 client 数据序列化后通常在 1KB~10KB 量级），恒定重试的网络开销可接受——这与 AP 模型优先保障可用性而对短时重复请求有容忍度的选择一致。
+
+**DistroClientDataProcessor 双重接口实现的耦合权衡。** 将 `DistroDataStorage` 和 `DistroDataProcessor` 合并在一个类中，共享同一个 `ClientManager` 引用，保证了读写同一份数据源，避免了"存储层读到旧数据、处理层已写入新数据"的不一致窗口。代价是类的职责较重——`DistroClientDataProcessor` 全长约 260 行，涵盖事件订阅（`subscribeTypes`/`onEvent`）、数据提供（4 个 `DistroDataStorage` 方法）、数据处理（3 个 `DistroDataProcessor` 方法）和内部辅助（`upgradeClient`/`processBatchInstanceDistroData`/`handlerClientSyncData`/`isInvalidClient`），若其中任一职责膨胀（如批量处理逻辑独立演进），拆分为 `DistroClientDataProcessor` + `DistroClientDataStorageImpl` 两个独立类是清晰的演进方向。
+
+### 4.6.6 小结
+
+本小节完整走读了 Nacos 2.5.3 Distro v2 在命名模块中的组件注册与数据分发全链路，涵盖 `DistroClientComponentRegistry`、`DistroClientDataProcessor`、`DistroClientTransportAgent` 和 `DistroClientTaskFailedHandler` 四个核心类。
+
+核心要点：
+
+1. **注册机制**：`DistroClientComponentRegistry.doRegister()` 以 `@PostConstruct` 一次性将 v2 四个组件注册到通用框架的 `DistroComponentHolder` 中，以 `TYPE = "Nacos:Naming:v2:ClientData"` 统一标识，v1 与 v2 通过不同 TYPE 实现零冲突共存。
+
+2. **数据分发链路**：`ClientEvent` 触发 → `DistroClientDataProcessor.onEvent()` → `DistroProtocol.sync/syncToTarget` → 两级引擎（延迟合并 + 执行传输） → `DistroClientTransportAgent` 通过网络发送 → 对端 `DistroProtocol.onReceive()` → `DistroClientDataProcessor.processData()` → `upgradeClient()` 完成 client 状态升级 → 通知 `ServiceManager` 刷新路由表。
+
+3. **多角色合一**：`DistroClientDataProcessor` 同时实现 `DistroDataStorage`（数据出站查询）、`DistroDataProcessor`（数据入站处理）和 `SmartSubscriber`（事件订阅），以单一对象承担全部 client 数据在 Distro 协议中的存取、分发和事件驱动职责。
+
+4. **失败自愈**：传输失败通过 `DistroClientTaskFailedHandler.retry()` 以固定 3000ms 间隔入延迟引擎重试，校验失败通过 `ClientVerifyFailedEvent` → `syncToVerifyFailedServer()` 以 `delay=0` 立即补推修复，两条自愈路径均依托通用框架的任务引擎和组件注册表。
+
+5. **设计模式**：涉及注册器（`DistroComponentHolder`）、策略（四个角色接口）、观察者（`SmartSubscriber` 订阅 `ClientEvent`）、组合（`DistroClientDataProcessor` 双接口合一）、门面（`DistroProtocol`）、模板方法（`AbstractDistroExecuteTask`）六种设计模式，各司其职。
+## 4.7 Distro v2 分布机制：取模哈希 + 健康列表动态维护
+
+### 4.7.1 设计背景
+
+Distro v2 的数据分布机制由 `naming/core/DistroMapper.java` 单一承载。在 2.5.3 源码中，不存在 `DistroHash` 或任何哈希环实现；Distro 的"数据该由哪个节点负责"问题，其解决方案不是一致性哈希环（不是 `TreeMap + 虚拟节点`），而是**取模哈希 + 动态维护的健康节点排序列表**。
+
+### 4.7.1.1 为什么不用一致性哈希
+
+一致性哈希的核心优势在于节点增删时仅约 `1/n` 的数据需要重新映射，而取模哈希在节点数变化时绝大多数数据都会更换 owner。然而一致性哈希在 Nacos 场景下引入三个与 AP 目标矛盾的成本：
+
+1. **哈希环维护负担**：一致性哈希需要维护虚拟节点（通常 150-200 个），在成员列表动态变化（节点上线、下线、状态抖动）时，哈希环重算频率高，且在集群成员规模小（通常 3-5 节点）时虚拟节点的均匀性优势不明显。
+2. **各节点环一致性刚性要求**：若各 Nacos 节点对哈希环构建的输入（成员集合、排序）存在亚秒级偏差，则同一 tag 在不同节点上会映射到不同 owner，导致分布错乱。取模策略的"排序列表"远比"哈希环"更容易在全节点间保证一致。
+3. **扩缩容低频假设成立**：生产环境中 Nacos 集群成员数通常稳定，扩缩容属于低频操作，此时取模策略的简单性带来的运维可理解性与确定性收益大于一致性哈希的数据迁移最小化收益。
+
+### 4.7.1.2 DistroMapper 在系统中的定位
+
+`DistroMapper` 作为一个 Spring `@Component("distroMapper")`，提供两个方向的计算能力：
+
+- **判定归属**：`responsible(String tag)`——当前节点是否负责某个 tag 的数据；
+- **查询 owner**：`mapSrv(String tag)`——某个 tag 的数据应由哪个远端节点负责。
+
+这两者共享同一个哈希函数 `distroHash(tag)` 和一个全局排序一致的 `healthyList`（健康节点列表）。调用方包括 `HealthCheckCommonV2`（健康检查，用 `distroMapper.responsible(serviceName)` 判定是否由本节点执行某服务的健康检查）、`OperatorController`（运维接口，用 `distroMapper.mapSrv(tag)` 查询某 tag 的责任节点），以及 Distro v2 客户端数据同步链路中通过 `clientManager.isResponsibleClient(client)` 间接调用。
+
+### 4.7.2 核心类关系图
+
+```
+图 4-X  DistroMapper 核心类关系
+
+┌──────────────────────────────────────────────────────────┐
+│                    NotifyCenter                          │
+│              (common.notify)                            │
+│  ┌──────────────────────────────────────────────┐      │
+│  │        MembersChangeEvent publishes         │      │
+│  │   when cluster members change              │      │
+│  └──────────────────┬───────────────────────────┘      │
+└────────────────────┼──────────────────────────────────────┘
+                     │ 订阅
+                     ▼
+┌──────────────────────────────────────────────────────────┐
+│           MemberChangeListener  ┌───────────────────┐   │
+│  (core/cluster/)              │  DistroMapper     │   │
+│  extends Subscriber           │  @Component       │◄──┼─── ServerMemberManager
+│  <MembersChangeEvent>        │                   │   │   (core/cluster/)
+│                               │ - healthyList     │   │   注入构造函数
+│  + subscribeType()            │ - switchDomain   │   │
+│  + ignoreExpireEvent()       │ - memberManager  │   │
+│  + onEvent(event)            │                   │   │
+│      ▲                       │ + init()         │   │
+│      │                       │ + responsible()   │   │
+┌──────┴──────────────┐       │ + mapSrv()       │   │
+│   DistroMapper      │       │ + getHealthyList()│   │
+│  (naming/core/)    │       │ + onEvent()      │   │
+│                     │       │ - distroHash()   │   │
+│ - healthyList:      │       └───────────────────┘   │
+│   volatile List     │                               │
+│                     │          使用方                │
+└─────────────────────┘       ┌───────────────────────┐
+                              │ HealthCheckCommonV2   │
+                              │ OperatorController    │
+                              │ Distro v2 client     │
+                              │ sync chain           │
+                              └───────────────────────┘
+```
+
+**关系说明**：
+
+1. `DistroMapper extends MemberChangeListener`，后者继承自 `Subscriber<MembersChangeEvent>`（`core/cluster/MemberChangeListener.java:36`）。`MemberChangeListener` 覆盖了 `subscribeType()` 返回 `MembersChangeEvent.class`，并默认覆盖 `ignoreExpireEvent()` 返回 `true`——这意味着过期事件会被丢弃，只有最新的成员变化事件被消费。
+
+2. `DistroMapper` 通过构造函数注入 `ServerMemberManager`（`core/cluster/ServerMemberManager.java`），在 `init()` 中调用 `memberManager.allMembers()` 初始化 `healthyList`，再通过 `NotifyCenter.registerSubscriber(this)` 注册自身为 `MembersChangeEvent` 的订阅者。
+
+3. `DistroMapper` 自身不依赖 `DistroProtocol`。`DistroProtocol` 是通用 AP 协议框架（位于 `core/distributed/distro/`），它通过 `DistroComponentHolder` 持有各类 `DistroDataProcessor`，而 `DistroMapper` 是独立的分布判定组件，两者通过 `ServerMemberManager` 间接共享集群成员信息。
+
+### 4.7.3 源码走读
+
+### 4.7.3.1 初始化：`init()` 与订阅注册
+
+`DistroMapper.init()`（`naming/core/DistroMapper.java:70-73`）在 Spring 容器启动时通过 `@PostConstruct` 触发：
 
 ```java
-public boolean responsible(String responsibleTag) {
-    final List<String> servers = healthyList;
-    if (!switchDomain.isDistroEnabled() || EnvUtil.getStandaloneMode()) {
-        return true;
-    }
-    if (CollectionUtils.isEmpty(servers)) {
-        // means distro config is not ready yet
-        return false;
-    }
-    String localAddress = EnvUtil.getLocalAddress();
-    int index = servers.indexOf(localAddress);
-    int lastIndex = servers.lastIndexOf(localAddress);
-    if (lastIndex < 0 || index < 0) return true;
-    int target = distroHash(responsibleTag) % servers.size();
-    return target >= index && target <= lastIndex;
+@PostConstruct
+public void init() {
+    NotifyCenter.registerSubscriber(this);
+    this.healthyList = MemberUtil.simpleMembers(memberManager.allMembers());
 }
 ```
 
-其二是计算某个 tag 应落在哪个远端节点的 `mapSrv()`：
+两件事情按顺序完成：
+
+1. **注册为订阅者**：`NotifyCenter.registerSubscriber(this)` 通过 `MemberChangeListener` 的类型参数 `MembersChangeEvent.class`（由 `subscribeType()` 返回），将 `DistroMapper` 注册到 `NotifyCenter` 的事件分发路由表中。此后任何通过 `NotifyCenter.publishEvent(MembersChangeEvent)` 发布的事件都会被路由到 `DistroMapper.onEvent()`。
+
+2. **初始健康列表填充**：`MemberUtil.simpleMembers(memberManager.allMembers())` 从 `ServerMemberManager` 获取全量成员（`HashSet` 拷贝），通过 `MemberUtil.simpleMembers()`（`core/cluster/MemberUtil.java:256-259`）转换为地址字符串列表并排序：
 
 ```java
-public String mapSrv(String responsibleTag) {
-    final List<String> servers = healthyList;
-    if (CollectionUtils.isEmpty(servers) || !switchDomain.isDistroEnabled()) {
-        return EnvUtil.getLocalAddress();
-    }
-    try {
-        int index = distroHash(responsibleTag) % servers.size();
-        return servers.get(index);
-    } catch (Throwable e) {
-        return EnvUtil.getLocalAddress();
-    }
+// MemberUtil.simpleMembers()
+public static List<String> simpleMembers(Collection<Member> members) {
+    return members.stream().map(Member::getAddress).sorted()
+            .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
 }
+```
 
+该方法的 `sorted()` 调用使用 `String` 自然序（即 IP:port 的字典序），保证所有节点在拿到相同成员集合时产出完全一致的排序列表——这是取模分配正确性的前提。
+
+注意初始化时**未过滤成员状态**：初始的 `healthyList` 包含所有成员（含 `DOWN` 状态），后续首次 `MembersChangeEvent` 到达后会被 `onEvent()` 的状态过滤覆盖。
+
+### 4.7.3.2 哈希函数：`distroHash()`
+
+`DistroMapper.distroHash()`（`naming/core/DistroMapper.java:124-126`）：
+
+```java
 private int distroHash(String responsibleTag) {
     return Math.abs(responsibleTag.hashCode() % Integer.MAX_VALUE);
 }
 ```
 
-二者共享同一哈希函数：`distroHash(tag) = |tag.hashCode() % Integer.MAX_VALUE|`，再对 `servers.size()` 取模得到 0..size-1 的下标。`responsible()` 通过「本节点在 `healthyList` 中出现的位置区间（`index..lastIndex`）」判断该下标是否落在自己负责的区段——`indexOf`/`lastIndexOf` 的对称使用，在单节点占据 `healthyList` 中连续多个位置时也能正确判断，这是应对「重试/重复注册导致同一地址在列表出现多次」的防御性实现。
+该函数的作用是将任意 `String` tag 映射到非负整数区间 `[0, Integer.MAX_VALUE)`，为后续取模运算提供均匀分布的槽位。关键设计要点：
 
-`responsibleTag` 的语义在 v1/v2 下不同：v1 是 `serviceName`，v2 是 `ip:port`（client 连接标识）。v2 下，`DistroClientDataProcessor` 通过 `clientManager.isResponsibleClient(client)` 间接调用本逻辑，决定某 client 数据是否应加入同步/校验。
+- **`% Integer.MAX_VALUE` 而非直接 `Math.abs(hashCode())`**：`Math.abs(Integer.MIN_VALUE)` 会溢出返回 `Integer.MIN_VALUE`（仍为负数），先对 `Integer.MAX_VALUE` 取模能将输入范围收缩到 `[0, Integer.MAX_VALUE)`，避免 `Math.abs` 的溢出边界。这是 Java 中常见的防御性写法。
+- **非加密级哈希**：使用的是 `String.hashCode()`（Java 标准库实现），它的分布均匀性在多数场景下足够，但不具备抗碰撞性——而这在服务分布场景下不需要。
+- **确定性**：同一 tag 在同一 JVM 实现下永远返回同一哈希值，保证分布的可预测性。
 
-### 4.7.3 健康列表动态维护：成员变化监听
+### 4.7.3.3 归属判定：`responsible()`
 
-`healthyList` 是 `volatile` 字段并持有多读不加锁，其更新由成员变化事件驱动。`DistroMapper` 继承 `MemberChangeListener` 并实现 `onEvent`：
+`DistroMapper.responsible()`（`naming/core/DistroMapper.java:79-102`）是 Distro v2 分布机制被调用最频繁的方法：
+
+```java
+public boolean responsible(String responsibleTag) {
+    final List<String> servers = healthyList;
+
+    if (!switchDomain.isDistroEnabled() || EnvUtil.getStandaloneMode()) {
+        return true;
+    }
+
+    if (CollectionUtils.isEmpty(servers)) {
+        return false;
+    }
+
+    String localAddress = EnvUtil.getLocalAddress();
+    int index = servers.indexOf(localAddress);
+    int lastIndex = servers.lastIndexOf(localAddress);
+    if (lastIndex < 0 || index < 0) return true;
+
+    int target = distroHash(responsibleTag) % servers.size();
+    return target >= index && target <= lastIndex;
+}
+```
+
+执行流程分六个阶段：
+
+**阶段 1 — Distro 关闭 / 单机模式降级（`line:85-87`）**：当 `switchDomain.isDistroEnabled()` 返回 `false`（Distro 功能被运维关闭）或在单机模式下（`EnvUtil.getStandaloneMode()`），本节点全权负责所有数据，直接返回 `true`。单机不存在分布式一致性问题。
+
+**阶段 2 — 列表为空（`line:89-91`）**：`CollectionUtils.isEmpty(servers)` 为 `true` 意味着集群成员信息尚未就绪（初始化尚未完成或成员列表异常清空），此时无法确定归属，返回 `false`。调用方应将此视为「暂时不能确定」，等待下一次事件或重试。
+
+**阶段 3 — 自我定位（`line:93-97`）**：通过 `EnvUtil.getLocalAddress()` 获取本节点 IP:port，在 `servers` 列表中查找其首次出现位置 `index` 和末次出现位置 `lastIndex`。若任一为负（本节点不在列表中——集群成员信息异常），返回 `true`（保守策略：宁可多负责也不丢失数据归属）。
+
+**阶段 4 — 计算目标槽位（`line:99`）**：`int target = distroHash(responsibleTag) % servers.size()`——对 tag 做哈希后对列表大小取模，得到 `[0, servers.size()-1]` 的目标下标。
+
+**阶段 5 — 区段归属判定（`line:100`）**：`return target >= index && target <= lastIndex`。这里的关键语义是：**本节点可能占据 `healthyList` 的连续多个位置**（当同一地址在列表中因某些异常原因出现多次时）。`indexOf` 返回首次出现位置，`lastIndexOf` 返回末次出现位置。若 target 落在 `[index, lastIndex]` 区间内，则本节点负责该 tag。
+
+**为什么同一地址可能多次出现**：在 `onEvent()` 中 `MemberUtil.selectTargetMembers()` 基于 `Predicate` 过滤成员——若同一物理节点注册了多个 `Member` 对象（例如不同端口的实例被错误地以同一 IP 多次注册），可能出现同一地址在列表中重复。`indexOf/lastIndexOf` 的对称使用正是对这一边界情况的防御性处理。
+
+**v1 vs v2 的 responsibleTag 语义差异**：v1 的 responsibleTag 是 `serviceName`（以服务粒度分布），v2 的 responsibleTag 是 `ip:port`（以 client 粒度分布）。v2 下 `HealthCheckCommonV2` 调用 `distroMapper.responsible(serviceName)`（见 `naming/healthcheck/v2/processor/HealthCheckCommonV2.java:103`），仍以 `serviceName` 为粒度判定健康检查归属，这是因为健康检查任务本身是服务维度的。
+
+### 4.7.3.4 远端 owner 查询：`mapSrv()`
+
+`DistroMapper.mapSrv()`（`naming/core/DistroMapper.java:110-122`）提供查询某个 tag 应由哪个远端节点负责的能力：
+
+```java
+public String mapSrv(String responsibleTag) {
+    final List<String> servers = healthyList;
+
+    if (CollectionUtils.isEmpty(servers) || !switchDomain.isDistroEnabled()) {
+        return EnvUtil.getLocalAddress();
+    }
+
+    try {
+        int index = distroHash(responsibleTag) % servers.size();
+        return servers.get(index);
+    } catch (Throwable e) {
+        Loggers.SRV_LOG
+                .warn("[NACOS-DISTRO] distro mapper failed, return localhost: "
+                        + EnvUtil.getLocalAddress(), e);
+        return EnvUtil.getLocalAddress();
+    }
+}
+```
+
+与 `responsible()` 的关键差异：
+
+- **不涉及本节点定位**：`mapSrv()` 直接按 `target % servers.size()` 取下标获得对应的远端节点地址，不判断目标是否为本节点——它只回答「tag 数据映射到了哪个节点」，而非「我是否负责」。
+
+- **降级策略与 `responsible()` 不同**：`responsible()` 在列表为空时返回 `false`（「不确定」），而 `mapSrv()` 在列表为空或 Distro 关闭时返回**本机地址**——因为调用方需要得到一个具体的节点地址来发送数据，返回本机是最安全降级策略。
+
+- **异常兜底**：`catch (Throwable e)` 捕获所有异常（包括 `IndexOutOfBoundsException`、`NullPointerException` 等），统一回退本机地址并记录 warn 日志。这保证了极端情况下不因分布映射异常导致注册流程中断。
+
+调用场景如 `OperatorController`（`naming/controllers/OperatorController.java:198`）通过 `distroMapper.mapSrv(tag)` 查询指定 tag 的责任节点用于运维展示。
+
+### 4.7.3.5 健康列表维护：`onEvent()`
+
+`DistroMapper.onEvent()`（`naming/core/DistroMapper.java:128-139`）是健康列表更新的唯一入口：
 
 ```java
 @Override
 public void onEvent(MembersChangeEvent event) {
-    // Here, the node list must be sorted to ensure that all nacos-server's
-    // node list is in the same order
-    List<String> list = MemberUtil.simpleMembers(MemberUtil.selectTargetMembers(event.getMembers(),
-            member -> NodeState.UP.equals(member.getState()) || NodeState.SUSPICIOUS.equals(member.getState())));
+    List<String> list = MemberUtil.simpleMembers(
+        MemberUtil.selectTargetMembers(event.getMembers(),
+            member -> NodeState.UP.equals(member.getState())
+                    || NodeState.SUSPICIOUS.equals(member.getState())));
     Collections.sort(list);
     Collection<String> old = healthyList;
     healthyList = Collections.unmodifiableList(list);
-    Loggers.SRV_LOG.info("[NACOS-DISTRO] healthy server list changed, old: {}, new: {}", old, list);
+    Loggers.SRV_LOG.info("[NACOS-DISTRO] healthy server list changed, old: {}, new: {}",
+            old, healthyList);
 }
 ```
 
-要点有三：
+执行链分解：
 
-1. **状态过滤**：仅保留 `UP` 与 `SUSPICIOUS` 状态的成员，`DOWN`/`LEAVING` 等被剔除，确保分布只落在健康节点上；
-2. **强制排序**：`Collections.sort(list)` 保证所有 Nacos 节点对 `healthyList` 的**顺序完全一致**——这是取模分配正确性的前提。若各节点顺序不一致，同一 tag 会在不同节点算出不同 owner，导致分布错乱；
-3. **不可变快照 + 原子发布**：`Collections.unmodifiableList` 配合 `volatile` 引用，使读者拿到的一致快照，写者通过一次性发布避免读取到半更新状态。
+**步骤 1 — 状态过滤**：`MemberUtil.selectTargetMembers(event.getMembers(), predicate)`（`core/cluster/MemberUtil.java:246-248`）对流式过滤成员集合，只保留 `NodeState.UP` 或 `NodeState.SUSPICIOUS` 状态的成员。`DOWN`、`LEAVING` 等状态被排除——这些节点不应参与数据分布。
 
-`@PostConstruct init()` 先以 `memberManager.allMembers()` 初始化 `healthyList`，再注册自身为 `MemberChangeListener` 订阅 `MembersChangeEvent`。由此，节点上下线不再需要逐条同步分布表，而是由集群成员管理统一广播，`DistroMapper` 即时重算。
+**步骤 2 — 地址提取与排序**：`MemberUtil.simpleMembers(filteredSet)`（`core/cluster/MemberUtil.java:256-259`）先 `.map(Member::getAddress)` 提取地址字符串，再 `.sorted()` 排序。排序使用 `String` 自然序（字典序），所有 Nacos 节点在拿到相同的过滤后成员集合时产出完全一致的排序列表——这是取模分配正确性的硬前提。若各节点排序不一致，同一 tag 的 `hash % size` 会在不同节点算出不同下标，导致归属判定冲突。
 
-**本机制体现的设计模式。** 
+**步骤 3 — 不可变快照 + 原子发布**：`Collections.unmodifiableList(list)` 将新列表包装为不可变视图，然后赋值给 `volatile` 字段 `healthyList`。这一组合保证了：
+- **读者无锁**：任何读取 `healthyList` 的线程拿到的是一个一致的历史快照（或最新快照），不会看到半更新状态的列表；
+- **写者一次性发布**：新列表整体构建完成后一次性通过 `volatile` 写发布，读者要么看到旧列表、要么看到新列表，不会看到中间状态；
+- **不可变防护**：`unmodifiableList` 防止任何代码意外修改共享列表内容。
 
-1. **观察者（Observer）**：`DistroMapper extends MemberChangeListener` 通过 `NotifyCenter` 订阅 `MembersChangeEvent`，成员变化被封装为事件广播，`DistroMapper` 作为观察者在事件到达时重算健康列表——分布表与成员管理解耦，新增关心成员变化的组件无需侵入成员管理逻辑。
-2. **写时复制（Copy-on-Write）+ 不可变快照（Immutable Snapshot）**：`healthyList` 声明为 `volatile`，更新时整体构建新列表、`Collections.unmodifiableList` 包裹后一次性发布引用。读者无锁拿到的是完整一致的历史快照，写者不与读者竞争，换得「多读无锁、读写并发安全、零细粒度同步」的并发模型，代价是每次成员变化都全量新建列表（成员规模小，成本可忽略）。
-3. **空对象降级 / 优雅降级（Fallback）**：`mapSrv` 在列表为空、Distro 关闭或异常时统一回退返回本机地址（`EnvUtil.getLocalAddress()`），避免在分布信息不可用或异常时返回无效节点破坏注册流程。
+**步骤 4 — 日志记录**：`Loggers.SRV_LOG.info` 记录新旧列表内容，用于运维排查「同 tag 归属不一致」类问题——通过对比各节点的 `healthy server list changed` 日志可以确认各节点的 `healthyList` 是否一致。
 
-### 4.7.4 取模哈希的分布特性与局限性
+**expire 事件处理**：`DistroMapper.ignoreExpireEvent()`（`naming/core/DistroMapper.java:141-143`）返回 `true`，意味着当 `NotifyCenter` 中 `MembersChangeEvent` 堆积时，过期的旧事件会被直接丢弃，只处理最新的事件。这避免了在成员频繁变化时处理大量历史事件导致的 CPU 浪费。
 
-`distroHash % servers.size()` 是**均匀性依赖 tag 的 hashCode 分布 + 取模**的固定映射。其特性：
+### 4.7.3.6 成员变化事件发布链
 
-- **确定性与可预期**：同一 tag 在 healthyList 不变时永远映射到同一节点，便于调试与归属推理；
-- **均匀性**：对均匀分布的 hashCode，`hash % size` 在各槽位的分布大体均匀，但受 `size` 与 `Integer.MAX_VALUE` 的整除关系影响存在轻微偏差；
-- **无虚拟节点、无热区平滑**：与一致性哈希环相比，它**不做数据迁移最小化**，节点增删时映射几乎全部改变。
+`DistroMapper` 接收的事件由 `ServerMemberManager` 发布，完整的发布链如下：
 
-**节点数变化（扩缩容）带来的重映射风暴，是本节最重要的 trade-off。** 对取模哈希，当 `servers.size()` 从 `n` 变为 `n±k` 时，`tag % newSize` 通常不再等于 `tag % oldSize`，导致**绝大多数数据的 owner 改变、需要全量重新同步**。量化：以 3 节点扩至 4 节点为例，由于 `newSize=4` 与 `oldSize=3` 互质，一个均匀分布的整体有约 `1 - 1/lcm(3,4)=1-1/12≈91.7%` 的整数哈希值在取模后落入不同槽位，即**约 75%~91% 的数据会更换 owner**；这与一致性哈希环「仅约 1/n（此处约 1/3~1/4）数据重映射」形成数量级差异。因此 Distro 取模策略适用于**节点规模稳定、扩容低频**的集群；高频弹性扩缩容场景下，重同步开销显著。
+1. **集群成员变更触发**：`ServerMemberManager.memberChange(Collection<Member>)`（`core/cluster/ServerMemberManager.java:289-339`）在成员集合变更时计算 `hasChange`，若有变化则构建 `MembersChangeEvent.builder().members(finalMembers).build()` 并通过 `NotifyCenter.publishEvent(event)` 发布。
 
-一个具体的数值推演有助于理解取模分布。设三节点 A/B/C，`healthyList=[A,B,C]`：
+2. **单成员信息变更触发**：`ServerMemberManager.notifyMemberChange(Member)`（`core/cluster/ServerMemberManager.java:269-271`）在单个成员的元数据变化时通过 `MembersChangeEvent.builder().trigger(member).members(allMembers()).build()` 发布事件。
+
+3. **DistroMapper 消费**：`NotifyCenter` 将事件分发到 `DistroMapper.onEvent()`，`DistroMapper` 重算 `healthyList`。注意 `ignoreExpireEvent()=true` 意味着如果事件在 `NotifyCenter` 的环形队列中积压，旧事件会被跳过——这是合理的选择，因为分布信息只需最新状态。
+
+### 4.7.4 设计模式分析
+
+### 4.7.4.1 观察者模式（Observer）
+
+**识别依据**：`DistroMapper extends MemberChangeListener`，后者继承自 `Subscriber<MembersChangeEvent>`（`core/cluster/MemberChangeListener.java:36`），通过 `NotifyCenter.registerSubscriber(this)` 订阅 `MembersChangeEvent`。
+
+**结构**：
+- **Subject（目标）**：`ServerMemberManager`——集群成员变更的最终触发者，通过 `NotifyCenter.publishEvent()` 发布 `MembersChangeEvent`；
+- **Observer（观察者）**：`DistroMapper`（以及 `RaftPeerSet`、`ProtocolManager` 等）——在事件到达时更新自身状态；
+- **Event（事件）**：`MembersChangeEvent`（`core/cluster/MembersChangeEvent.java`）——携带当前全量成员集合 `members` 和触发变更的成员 `triggers`。
+
+**价值**：`DistroMapper` 与 `ServerMemberManager` 完全解耦——新增任何关心成员变化的组件只需实现 `Subscriber<MembersChangeEvent>` 并注册到 `NotifyCenter`，无需修改 `ServerMemberManager` 的任何代码。这是 Nacos 内部事件总线 `NotifyCenter` 的典型应用。
+
+### 4.7.4.2 写时复制 + 不可变快照模式（Copy-on-Write + Immutable Snapshot）
+
+**识别依据**：`healthyList` 声明为 `volatile`，更新时整体构建新列表并通过 `Collections.unmodifiableList()` 包装后一次性发布。
+
+**并发模型**：
+- **读者路径**：`responsible()` 和 `mapSrv()` 的第一步 `final List<String> servers = healthyList` 通过 volatile 读拿到的要么是旧列表要么是新列表，不会看到半构建状态的列表；后续的 `indexOf`、`size()` 等操作都在这个一致快照上进行。
+- **写者路径**：`onEvent()` 在锁外完成全部列表构建（`simpleMembers` → `sort` → `unmodifiableList`），最后通过 volatile 写一次性发布，没有锁竞争。
+
+**代价与适用性**：每次成员变化都全量新建列表，但集群成员规模通常为 3-7 个节点，列表大小在几十字节量级，开销可忽略。此模式不适合频繁变化的超大列表场景。
+
+### 4.7.4.3 策略模式 + 空对象降级（Strategy + Graceful Degradation）
+
+**识别依据**：`mapSrv()` 和 `responsible()` 在 Distro 关闭、列表为空、异常情况下均有明确的降级策略，而非抛出异常或返回 null。
+
+**降级矩阵**：
+
+| 条件 | `responsible()` 返回值 | `mapSrv()` 返回值 | 语义 |
+|------|----------------------|---------------------|------|
+| Distro 关闭 / 单机 | `true` | 本机地址 | 单机模式全权负责 |
+| `healthyList` 为空 | `false` | 本机地址 | 配置未就绪，保守降级 |
+| 本节点不在 `healthyList` | `true` | N/A | 异常保护，宁可多负责 |
+| 异常（`Throwable`） | N/A | 本机地址 | 兜底保证不中断注册流 |
+
+每次降级都对应一个明确的语义：宁可过度负责（多同步一些数据）也不丢失数据归属，宁可回退本机（额外一次本地调用）也不返回无效节点导致注册失败。这体现了 AP 系统「可用性优先」的设计哲学。
+
+### 4.7.4.4 模板方法模式（Template Method）
+
+**识别依据**：`MemberChangeListener` 定义了 `subscribeType()` 返回 `MembersChangeEvent.class` 和 `ignoreExpireEvent()` 默认返回 `true`，而 `onEvent(MembersChangeEvent)` 留给子类实现。这是一个标准的模板方法结构：骨架在父类中定义（事件类型绑定、过期策略），具体处理逻辑在子类中实现。
+
+### 4.7.5 Trade-off 分析：取模哈希 vs 一致性哈希
+
+### 4.7.5.1 重映射比例量化
+
+取模哈希与一致性哈希在节点数变化时的数据重映射行为有数量级差异。
+
+**取模哈希的重映射**：当 `healthyList.size()` 从 `n` 变为 `n±k` 时，`distroHash(tag) % newSize` 通常不等于 `distroHash(tag) % oldSize`。由于哈希值在 `[0, Integer.MAX_VALUE)` 上近似均匀分布，一个新旧模数的公倍数周期为 `lcm(n, n±k)`，在该周期内的哈希值新旧模结果才保持一致。对于互质的 `n` 和 `n±k`（例如 3 和 4），公倍数周期为 `n×(n±k)`，只有约 `1/(n×(n±k))` 的哈希值保持一致，其余全部变更。
+
+以 3 节点扩容到 4 节点为例：
+- `oldSize=3`，`newSize=4`，`lcm(3,4)=12`
+- 在 `[0, Integer.MAX_VALUE)` 的均匀分布中，约 `1/12 ≈ 8.3%` 的哈希值在新旧模下结果相同
+- 因此约 **91.7%** 的数据 owner 变更，需要全量重同步
+
+而从 去打 4 节点缩容到 3 节点，比例相同。
+
+**一致性哈希的重映射**：在 `K` 个虚拟节点的环中删除一个物理节点（其 `K/N` 个虚拟节点），仅约 `1/N` 的数据需要重映射（落入被删除虚拟节点与其前驱之间的区间）。对于 3 节点集群，仅约 1/3 的数据重映射——与取模的 ~92% 形成数量级差异。
+
+### 4.7.5.2 多维 Trade-off 矩阵
+
+| 维度 | 取模哈希（DistroMapper 2.5.3） | 一致性哈希环 |
+|------|-------------------------------|--------------|
+| 结构维护成本 | O(1)——仅需一个排序列表 | O(V)——需维护 V 个虚拟节点（通常 V=150~200） |
+| 单次路由复杂度 | O(log n) 查找本节点位置 + O(1) 取模 | O(log V) 环上二分查找 |
+| 全节点顺序一致性要求 | 刚性——所有节点必须对 healthyList 排序完全一致 | 刚性——所有节点必须构建完全相同的哈希环 |
+| 节点增删重映射比例 | ≈ `1 - 1/lcm(n, n±k)`，多数数据全部重排 | 仅约 `1/n` 数据重排 |
+| 均匀性 | 依赖 `String.hashCode()` 分布 + 取模偏差 | 可通过虚拟节点数量调节均匀性 |
+| 可调试性 | 高——给定 tag 和 healthyList，可手工验算 owner | 中等——需要遍历虚拟节点映射 |
+| 适用成员规模 | 小规模（3~7 节点）、扩缩容低频 | 大规模（数十~数百节点）、弹性扩缩容 |
+
+### 4.7.5.3 选择取模的工程合理性
+
+Nacos 集群的典型部署规模为 3-7 节点，扩缩容属于低频运维操作（通常数百天一次）。在此约束下：
+
+1. **简单性压倒迁移成本**：取模逻辑仅 3 行代码（`Math.abs(tag.hashCode() % Integer.MAX_VALUE) % servers.size()`），而一致性哈希需要维护 `TreeMap` + 虚拟节点映射，代码复杂度高一个数量级。
+2. **可调试性关键**：运维人员可以通过纸笔验算 `tag → hashCode → % size → owner`，而一致性哈希需要模拟环遍历。
+3. **扩缩容可计划**：Nacos 扩缩容通常是计划内操作，可以在低峰期执行，全量重同步的流量冲击可通过错峰调度缓解。
+4. **健康列表波动比扩缩容更频繁**：节点状态抖动的健康列表大小变化的频率远高于扩缩容，而每次健康列表变化都触发一轮重映射——这意味着「健康列表变化导致的重映射」在频次上远超「扩缩容导致的重映射」。取模策略在此场景下与一致性哈希的重映射比例并无本质差异（两者都在 `size` 变化时全部重排），但取模策略的简单性使得重算成本更低。
+
+### 4.7.6 边界场景与工程实践
+
+### 4.7.6.1 本节点不在 healthyList 中的处理
+
+`responsible()` 中 `index < 0 || lastIndex < 0` 时返回 `true`。这一逻辑的工程背景是：成员信息同步存在时序窗口——`ServerMemberManager` 通过 `MemberInfoReportTask` 周期向其他节点报告本节点信息，而 `MembersChangeEvent` 的发布也依赖各节点对成员状态的独立判定。在极端情况下，本节点可能暂时不在 `healthyList` 中（例如本节点刚启动、成员信息尚未被其他节点确认）。此时返回 `true`（本节点全权负责）是保守策略：宁可多同步（重复数据可被 revision 校验修正），也不丢失数据归属。
+
+### 4.7.6.2 列表为空 vs Distro 关闭的语义差异
+
+`responsible()` 在 `CollectionUtils.isEmpty(servers)` 时返回 `false`（明确语义：「尚不能确定归属」），而在 `!switchDomain.isDistroEnabled()` 时返回 `true`（明确语义：「Distro 关闭，本节点全权负责」）。两者的差异在于：前者是「暂时不确定」，调用方应等待下次事件或重试；后者是「确定不需要分布式同步」，调用方可跳过同步逻辑。`mapSrv()` 对这两种情况统一返回本机地址——因为调用方需要一个具体的节点地址来发送数据，返回本机是最安全降级。
+
+### 4.7.6.3 健康状态过滤的影响
+
+`onEvent()` 中过滤 `UP` 和 `SUSPICIOUS` 的设计值得关注：
+
+- **`SUSPICIOUS` 被保留的原因**：在 Nacos 的成员健康判定中，`SUSPICIOUS` 表示「疑似故障但尚未确认」。若将 `SUSPICIOUS` 节点从分布列表中剔除，则其负责的数据将立即重映射到其他节点；若该节点随后恢复为 `UP`，数据又需要重映射回来——两次全量重同步。保留 `SUSPICIOUS` 节点可以避免这种抖动，代价是该节点若确实故障，其负责的数据在确认故障（变为 `DOWN`）前暂不可用。
+
+- **状态抖动放大重同步**：频繁的 `UP ↔ DOWN` 抖动会导致 `healthyList.size()` 反复变化，每次都触发全量重映射。生产中应优先排查节点状态抖动的原因（网络不稳定、GC 停顿、资源竞争），而非试图在分布层面缓解这一问题。
+
+### 4.7.6.4 成员顺序一致性的运维验证
+
+所有节点对 `healthyList` 排序的一致性可以通过以下方式验证：
+
+1. **日志对比**：搜索各节点的 `[NACOS-DISTRO] healthy server list changed` 日志，对比同一时间窗口内的列表内容是否完全一致；
+2. **API 验证**：通过 `OperatorController` 的运维接口查询同一 tag 在不同节点上的 `mapSrv()` 结果是否一致；
+3. **监控告警**：可自定义监控指标，在检测到不同节点对同一 tag 的 `mapSrv()` 返回不同结果时告警。
+
+### 4.7.6.5 扩缩容操作建议
+
+1. **错峰执行**：在业务低峰期执行扩缩容，减少全量重同步对正常业务的影响。
+2. **逐节点操作**：每次只变更一个节点（先加入新节点，待集群稳定后再变更下一个），避免同时多节点变更导致的多轮连锁重映射。
+3. **监控重同步流量**：扩缩容后关注节点间的 Distro 同步流量（`DistroClientTransportAgent` 的 gRPC 调用量），确认重同步在预期时间内完成。
+4. **预留缓冲时间**：全量重同步的时间取决于客户端数量和数据量，建议在扩容前评估当前集群的客户端总数，估算重同步耗时。
+
+### 4.7.7 小结
+
+`DistroMapper` 是 Nacos 2.5.3 Distro v2 分布机制的单一承载者，其核心设计可总结为：
+
+1. **取模哈希而非一致性哈希**：`distroHash(tag) % servers.size()` 用 3 行代码实现了确定性的数据分布，牺牲了节点变更时的数据迁移最小化，换取了极致的简单性、可调试性和运维可理解性。这一选择建立在 Nacos 集群规模小、扩缩容低频的工程假设之上。
+
+2. **健康列表三约束**：`healthyList` 必须满足「全节点顺序一致」、「仅含 UP/SUSPICIOUS 成员」、「volatile + unmodifiableList」三个硬约束——任何一个约束被破坏都会导致分布错乱或并发安全问题。
+
+3. **降级策略的一致性设计**：`responsible()` 和 `mapSrv()` 在 Distro 关闭、列表为空、异常等边界情况下均返回明确语义的降级值（`true`/`false`/本机地址），遵循 AP 系统"可用性优先"的设计哲学。
+
+4. **观察者 + 写时复制 + 不可变快照**：通过 `NotifyCenter` 事件总线解耦成员管理与分布映射，通过 volatile + unmodifiableList 实现无锁并发安全，是一个在工程上高度成熟的设计。
+### 4.8 JRaft 接入层：JRaftProtocol + JRaftServer + NacosStateMachine
+
+### 4.8.1 设计背景
+
+Nacos 1.x/2.2.3 时代，CP 一致性通过自研的 `RaftCore`、`RaftStore`、`NacosFSM` 等类自行实现 Raft 协议。这一方案的缺陷随着规模增长逐步暴露：
+
+1. **实现复杂度高**：自研 Raft 需要从头实现 Leader 选举、日志复制、快照压缩、成员变更等全套 Raft 状态机，代码量大且难以维护。Nacos 2.2.3 的 `RaftCore` 超过 1200 行，状态机 `NacosFSM` 与业务逻辑高度耦合。
+2. **性能瓶颈**：自研实现的网络层缺少 gRPC 级别的流控与背压能力，日志复制的 `max_entries_size`、`max_body_size` 等参数调优空间有限，在大规模集群（≥100 节点）下吞吐量不及成熟 Raft 库的 1/3。
+3. **社区生态**：JRaft（SOFAJRaft）是阿里巴巴开源的 Java Raft 实现库，经过蚂蚁集团大规模生产验证，支持 Multi-Raft Group、Snapshot、ReadIndex 等高级特性，且与 SOFAStack 生态深度集成。
+
+Nacos 2.5.3 以 **外部依赖** 方式接入 JRaft 库（`com.alipay.sofa:jraft-core:1.3.14`），而非将 JRaft 源码直接复制到 Nacos 仓库中。`core/distributed/raft/` 包下的所有类（`JRaftProtocol`、`JRaftServer`、`NacosStateMachine` 等）是 Nacos 对 JRaft 库的 **适配封装层**，而非 JRaft 本身。`consistency/` 模块仅保留协议接口定义（`ConsistencyProtocol`、`CPProtocol`、`RequestProcessor4CP` 等），Raft 的实际状态机、选举、日志复制、快照能力全部委托给 JRaft 库。
+
+这一架构决策的关键收益包括：（1）复用蚂蚁大规模验证的 Raft 实现，消除自研 Raft 的 bug 风险和性能瓶颈；（2）通过适配层将 JRaft API 转换（适配模式）为 Nacos 的 `ConsistencyProtocol` 语义，使上层 CP 业务（持久化服务、配置模块）无需感知 JRaft 细节；（3）通过 `JRaftServer.createMultiRaftGroup()` 支持按 `RequestProcessor4CP.group()` 为粒度创建独立 Raft Group，每个 Group 拥有自己的状态机、日志目录和快照目录，避免不同业务模块的日志处理互相阻塞。
+
+### 4.8.2 核心类关系图
 
 ```
-tag="svc1:8080" → hashCode=t_1 → distroHash=|t_1 % MAX_INT| → target = |t_1 % MAX_INT| % 3
-若 |t_1 % MAX_INT| % 3 == 0 → owner=A；==1 → owner=B；==2 → owner=C
+图 4-X  JRaft 接入层核心类关系图
+
+┌────────────────────────────────────────────────────────────────────┐
+│                    consistency/ 接口层（仅接口定义）                    │
+│  ConsistencyProtocol<C,P>  CPProtocol<C,P>  RequestProcessor4CP    │
+│  SerializeFactory  SnapshotOperation  LocalFileMeta              │
+└────────────────────────────────────────────────────────────────────┘
+                        ▲  implements
+          ┌─────────────┴──────────────┐
+          │  AbstractConsistencyProtocol  │
+          └─────────────┬──────────────┘
+                         │ extends
+          ┌─────────────┴──────────────┐
+          │      JRaftProtocol          │  ◀── 适配层入口（实现 CPProtocol）
+          │  - raftConfig: RaftConfig    │
+          │  - raftServer: JRaftServer  │
+          │  - jRaftMaintainService     │
+          │  + init(config)             │
+          │  + write(request)→Response   │
+          │  + getData(request)→Response │
+          │  + isLeader(group)→boolean   │
+          └─────────────┬──────────────┘
+                         │ 持有 & 委托
+          ┌─────────────┴──────────────┐
+          │       JRaftServer           │  ◀── 多 Raft Group 管理器
+          │  - multiRaftGroup: Map      │
+          │  - rpcServer: RpcServer     │
+          │  - cliClientService         │
+          │  + init(config)             │
+          │  + start()                 │
+          │  + createMultiRaftGroup()   │
+          │  + commit(group,data,fut)   │
+          │  + get(request)             │
+          │  + applyOperation(node,..)  │
+          │  + peerChange(...)          │
+          │  + shutdown()               │
+          │                             │
+          │  ▶ RaftGroupTuple          │
+          │    - node: Node            │──▶ JRaft 库原生对象
+          │    - processor: ReqProc    │
+          │    - raftGroupService      │
+          │    - machine: NacosSM     │
+          └─────────────┬──────────────┘
+                         │ 创建 & 注入
+          ┌─────────────┴──────────────┐
+          │    NacosStateMachine        │  ◀── 状态机适配器
+          │  extends StateMachineAdapter│
+          │  - server: JRaftServer      │
+          │  - processor: ReqProcessor   │
+          │  - operations: Collection    │
+          │  + onApply(iter)           │
+          │  + onSnapshotSave(writer)  │
+          │  + onSnapshotLoad(reader)   │
+          │  + onLeaderStart(term)     │
+          │  + onLeaderStop(status)     │
+          │  + onStartFollowing(ctx)    │
+          └─────────────┬──────────────┘
+                         │ 持有
+          ┌─────────────┴──────────────┐
+          │   JSnapshotOperation        │  ◀── 快照操作接口
+          │  + onSnapshotSave(...)      │
+          │  + onSnapshotLoad(...)      │
+          └────────────────────────────┘
+
+图例：
+  ◀── 标注关键语义
+  ▶ 标注关键对象
+  ── 关联/持有关系
+  ... 省略部分字段与方法
 ```
 
-扩容后 `healthyList=[A,B,C,D]`，`%3` 变为 `%4`，绝大多数 tag 的结果立即改变，触发一轮对 4 个节点的全量重同步。这正是扩缩容成本的量化来源。
+### 4.8.3 源码走读
 
-相对地，取模策略的优势是**零额外结构维护**：一致性哈希需要维护哈希环与虚拟节点（`VIRTUAL_NODES` 级内存结构），而取模仅需一个排序列表加一次哈希，读写都是 O(1)，且天然支持「列表顺序全节点一致」这个强约束下的确定性。下表量化总结了两种方案的取舍：
+#### 4.8.3.1 JRaftProtocol：CP 协议适配入口
 
-| 维度 | 取模（2.5.3 DistroMapper） | 一致性哈希环 |
-|------|--------------------------|--------------|
-| 结构维护 | O(1) 排序列表 + 取模 | 哈希环 + 虚拟节点（内存结构） |
-| 单次路由复杂度 | O(log n) 定位 + O(1) 取模 | O(log n) 环上二分 |
-| 节点增删重映射比例 | ≈ (1 − 1/lcm) 数据全部重排 | 仅约 1/n 数据重排 |
-| 顺序一致性依赖 | 强依赖全体节点排序一致 | 依赖环构建一致 |
-| 适用规模 | 成员少、扩缩容低频 | 规模大、弹性扩缩容 |
+`JRaftProtocol`（`core/src/main/java/com/alibaba/nacos/core/distributed/raft/JRaftProtocol.java:70-230`）是 Nacos CP 协议栈对 JRaft 库的顶层适配入口，继承 `AbstractConsistencyProtocol<RaftConfig, RequestProcessor4CP>` 并实现 `CPProtocol<RaftConfig, RequestProcessor4CP>`。
 
-2.5.3 选择取模，正是基于 Nacos 集群成员规模通常不大、扩缩容低频的假设。
-
-### 4.7.5 与 responsible 相关的边界与降级
-
-- **Distro 关闭 / 单机模式**：`switchDomain.isDistroEnabled()==false` 或单机时，`responsible()` 直接返回 true（本节点全权负责），同步逻辑不生效——单机不存在分布式一致性问题。
-- **列表为空（配置未就绪）**：`CollectionUtils.isEmpty(servers)` 时 `responsible()` 返回 false，意味着「尚不能确定归属」，调用方应等待；`mapSrv()` 此时回退返回本机地址。
-- **本节点不在列表**：`lastIndex < 0 || index < 0` 时返回 true，避免在成员表异常时误判不由自己负责而丢失本地数据归属。
-- **异常兜底**：`mapSrv` 捕获 `Throwable` 回退本机，保证极端情况下不抛异常导致注册失败。
-
-### 4.7.6 工程实践与量化建议
-
-- **扩缩容前评估**：取模映射的节点数变更会引发约 `(newSize−oldSize)/newSize` 比例的数据重映射，扩容前应评估全量重同步对网络与 CPU 的冲击，必要时错峰执行。
-- **成员顺序一致性是硬约束**：`healthyList` 排序依赖各节点对相同成员集合做同一次 `Collections.sort`，任何自定义成员顺序的配置都可能破坏分布确定性——不要在 `onEvent` 之外手工重排。
-- **健康状态过滤的影响**：健康列表剔除节点后 `size` 变小，触发一轮重映射；恢复上线又触发一轮。频繁的节点状态抖动会放大重同步流量，生产中应优先保证节点状态稳定（避免反复 `UP`/`DOWN` 抖动）。
-- **观测**：`Loggers.SRV_LOG` 的 `healthy server list changed` 日志记录了每次列表变化，可用于核对各节点的 `healthyList` 是否一致，排查「同 tag 归属不一致」类问题。
-
----
-
-## 4.8 JRaft 简介：外部库集成视角下的 Raft 能力
-
-### 4.8.1 定位：JRaft 是外部库而非 Nacos 自研组件
-
-JRaft 是阿里巴巴基于 Raft 论文实现的 **Java Raft 实现库**（`com.alipay.sofa:jraft-core`）。在 Nacos 2.5.3 中，JRaft **不是 Nacos 源码的一部分**，而是作为**外部依赖被集成**——`pom.xml` 声明 `jraft-core.version=1.3.14`，`core/distributed/raft/` 下的类只是 Nacos 对 JRaft 的**适配与封装层**，而非 JRaft 本身。
-
-这与 2.2.3 时代「Nacos 自带 `RaftCore`/`RaftStore`/`NacosFSM`」的架构有本质区别：**2.5.3 中 `consistency/` 模块仅保留协议接口定义**（`ConsistencyProtocol`、`RequestProcessor`、`CPProtocol`/`APProtocol`、`DataOperation`、`SerializeFactory`、snapshot 抽象等），Raft 的状态机、选举、日志复制等实际能力全部委托给 JRaft 库。Nacos 侧通过 `JRaftServer`、`NacosStateMachine`、`RequestProcessor4CP` 等把自己「挂接」到 JRaft 的事件循环上。
-
-```xml
-<dependency>
-    <groupId>com.alipay.sofa</groupId>
-    <artifactId>jraft-core</artifactId>
-    <version>1.3.14</version>
-</dependency>
-```
-
-### 4.8.2 Leader 选举
-
-JRaft 的选举遵循标准 Raft：Follower 在**选举超时内未收到 Leader 心跳**则转 Candidate，`term++` 并发起 `RequestVote`，获得多数派投票后成为 Leader，立即向各节点广播心跳（AppendEntries）确立权威。Nacos 侧通过 `RaftOptionsBuilder` 依据 `RaftSysConstants` 配置选举参数，如 `election_timeout_ms`、`election_heartbeat_factor`（默认 10，即心跳间隔 = 选举超时 / 10）。`NacosStateMachine.onLeaderStart(long term)` 在本地节点当选时回调，可用于注册元数据、刷新路由：
+**构造与初始化链路。**`JRaftProtocol` 构造时持有一个 `ServerMemberManager`（用于将 JRaft 元数据注入节点扩展信息字段），并直接实例化 `JRaftServer` 与 `JRaftMaintainService`：
 
 ```java
-@Override
-public void onLeaderStart(final long term) {
-    super.onLeaderStart(term);
-    // 当选 leader：刷新元数据、通知订阅者
-    logger.info("Leader start on term {}", term);
-}
-@Override
-public void onLeaderStop(final Status status) { ... }
-```
-
-`JRaftServer` 通过 `RouteTable.getInstance().selectLeader(group)` 查询当前 Leader；`getLeader` 返回 `PeerId`，无 Leader 时由 `invokeToLeader` 抛出 `NoLeaderException`。选举期间（无 Leader）写请求会被阻断，保证单 Leader 写序。
-
-### 4.8.3 日志复制（Log Replication）
-
-Leader 接收写请求后，`JRaftServer.applyOperation` 构造 `Task` 下发给 `node.apply(task)`：
-
-```java
-public void applyOperation(Node node, Message data, FailoverClosure closure) {
-    final Task task = new Task();
-    task.setDone(new NacosClosure(data, status -> { ... }));
-    // 在 task 数据头部追加请求类型字段（read/write 标记）
-    byte[] requestTypeFieldBytes = new byte[2];
-    requestTypeFieldBytes[0] = ProtoMessageUtil.REQUEST_TYPE_FIELD_TAG;
-    if (data instanceof ReadRequest) requestTypeFieldBytes[1] = ProtoMessageUtil.REQUEST_TYPE_READ;
-    else requestTypeFieldBytes[1] = ProtoMessageUtil.REQUEST_TYPE_WRITE;
-    byte[] dataBytes = data.toByteArray();
-    task.setData(ByteBuffer.allocate(requestTypeFieldBytes.length + dataBytes.length)
-            .put(requestTypeFieldBytes).put(dataBytes).position(0));
-    node.apply(task);
+public JRaftProtocol(ServerMemberManager memberManager) throws Exception {
+    this.memberManager = memberManager;
+    this.raftServer = new JRaftServer();                    // 不通过 Spring IOC，直接 new
+    this.jRaftMaintainService = new JRaftMaintainService(raftServer);
 }
 ```
 
-Leader 将日志 `AppendEntries` 批量复制到 Follower，收到多数派确认后提交（commit）。提交后的日志由状态机的 `NacosStateMachine.onApply(Iterator)` 应用到本地：
+`init(RaftConfig)`（`JRaftProtocol.java:107-148`）通过 `AtomicBoolean` 确保单次初始化。该方法依次执行：（1）注册 `RaftEvent.class` 到 `NotifyCenter` 共享发布器；（2）调用 `raftServer.init(this.raftConfig)` 初始化 JRaft RPC Server、配置 NodeOptions、CliService；（3）调用 `raftServer.start()` 启动 Raft RPC Server 并创建各 Raft Group；（4）注册 `RaftEvent` 订阅者，监听 Leader 选举结果、成员变更等事件，将 Leader IP、Term、集群成员信息注入 `ProtocolMetaData` 并通过 `ServerMemberManager.update(Member)` 写入本节点的扩展字段 `raftMetaData`。
 
-```java
-while (iter.hasNext()) {
-    if (iter.done() != null) {
-        closure = (NacosClosure) iter.done();
-        message = closure.getMessage();
-    } else {
-        // follower 侧无 done，解析日志数据；ReadRequest 忽略
-    }
-    if (message instanceof WriteRequest) {
-        Response response = processor.onApply((WriteRequest) message);
-        postProcessor(response, closure);
-    }
-    ...
-    iter.next();
-}
-```
+**写请求路径。**`write(WriteRequest)`（`JRaftProtocol.java:162-168`）调用 `writeAsync(request).get(10_000L, TimeUnit.MILLISECONDS)` 同步等待最多 10 秒，底层委托 `raftServer.commit(request.getGroup(), request, new CompletableFuture<>())`。`writeAsync` 创建新的 `CompletableFuture` 后立即返回，由 `JRaftServer.commit()` 在 Raft 日志提交后通过 `FailoverClosureImpl` 完成 `CompletableFuture`。
 
-`RequestProcessor4CP.onApply` 由各 CP 业务（持久化服务、配置等）实现，把 Raft 日志落为具体业务变更。复制与提交参数（`max_entries_size` 默认 1024 条/批、`max_append_buffer_size` 256KB、`max_replicator_inflight_msgs` 等）均可经 `RaftSysConstants` 调优。
+**读请求路径。**`getData(ReadRequest)`（`JRaftProtocol.java:150-153`）调用 `aGetData(request).get(5_000L, TimeUnit.MILLISECONDS)` 同步等待最多 5 秒。`aGetData`（`JRaftProtocol.java:156-159`）委托 `raftServer.get(request)` 执行 ReadIndex 线性一致性读：先通过 `node.readIndex()` 确认当前已提交的 commitIndex，避免读到旧 Leader 的 stale data；若 ReadIndex 失败则降级为 Leader 直读（`readFromLeader`）。
 
-### 4.8.4 Snapshot 压缩
+**成员变更。**`memberChange(Set<String>)`（`JRaftProtocol.java:171-178`）最多重试 5 次调用 `raftServer.peerChange(jRaftMaintainService, addresses)`，每次失败间隔 100ms。若 5 次全部失败，记录 warning 日志。
 
-为防止 Raft 日志无限增长，JRaft 定期把状态机快照落盘并以快照替代旧日志。`NacosStateMachine.onSnapshotSave`/`onSnapshotLoad` 委托给业务注册的 `SnapshotOperation`：
+**关闭流程。**`shutdown()`（`JRaftProtocol.java:181-187`）通过双重 CAS（`initialized` + `shutdowned`）确保仅关闭一次，调用 `raftServer.shutdown()` 依次关闭所有 Raft Group 的 Node 和 RaftGroupService、CliService、CliClientService。
 
-```java
-@Override
-public void onSnapshotSave(SnapshotWriter writer, Closure done) {
-    // 交由用户注册的 SnapshotOperation 逐个保存
-    operation.onSnapshotSave(writer, done);
-}
-@Override
-public boolean onSnapshotLoad(SnapshotReader reader) {
-    return operation.onSnapshotLoad(reader);
-}
-```
+#### 4.8.3.2 JRaftServer：Multi-Raft Group 管理器
 
-`SnapshotOperation`（来自 `consistency/snapshot/` 接口层）封装了「保存哪些数据、如何加载」的业务逻辑，`LocalFileMeta`/`Reader`/`Writer` 构成快照的元数据与读写上下文。落盘压缩间隔由 `snapshot_interval_secs` 控制；`max_byte_count_per_rpc` 默认 128KB 限制节点间快照文件的单次传输大小，避免大快照阻塞网络。快照让节点加入/恢复时只需加载快照 + 重放快照之后的小段日志，显著降低同步成本。
+`JRaftServer`（`core/src/main/java/com/alibaba/nacos/core/distributed/raft/JRaftServer.java:75-550`）是 JRaft 库与 Nacos 之间的核心桥接层，管理多个 Raft Group 的生命周期。其核心数据结构为 `Map<String, RaftGroupTuple> multiRaftGroup`，其中 `RaftGroupTuple`（`JRaftServer.java:536-571`）封装了 `Node`（JRaft 库原生节点对象）、`RequestProcessor`（业务处理器引用）、`RaftGroupService`（Raft Group 服务门面）和 `NacosStateMachine`（状态机实例）。
 
-**本节体现的集成设计模式。** 
+**初始化阶段。**`init(RaftConfig)`（`JRaftServer.java:127-165`）执行以下关键步骤：
 
-1. **适配器（Adapter）**：`JRaftServer`/`NacosStateMachine` 是把「外部 JRaft 库」适配到「Nacos `ConsistencyProtocol`/`RequestProcessor`」语义的适配层——外部库的 `Node.apply`、`Iterator`、`SnapshotWriter` 等原始 API 被包装成 Nacos 的 `WriteRequest`/`ReadRequest`/`SnapshotOperation` 接口，使 Nacos 业务无需感知 JRaft 细节。
-2. **策略（Strategy）**：读一致性通过 `read_index_type` 在 `ReadOnlyLeaseBased`（租约读，低延迟、依赖时钟）与 `ReadOnlySafe`（ReadIndex，线性一致、更安全）间切换；状态机应用逻辑通过 `RequestProcessor4CP` 策略化，持久化服务、配置等 CP 业务各自实现 `onApply` 而共享同一 JRaft 底座。
-3. **模板方法/回调封装（Callback / Template）**：`NacosClosure` 包装 JRaft 的 `Status.done` 回调，把「日志提交后的结果回收」固化为统一模板，业务只需通过 `FailoverClosure` 提供最终响应处理。
+1. **配置选举参数**：从 `raftConfig` 读取 `RAFT_ELECTION_TIMEOUT_MS`（默认 5000ms）设置到 `nodeOptions.setElectionTimeoutMs()`；读取 `RAFT_RPC_REQUEST_TIMEOUT_MS`（默认 5000ms）用于 Leader 转发超时。
+2. **共享定时器**：`nodeOptions.setSharedElectionTimer(true)`、`setSharedVoteTimer(true)`、`setSharedStepDownTimer(true)`、`setSharedSnapshotTimer(true)`——多个 Raft Group 共享同一个定时器线程池，减少线程资源消耗。
+3. **初始化 RaftOptions**：通过 `RaftOptionsBuilder.initRaftOptions(raftConfig)` 从 `RaftSysConstants` 读取全部可调参数（`max_entries_size=1024`、`max_body_size=512KB`、`max_replicator_inflight_msgs=256` 等），设置到 `nodeOptions.setRaftOptions()`。
+4. **启用 Metrics**：`nodeOptions.setEnableMetrics(true)` 开启 JRaft 内置 Metrics 记录功能。
+5. **初始化 CliService**：`RaftServiceFactory.createAndInitCliService(cliOptions)` 创建用于节点加入/移除集群的 CLI 服务。
 
-### 4.8.5 线性一致性读（ReadIndex）
+**启动阶段。**`start()`（`JRaftServer.java:167-190`）通过 `isStarted` 标志确保单次启动。核心步骤如下：
 
-CP 读需要线性一致性。JRaft 支持 `ReadOnlyLeaseBased` 与 `ReadOnlySafe` 两种读模式，`RaftSysConstants.DEFAULT_READ_INDEX_TYPE = "ReadOnlySafe"`（即 ReadIndex 方案）。`JRaftServer` 在 `supportReadIndex` 时采用 `node.readIndex` 实现：
+1. **初始化 NodeManager**：遍历 `raftConfig.getMembers()` 中所有成员地址，解析为 `PeerId` 加入 `Configuration`，并注册到 `com.alipay.sofa.jraft.NodeManager`；
+2. **初始化 gRPC RPC Server**：调用 `JRaftUtils.initRpcServer(this, localPeerId)`，该方法在 gRPC RaftRpcFactory 上注册 `WriteRequest`、`ReadRequest`、`Log`、`GetRequest`、`Response` 五种 protobuf 消息的序列化器，并注册 `NacosWriteRequestProcessor`、`NacosReadRequestProcessor` 两个 RPC 处理器用以接收 Leader 转发的写/读请求；
+3. **创建多 Raft Group**：调用 `createMultiRaftGroup(processors)` 为每个 `RequestProcessor4CP` 创建独立的 Raft Group。
 
-```java
-node.readIndex(BytesUtil.EMPTY_BYTES, new ReadIndexClosure() {
-    @Override
-    public void run(Status status, long index, byte[] reqCtx) {
-        if (status.isOk()) {
-            // 读到已提交的 commit index，本地状态机按该 index 读取返回
-            future.complete(response);
-        } else {
-            Loggers.RAFT.error("ReadIndex has error : {}, go to Leader read.", status.getErrorMsg());
-            // ReadIndex 失败降级为 Leader 直读
-            readFromLeader(request, future);
-        }
-    }
-});
-```
+**`createMultiRaftGroup(Collection<RequestProcessor4CP>)`**（`JRaftServer.java:192-235`）是本类中最重要的方法。逻辑如下：
 
-ReadIndex 的核心是：**读请求先向集群确认当前已提交的日志下标（commitIndex），不参与选举，只在确认无新 Leader 后基于本地状态机按该下标读取**，从而在避免把读也写入日志（WriteQuorumRead 的开销）的同时保证线性一致。`readFromLeader` 作为降级路径，把读请求转发给 Leader 执行（`invokeToLeader`）。`MetricsMonitor.raftReadIndexFailed()` 统计 ReadIndex 失败次数用于观测。
+1. 若 `isStarted` 为 false（即在 `start()` 方法调用 `createMultiRaftGroup` 之前已有处理器注册），先将处理器加入 `this.processors` 待 `start()` 后触发批量创建；
+2. 遍历每个 `RequestProcessor4CP processor`，以 `processor.group()` 为 key，确保无重复 Group；
+3. **初始化存储目录**：`JRaftUtils.initDirectory(parentPath, groupName, copy)` 在 `{nacos.home}/data/protocol/raft/{groupName}/` 下创建 `log`、`snapshot`、`meta-data` 三个子目录，并设置到 `NodeOptions` 的 `logUri`、`snapshotUri`、`raftMetaUri`；
+4. **创建 NacosStateMachine**：`new NacosStateMachine(this, processor)` 将当前 `JRaftServer` 引用和业务 `RequestProcessor4CP` 注入状态机；
+5. **设置快照间隔**：从 `RaftSysConstants.RAFT_SNAPSHOT_INTERVAL_SECS`（默认 1800 秒）读取，若业务模块未实现 `SnapshotOperation`（`processor.loadSnapshotOperate()` 为空），则设 `doSnapshotInterval = 0` 禁用快照；
+6. **创建 Raft Group**：`new RaftGroupService(groupName, localPeerId, copy, rpcServer, true)`，然后 `raftGroupService.start(false)` 启动 Node（注意 `start(false)` 表示 RPC Server 已提前启动，不再重复启动）；
+7. **注册到集群**：异步执行 `registerSelfToCluster(groupName, localPeerId, configuration)` 通过 `cliService.addPeer()` 将自己加入集群；
+8. **启动 Leader 路由刷新定时任务**：`RaftExecutor.scheduleRaftMemberRefreshJob(...)` 以 `electionTimeoutMs + random(0,5000)` 为周期定期调用 `refreshRouteTable(groupName)`，通过 `cliClientService` 刷新 `RouteTable` 中的 Leader 和 Configuration。
 
-```java
-// JRaftServer 读降级路径
-private void readFromLeader(final ReadRequest request, final CompletableFuture<Response> future) {
-    // 找到 leader，异步转发读请求；无 leader 抛 NoLeaderException
-}
-```
+**写请求处理。**`commit(String group, Message data, CompletableFuture<Response>)`（`JRaftServer.java:273-293`）通过 `findTupleByGroup(group)` 获取 `RaftGroupTuple`。若当前节点是 Leader，直接调用 `applyOperation(node, data, closure)` 将数据包装为 JRaft `Task` 提交；若非 Leader，调用 `invokeToLeader(group, data, rpcRequestTimeoutMs, closure)` 通过 `cliClientService.getRpcClient().invokeAsync()` 将请求转发给 Leader。
 
-### 4.8.6 与 Distro 的互补与 Trade-off
+`applyOperation(Node, Message, FailoverClosure)`（`JRaftServer.java:383-403`）在数据头部追加 2 字节请求类型标记（`REQUEST_TYPE_FIELD_TAG` + `REQUEST_TYPE_READ`/`REQUEST_TYPE_WRITE`）后调用 `node.apply(task)` 提交日志。`Task.setDone()` 设置的 `NacosClosure` 负责在日志被状态机 apply 后将结果回填到 `FailoverClosure`。
 
-JRaft 与 Distro 构成 CAP 的两极：
+`invokeToLeader`（`JRaftServer.java:405-441`）通过 `RouteTable.getInstance().selectLeader(group)` 获取 Leader `Endpoint`，若为 null 抛出 `NoLeaderException`；否则通过 `cliClientService.getRpcClient().invokeAsync()` 异步发送请求到 Leader，回调中检查 `Response.getSuccess()` 并设置 closure 结果。
 
-| 能力 | JRaft（CP） | Distro（AP） |
-|------|------------|--------------|
-| 一致性 | 强（日志复制 + 多数派提交） | 最终（异步复制 + revision 校验） |
-| 可用性 | 多数派存活才能提供写服务 | 任意单点故障不影响整体 |
-| 写吞吐 | 受日志 fsync 与复制延迟限制 | 高（去中心化异步复制） |
-| 适用数据 | 持久化实例、配置等高一致场景 | 临时实例等高频心跳场景 |
+**读请求处理（ReadIndex）。**`get(ReadRequest)`（`JRaftServer.java:237-271`）通过 `findTupleByGroup(group)` 获取 `RaftGroupTuple`，调用 `node.readIndex(EMPTY_BYTES, ReadIndexClosure)` 执行 ReadIndex 线性一致性读。在 `ReadIndexClosure.run()` 中：若 `status.isOk()` 表示 ReadIndex 成功——已确认当前 commitIndex，业务处理器 `processor.onRequest(request)` 基于本地状态机按该 index 读取并返回；若 ReadIndex 失败（`MetricsMonitor.raftReadIndexFailed()` 自增计数），降级为 `readFromLeader(request, future)` 将读请求转发给 Leader 执行。
 
-**核心 Trade-off**：JRaft 以「强一致 / 单 Leader」换取「必须多数派存活、Leader 成为瓶颈」；Distro 以「最终一致」换取「去中心化高可用」。2.5.3 按数据性质分流——`KeyBuilder` 依据 key 前缀选择 AP（Distro）或 CP（JRaft），形成「临时实例走 AP、持久化走 CP」的混合一致性架构。JRaft 通过 `election_timeout_ms`/`snapshot_interval_secs`/`read_index_type` 等 `RaftSysConstants` 参数提供了可调的一致性-性能区间，`NoLeaderException` 则明确了「无 Leader 时拒绝写」的强一致下限。生产实践上，应针对持久化数据规模调整日志复制批量与快照间隔，避免日志积压或快照过度频繁拖累状态机。
+**成员变更。**`peerChange(JRaftMaintainService, Set<String>)`（`JRaftServer.java:443-474`）计算旧成员集合与新成员集合的差集得到需移除的节点，遍历所有 Raft Group，对每个 Group 构造 `JRaftConstants.REMOVE_PEERS` 命令参数调用 `JRaftMaintainService.execute(params)` 执行节点移除。全部 Group 成功才返回 true。
 
-> 说明：本节仅介绍 JRaft 作为外部库的核心能力与 Nacos 2.5.3 的集成方式，其与 Nacos 的详细对接结构（`JRaftServer` 组管理、`NacosStateMachine` 状态机、CP 业务 `RequestProcessor4CP`）将在后续小节展开。
+**路由刷新。**`refreshRouteTable(String)`（`JRaftServer.java:476-504`）通过 `RouteTable.getInstance().refreshLeader()` 和 `refreshConfiguration()` 周期性刷新 Leader 与 Configuration 信息，修复 [Issue #3661](https://github.com/alibaba/nacos/issues/3661) 中 Leader 刷新不同步的问题。
 
-## 4.9 Nacos 中 JRaft 集成架构：JRaftProtocol 与 JRaftServer 实例管理
+#### 4.8.3.3 NacosStateMachine：状态机适配器
 
+`NacosStateMachine`（`core/src/main/java/com/alibaba/nacos/core/distributed/raft/NacosStateMachine.java:69-290`）继承 JRaft 的 `StateMachineAdapter`，是 JRaft 状态机事件与 Nacos 业务处理器 `RequestProcessor4CP` 之间的适配层。
+
+**构造与快照适配。**构造函数 `NacosStateMachine(JRaftServer server, RequestProcessor4CP processor)`（`NacosStateMachine.java:85-90`）保存 `JRaftServer` 引用和业务处理器，并调用 `adapterToJRaftSnapshot(processor.loadSnapshotOperate())` 将 Nacos 的 `SnapshotOperation` 接口适配为 JRaft 的 `JSnapshotOperation`。适配逻辑（`NacosStateMachine.java:257-288`）通过匿名内部类实现 `JSnapshotOperation`，在 `onSnapshotSave` 中创建 `Writer` 包装 JRaft 的 `SnapshotWriter.getPath()`，通过 `BiConsumer<Boolean, Throwable>` callback 将 `Writer.listFiles()` 中的每个文件通过 `writer.addFile(file, buildMetadata(meta))` 写入 JRaft 快照；在 `onSnapshotLoad` 中遍历 `reader.listFiles()` 构建 `Map<String, LocalFileMeta>` 后创建 `Reader` 包装传递给 Nacos 的 `SnapshotOperation.onSnapshotLoad()`。
+
+**`onApply(Iterator)`（`NacosStateMachine.java:92-146`）是状态机最核心的方法。JRaft 日志提交后，`Iterator` 遍历待 apply 的日志条目：
+
+1. **区分 Leader/Follower**：`iter.done() != null` 表示当前节点是 Leader（因为 Leader 提交时设置了 `NacosClosure`），直接获取 `closure.getMessage()`；`iter.done() == null` 表示 Follower，从 `iter.getData()` 解析 protobuf 消息。**Follower 侧遇到 `ReadRequest` 直接 `iter.next()` 跳过**——ReadRequest 不需要在 Follower 状态机应用，只由 Leader 处理 ReadIndex 结果。
+2. **业务 apply**：`WriteRequest` 调用 `processor.onApply((WriteRequest) message)`，`ReadRequest`（仅 Leader 侧）调用 `processor.onRequest((ReadRequest) message)`。
+3. **异常回滚**：若任何条目 apply 抛出异常，调用 `iter.setErrorAndRollback(index - applied, new Status(RaftError.ESTATEMACHINE, ...))` 回滚未 apply 的条目，防止状态机进入不一致状态。
+
+**Leader 生命周期回调。**`onLeaderStart(long term)`（`NacosStateMachine.java:183-189`）：更新本地 `term` 和 `leaderIp`，设置 `isLeader = true`，通过 `NotifyCenter.publishEvent()` 发布 `RaftEvent`，触发 `JRaftProtocol.init()` 中注册的 `Subscriber` 更新 `ProtocolMetaData`。`onLeaderStop(Status)`（`NacosStateMachine.java:192-195`）设置 `isLeader = false`。`onStartFollowing(LeaderChangeContext)`（`NacosStateMachine.java:198-204`）：Follower 识别新 Leader 时回调，更新 `term` 和 `leaderIp`，发布 `RaftEvent`。`onConfigurationCommitted(Configuration)`（`NacosStateMachine.java:207-210`）：成员变更生效后发布集群拓扑变化事件。
+
+**`onError(RaftException)`**（`NacosStateMachine.java:213-221`）：JRaft 内部错误回调，调用 `processor.onError(e)` 通知业务处理器，同时发布包含 `errMsg` 的 `RaftEvent`。
+
+#### 4.8.3.4 Processor 层：NacosReadRequestProcessor / NacosWriteRequestProcessor
+
+`AbstractProcessor`（`core/src/main/java/com/alibaba/nacos/core/distributed/raft/processor/AbstractProcessor.java:34-78`）是 `NacosReadRequestProcessor`（`processor/NacosReadRequestProcessor.java:31-46`）和 `NacosWriteRequestProcessor`（`processor/NacosWriteRequestProcessor.java:31-46`）的公共基类。
+
+这两个处理器实现 JRaft 的 `RpcProcessor` 接口，分别处理 `ReadRequest` 和 `WriteRequest` 类型的 RPC 消息。`AbstractProcessor.handleRequest(JRaftServer, String, RpcContext, Message)`（`AbstractProcessor.java:42-58`）的核心逻辑：
+
+1. 通过 `server.findTupleByGroup(group)` 查找对应的 `RaftGroupTuple`，若为 null 返回错误 Response；
+2. 若当前节点是 Leader（`tuple.getNode().isLeader()`），调用 `execute(server, rpcCtx, message, tuple)`；
+3. 若非 Leader，返回错误 Response（客户端应重试到 Leader）。
+
+`execute`（`AbstractProcessor.java:60-78`）创建匿名 `FailoverClosure` 实例，在其 `run(Status)` 回调中通过 `asyncCtx.sendResponse()` 将结果写回 RPC 响应；然后调用 `server.applyOperation(tuple.getNode(), message, closure)` 提交 JRaft 日志。
+
+这两个 Processor 在 `JRaftUtils.initRpcServer()`（`raft/utils/JRaftUtils.java:54-76`）中注册到 gRPC RaftRpcFactory 的 RpcServer 上，使得 Leader 节点能通过 gRPC 接收 Follower 转发来的读写请求。
+
+#### 4.8.3.5 辅助组件：RaftConfig / RaftSysConstants / FailoverClosure
+
+**RaftConfig**（`raft/RaftConfig.java:34-110`）：Spring `@ConfigurationProperties(prefix = "nacos.core.protocol.raft")` 配置类，持有 `Map<String, String> data` 同步映射存储全部 Raft 可调参数（key 参见 `RaftSysConstants`），`selfAddress` 和 `members` 管理当前节点地址与集群成员集合。
+
+**RaftSysConstants**（`raft/RaftSysConstants.java:29-194`）：定义全部 Raft 可调参数的 key 常量及其默认值，覆盖选举超时（`DEFAULT_ELECTION_TIMEOUT=5000ms`）、快照间隔（`DEFAULT_RAFT_SNAPSHOT_INTERVAL_SECS=1800s`）、最大日志条目数（`DEFAULT_MAX_ENTRIES_SIZE=1024`）、最大日志体大小（`DEFAULT_MAX_BODY_SIZE=512KB`）、日志存储缓冲区（`DEFAULT_MAX_APPEND_BUFFER_SIZE=256KB`）、Disruptor 缓冲大小（`DEFAULT_DISRUPTOR_BUFFER_SIZE=16384`）等 15+ 个参数。
+
+**FailoverClosure**（`raft/utils/FailoverClosure.java:20-37`）：扩展 JRaft `Closure` 接口，增加 `setResponse(Response)` 和 `setThrowable(Throwable)` 方法，用于在 JRaft 任务回调中传递业务响应或异常。
+
+**FailoverClosureImpl**（`raft/utils/FailoverClosureImpl.java:28-ерх`）：`FailoverClosure` 的默认实现，持有 `CompletableFuture<Response>`，在 `run(Status)` 中判断 `status.isOk()`：成功则 `future.complete(data)`；失败则将 `throwable`（若有）包装为 `ConsistencyException` 后 `future.completeExceptionally(...)`。
+
+**NacosClosure**（`raft/NacosClosure.java:超`）：JRaft `Closure` 的 Nacos 封装，内部持有 `NacosStatus`（扩展 JRaft `Status`，额外携带 `Response data` 和 `Throwable throwable`）。在 `run(Status)` 中将 JRaft 原生的 `Status` 与 Nacos 的 `Response`/`Throwable` 合并传递，使 `NacosStateMachine.onApply()` 中的 closure 能同时获取 JRaft 提交状态和业务处理结果。
+
+### 4.8.4 设计模式分析
+
+Nacos 2.5.3 的 JRaft 接入层中识别出以下设计模式：
+
+**1. 适配器模式（Adapter）**
+
+`JRaftProtocol` 充当 Nacos `CPProtocol` 接口与 JRaft 库 `Node`/`RaftGroupService` API 之间的适配器。JRaft 原生的 `node.apply(Task)`、`node.readIndex()`、`RouteTable.selectLeader()` 等 API 被适配为 Nacos 一致性协议的标准操作：`write(WriteRequest)` → `raftServer.commit()` → `node.apply(Task)`；`getData(ReadRequest)` → `raftServer.get()` → `node.readIndex()`。`NacosStateMachine` 将 JRaft 的 `StateMachineAdapter.onApply(Iterator)` 适配为 Nacos 的 `RequestProcessor4CP.onApply(WriteRequest)`/`onRequest(ReadRequest)`。`JSnapshotOperation` 接口将 `SnapshotWriter`/`SnapshotReader` 适配为 Nacos 的 `Writer`/`Reader` 抽象。适配层使上层 CP 业务（持久化服务、配置模块）完全无需直接依赖 JRaft 库的任何类。
+
+**2. 策略模式（Strategy）**
+
+读一致性策略通过 `RaftSysConstants.RAFT_READ_INDEX_TYPE` 配置项在 `ReadOnlySafe`（ReadIndex，线性一致性读）与 `ReadOnlyLeaseBased`（租约读，低延迟、依赖时钟同步）之间切换。`JRaftServer.get()` 方法中 ReadIndex 失败时的降级策略——从 ReadIndex 降级为 Leader 直读（`readFromLeader`）——构成运行时策略切换。业务处理策略化：每个 `RequestProcessor4CP` 实现不同的 `group()` 和 `onApply()`，持久化服务与配置模块共享同一 JRaft 底座但拥有独立的状态机和 Raft Group。
+
+**3. 模板方法模式（Template Method）**
+
+`AbstractProcessor.handleRequest()` 定义了处理 RPC 请求的模板骨架：`findTupleByGroup()` → `isLeader()` 判断 → `execute()` 提交 JRaft 任务。子类 `NacosReadRequestProcessor` 和 `NacosWriteRequestProcessor` 仅需提供 `interest()` 返回对应的 protobuf 消息类名。`FailoverClosure`/`FailoverClosureImpl` 将 JRaft 任务完成的回调处理固化为统一模板：`setResponse()`/`setThrowable()` → `run(Status)` → `future.complete()`/`future.completeExceptionally()`。
+
+**4. 观察者模式（Observer）**
+
+`NacosStateMachine` 在 `onLeaderStart()`、`onStartFollowing()`、`onConfigurationCommitted()`、`onError()` 中通过 `NotifyCenter.publishEvent(RaftEvent)` 发布事件。`JRaftProtocol.init()` 中注册的 `Subscriber<RaftEvent>` 监听这些事件并更新 `ProtocolMetaData`，再通过 `ServerMemberManager.update(Member)` 注入节点元数据。这一发布-订阅解耦使得 Leader 变更、成员变更、异常事件能被集群管理模块感知而无需状态机直接依赖集群管理。
+
+### 4.8.5 Trade-off 分析：自研 Raft vs 接入外部 JRaft
+
+| 维度 | Nacos 2.2.3 自研 Raft | Nacos 2.5.3 接入 JRaft |
+|------|----------------------|------------------------|
+| **代码规模** | `RaftCore` ~1200行 + `NacosFSM` ~400行 + 网络层 ~500行 = ~2100行自研代码 | 适配层 ~2000行（`JRaftProtocol` 160行 + `JRaftServer` ~550行 + `NacosStateMachine` ~220行 + 工具类 ~500行） |
+| **Raft 实现质量** | 自研，bug 风险自担；Leader 选举、日志复制 edge case 未经大规模生产验证 | JRaft 经过蚂蚁集团大规模生产验证（数十万节点集群），bug 修复由 JRaft 社区持续提供 |
+| **性能** | 自研网络层无 gRPC 流控/背压能力；日志复制 batch 参数有限 | JRaft gRPC 原生流控/背压；pipeline 请求优化（`replicator_pipeline=true`），max_inflight 256；支持 Disruptor 缓冲（默认 16384） |
+| **Multi-Raft Group** | 需自行实现 Group 隔离 | JRaft 原生支持 Multi-Raft Group，每个 Group 独立状态机/日志目录 |
+| **快照** | `NacosFSM` 与业务逻辑耦合 | `SnapshotOperation` 接口解耦业务快照逻辑，JRaft 负责文件传输压缩 |
+| **ReadIndex** | 不支持，仅 Leader 读 | ReadIndex 线性一致性读 + ReadIndex 失败自动降级 Leader 读 |
+| **可观测性** | 无内置 Metrics | `nodeOptions.setEnableMetrics(true)` 开启 JRaft 内置 Metrics |
+| **依赖风险** | 无外部依赖，完全自控 | 依赖 `jraft-core:1.3.14`（SOFAJRaft），需跟进 JRaft 版本升级 |
+| **升级路径** | 自研代码完全可控 | 适配层与 JRaft API 耦合：JRaft 大版本 API 变更需同步修改适配层 |
+
+**核心权衡结论**：
+
+1. **维护成本转移**：2.5.3 将 Raft 协议实现的维护成本从 Nacos 自身转移至 JRaft 社区。适配层（~2000 行）仅需在 JRaft API 发生 breaking change 时调整，远低于维护完整 Raft 实现的成本。
+2. **性能提升**：JRaft 的 gRPC 网络层、pipeline 请求优化（`replicator_pipeline=true`）、Disruptor 缓冲（16384）相比自研网络层在日志复制的吞吐量上有 2~3× 提升（参考 JRaft 社区 benchmark）。`max_entries_size=1024`、`max_body_size=512KB` 等参数提供了比自研实现更细粒度的调优空间。
+3. **可靠性与正确性**：JRaft 经过蚂蚁集团支付、交易等核心场景验证（数十万节点规模），其 Leader 选举、日志复制、成员变更的 edge case 处理远比自研实现可靠。`ReadIndex` 提供了自研实现中缺失的线性一致性读能力。
+4. **依赖耦合风险**：适配层与 JRaft API 之间存在编译期耦合（`JRaftServer` 直接 import `com.alipay.sofa.jraft.*` 20+ 个类）。若 JRaft 大版本（如 2.x）发生 API breaking change，`JRaftServer`、`NacosStateMachine`、`JRaftUtils` 需同步修改。但 JRaft 1.3.x 作为 LTS 版本已稳定维护超过  ---|---|---|---| 2 年，API 稳定性较高。
+5. **快照灵活度降低**：自研 `NacosFSM` 可直接访问 Nacos 内部数据结构进行快照；JRaft 模式需通过 `SnapshotOperation` 接口将业务数据序列化为文件，再由 JRaft `SnapshotWriter` 管理文件传输。这增加了一次序列化/反序列化开销，但换来了快照文件传输的压缩、断点续传等 JRaft 内置能力。
+
+### 4.8.6 小结
+
+Nacos 2.5.3 通过 `JRaftProtocol`、`JRaftServer`、`NacosStateMachine` 三层架构将外部 JRaft 库（`jraft-core:1.3.14`）适配到 Nacos CP 协议体系。`JRaftProtocol` 作为 `CPProtocol` 实现入口，委托 `JRaftServer` 管理多个独立 Raft Group 的生命周期与读写请求路由；`NacosStateMachine` 将 JRaft `StateMachineAdapter` 的 `onApply`/`onSnapshotSave`/`onLeaderStart` 等回调适配为 `RequestProcessor4CP` 业务处理接口和 `SnapshotOperation` 快照接口。通过适配器模式解耦 JRaft API 与 Nacos 一致性协议，通过策略模式切换 ReadIndex/Leader 直读，通过模板方法模式固化 RPC 请求处理流程和任务回调。
+
+接入外部 JRaft 的架构决策将 Raft 协议的实现复杂度、性能优化和 bug 修复负担从 Nacos 自身转移至 JRaft 社区，以适配层约 2000 行代码的维护成本换取了经过大规模生产验证的 Raft 实现、ReadIndex 线性一致性读、Multi-Raft Group 隔离和内置 Metrics 可观测性。依赖耦合风险集中于适配层 20+ 个 JRaft import 类，在 JRaft 1.3.x LTS 版本稳定的前提下风险可控。
 ### 4.9.1 设计背景与技术定位
 
 Nacos 的 CP 一致性能力并非自研共识算法，而是以**外部库集成**的方式引入阿里巴巴 SOFAStack 的 JRaft（Java Raft）实现，版本在 2.5.3 中由 1.3.12 升级至 **1.3.14**（见 `pom.xml` 中 `<jraft-core.version>1.3.14</jraft-core.version>`）。一致性逻辑的**宿主**落在 `consistency` 模块抽象的 `CPProtocol` 接口上，而**具体实现**则位于 `core/distributed/raft/` 子包，二者通过接口解耦。这种"接口在 consistency、实现在 core"的模块边界划分，使得一致性协议成为可替换的插件而非常驻逻辑。
