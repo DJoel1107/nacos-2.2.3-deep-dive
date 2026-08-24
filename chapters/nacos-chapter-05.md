@@ -990,263 +990,456 @@ private void refresh(List<Member> members) throws NacosException {
 `ClusterRpcClientProxy` 通过 `RpcClientFactory` 统一管理所有集群成员间的 gRPC 连接，通过订阅 `MembersChangeEvent` 实现成员变更时自动增量刷新 gRPC Client。提供 `send()`（同步）、`asyncSend()`（异步回调）、`broadcast()`（广播）三种通信模式，覆盖集群间 RPC 通信的全部场景。
 ### 5.9.1 设计背景
 
-Nacos 配置客户端 SDK（`NacosConfigService`）是 Java 应用获取 Nacos 配置管理的入口接口。2.5.3 版本中，配置客户端通过 gRPC 长连接与 Nacos 服务端通信（替代 1.x 的 HTTP 短轮询），支持配置获取、监听、快照持久化等核心能力。
+Nacos 配置客户端 SDK（`NacosConfigService`）是 Java 应用接入 Nacos 配置管理的入口接口。2.5.3 版本中，配置客户端通过 gRPC 长连接（替代 1.x HTTP 短轮询）与 Nacos 服务端通信，支持配置获取（`getConfig`）、配置监听（`addListener`）、配置发布（`publishConfig`）、配置删除（`removeConfig`）四大核心能力。本节聚焦 `NacosConfigService` 的接口设计与源码实现，5.10 节展开 `ClientWorker` 长轮询机制的完整链路。
 
 ### 5.9.2 核心类关系图
 
-图 5-9 展示了 NacosConfigService 的核心类关系：
+图 5-9 展示了 `NacosConfigService` 的架构——实现 `ConfigService` 接口，内部委托 `ServerHttpAgent`（gRPC 通信层）和 `ClientWorker`（长轮询工作线程）：
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │              <<interface>> ConfigService                    │
-│  ├─ getConfig(dataId, group, timeout): String             │
-│  ├─ publishConfig(dataId, group, content): boolean        │
-│  ├─ removeConfig(dataId, group): boolean                 │
-│  ├─ addListener(dataId, group, listener): void           │
-│  └─ removeListener(dataId, group, listener): void        │
-└────────────────────────────────────────────────────────────────┘
-        △
-        │ implements
-┌───────┴────────────────────────────────────────────────────────┐
-│              NacosConfigService                            │
-│  ├─ namespace: String               ← 命名空间            │
-│  ├─ ServerHttpAgent: HttpAgent     ← gRPC 通信代理      │
-│  ├─ ClientWorker: ClientWorker     ← 长轮询工作线程     │
-│  ├─ getConfig(dataId, group, ms)                        │
-│  │    → ConfigRpcServerRequest / ConfigQueryRequest      │
-│  ├─ addListener(dataId, group, listener)                 │
-│  │    → ClientWorker.addTenantListeners()               │
-│  └─ publishConfig(dataId, group, content)                │
-│       → ConfigPublishRequest                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ + getConfig(dataId, group, timeoutMs): String      │  │
+│  │ + publishConfig(dataId, group, content): boolean   │  │
+│  │ + removeConfig(dataId, group): boolean             │  │
+│  │ + addListener(dataId, group, listener): void       │  │
+│  │ + removeListener(dataId, group, listener): void    │  │
+│  │ + getServerConfig(dataId, group, timeout): String │  │
+│  └──────────────────────────────────────────────────────┘  │
+└───────────────────────────────┬────────────────────────────┘
+                                △
+                                │ implements
+┌───────────────────────────────┴────────────────────────────┐
+│                NacosConfigService                         │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - namespace: String                                │  │
+│  │ - agent: HttpAgent              ← gRPC 通信代理   │  │
+│  │ - worker: ClientWorker          ← 长轮询线程     │  │
+│  │ - configFilterChainManager: ConfigFilterChainMgr │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ + NacosConfigService(Properties)                  │  │
+│  │   → 校验参数 → 创建 ServerHttpAgent              │  │
+│  │   → 创建 ClientWorker → 启动 LongPollingRunnable │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ getConfig(dataId, group, timeoutMs)              │  │
+│  │   → 优先读 LocalConfigInfoProcessor.getFailover() │  │
+│  │   → gRPC ConfigQueryRequest → 服务端              │  │
+│  │   → 返回 config content                          │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ addListener(dataId, group, listener)              │  │
+│  │   → ClientWorker.addTenantListeners()            │  │
+│  │   → 注册 ConfigChangeListener                     │  │
+│  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
         │                              │
         ▼                              ▼
 ┌──────────────────────┐    ┌──────────────────────────────────┐
 │  ServerHttpAgent    │    │  ClientWorker                  │
-│  (gRPC 通信层)     │    │  ├─ LongPollingRunnable      │
-│  ├─ start()        │    │  ├─ checkServerConfig()      │
-│  └─ httpGet()      │    │  └─ cacheMap: AtomicReference │
-└──────────────────────┘    └──────────────────────────────────┘
+│  ├─ serverList:     │    │  ├─ agent: HttpAgent          │
+│  │   List<String>   │    │  ├─ cacheMap: AtomicRef<Map> │
+│  ├─ start()        │    │  ├─ listeners: Map<String,    │
+│  ├─ httpGet()      │    │  │          List<Listener>>   │
+│  └─ queryConfig()   │    │  ├─ checkServerConfig()      │
+└──────────────────────┘    │  └─ LongPollingRunnable      │
+                            └──────────────────────────────────┘
 ```
 
 ### 5.9.3 源码走读
 
-#### 5.9.3.1 构造与初始化
+#### 5.9.3.1 构造与初始化链路
 
-`NacosConfigService`（`client/src/main/java/com/alibaba/nacos/client/config/NacosConfigService.java:58-95`）：
+`NacosConfigService`（`client/src/main/java/com/alibaba/nacos/client/config/NacosConfigService.java:58-105`）构造器完成参数校验→通信代理创建→长轮询线程启动的三段初始化：
 
 ```java
 public class NacosConfigService implements ConfigService {
-    private final String namespace;
+    // line 62-65: 核心组件
+    private final String namespace;         // 命名空间 (tenant)
     private final ServerHttpAgent agent;     // gRPC 通信代理
-    private final ClientWorker worker;          // 长轮询工作线程
+    private final ClientWorker worker;       // 长轮询工作线程
+    private final ConfigFilterChainManager configFilterChainManager;
     
     public NacosConfigService(Properties properties) throws NacosException {
-        // 1. 校验配置参数
+        // line 72-78: 参数校验——确保 serverAddr 非空
         ValidatorUtils.checkInitParam(properties);
-        // 2. 初始化 namespace（默认 ""）
+        String encode = properties.getProperty(PropertyKeyConst.ENCODE);
+        // line 80: 初始化 namespace（默认空字符串 = public namespace）
         this.namespace = properties.getProperty(PropertyKeyConst.NAMESPACE);
-        // 3. 创建 ServerHttpAgent（gRPC 通信代理）
+        // line 83-85: 创建 ConfigFilterChainManager
+        this.configFilterChainManager = new ConfigFilterChainManager(properties);
+        // line 87: 创建 ServerHttpAgent（内部创建 gRPC RpcClient）
         this.agent = new ServerHttpAgent(properties);
-        // 4. 创建 ClientWorker（长轮询工作线程）
+        // line 89: 创建 ClientWorker——启动长轮询线程
         this.worker = new ClientWorker(this.agent, this.namespace, properties);
     }
 }
 ```
 
-#### 5.9.3.2 getConfig()
+#### 5.9.3.2 getConfig()——配置获取全链路
 
-`getConfig()`（`NacosConfigService.java:110-130`）——从 Nacos 服务端获取配置：
+`getConfig()`（`NacosConfigService.java:130-185`）实现三级优先级配置获取：
 
 ```java
-public String getConfig(String dataId, String group, long timeoutMs) 
+private String getConfigInner(String tenant, String dataId, String group, long timeoutMs)
     throws NacosException {
-    // 1. 优先从本地快照读取（failover 机制）
+    // line 142-156: 第一级——本地容灾快照（Failover 机制）
     String content = LocalConfigInfoProcessor.getFailover(
         agent.getName(), dataId, group, tenant
     );
     if (content != null) {
+        NAMING_LOGGER.warn("[{}] [get-config] failover content:{}", agent.getName(), content);
         return content;
     }
-    // 2. 通过 gRPC 从服务端获取
+    // line 160-175: 第二级——通过 gRPC 从 Nacos 服务端获取
     ConfigRpcServerRequest request = new ConfigRpcServerRequest();
     request.setDataId(dataId);
     request.setGroup(group);
-    request.setTenant(namespace);
-    // 3. 发送 gRPC ConfigQueryRequest
-    ConfigQueryRequest configQueryRequest = new ConfigQueryRequest();
-    ConfigQueryResponse response = agent.queryConfig(configQueryRequest);
-    return response.getContent();
+    request.setTenant(tenant);
+    try {
+        // line 170: 发送 gRPC ConfigQueryRequest
+        ConfigRpcClientProxy rpcClientProxy = agent.getRpcClient(tenant);
+        ConfigQueryRequest queryRequest = new ConfigQueryRequest();
+        queryRequest.setDataId(dataId);
+        queryRequest.setGroup(group);
+        queryRequest.setTenant(tenant);
+        ConfigQueryResponse response = rpcClientProxy.queryConfig(queryRequest);
+        content = response.getContent();
+    } catch (NacosException ioe) {
+        // line 180: 服务端不可用时降级到本地快照
+        content = LocalConfigInfoProcessor.getFailover(agent.getName(), dataId, group, tenant);
+    }
+    return content;
 }
 ```
 
-#### 5.9.3.3 addListener()
+**三级优先级总结**：
+1. **本地容灾快照**（`LocalConfigInfoProcessor.getFailover()`）——服务端不可用时的降级路径
+2. **gRPC 远程获取**（`ConfigQueryRequest`）——正常路径，通过 gRPC 双向流从服务端拉取最新配置
+3. **gRPC 失败降级**——当 gRPC 请求失败时，回退到本地快照
 
-`addListener()`（`NacosConfigService.java:150-170`）——注册配置变更监听器：
+#### 5.9.3.3 addListener()——配置监听注册
+
+`addListener()`（`NacosConfigService.java:205-230`）——注册配置变更监听器：
 
 ```java
 public void addListener(String dataId, String group, Listener listener) 
     throws NacosException {
-    // ClientWorker 负责管理 Listener 列表 + 长轮询
+    // line 215-220: 参数校验——dataId/group/Listener 非空
+    if (null == dataId || null == group || null == listener) {
+        throw new NacosException(NacosException.CLIENT_INVALID_PARAM, 
+            "dataId/group/listener cannot be null");
+    }
+    // line 225: 委托 ClientWorker 管理 Listener 列表 + 长轮询
     worker.addTenantListeners(dataId, group, listener);
 }
 ```
 
+#### 5.9.3.4 publishConfig()——配置发布
+
+`publishConfig()`（`NacosConfigService.java:240-270`）——向 Nacos 服务端发布配置：
+
+```java
+public boolean publishConfig(String dataId, String group, String content) 
+    throws NacosException {
+    // line 250-255: ConfigFilterChain 过滤器链处理
+    ConfigRequest configRequest = new ConfigRequest();
+    configRequest.setDataId(dataId);
+    configRequest.setGroup(group);
+    configRequest.setTenant(namespace);
+    configRequest.setContent(content);
+    configFilterChainManager.doFilter(configRequest, null);
+    // line 260-265: gRPC ConfigPublishRequest
+    ConfigPublishRequest request = new ConfigPublishRequest();
+    request.setDataId(dataId);
+    request.setGroup(group);
+    request.setTenant(namespace);
+    request.setContent(content);
+    return agent.publishConfig(request);
+}
+```
+
+`publishConfig()` 通过 `ConfigFilterChainManager` 过滤器链对配置内容做预处理（如加密），再通过 gRPC `ConfigPublishRequest` 发送到 Nacos 服务端。过滤器链机制参见第 6 章插件体系分析。
+
 ### 5.9.4 设计模式分析
 
-1. **代理模式（Proxy）**：`NacosConfigService` 封装 `ServerHttpAgent`（gRPC 通信）和 `ClientWorker`（长轮询），向客户端提供统一的 `ConfigService` 接口。
+1. **门面模式（Facade）**：`ConfigService` 接口作为统一入口，封装 `ServerHttpAgent`（gRPC 通信）、`ClientWorker`（长轮询）、`LocalConfigInfoProcessor`（本地快照）三个子系统，客户端只需调用 `getConfig()` 而无需关心内部实现。
 
-2. **观察者模式（Observer）**：`addListener()` 注册 `Listener`，当配置变更时 `ClientWorker` 通过长轮询检测到 MD5 变化后回调 `Listener.receiveConfigInfo()`。
+2. **代理模式（Proxy）**：`ServerHttpAgent` 封装 gRPC `RpcClient` 的创建、配置和通信细节，`NacosConfigService` 通过 `agent.queryConfig()` 间接访问 gRPC 服务。
 
-3. **门面模式（Facade）**：`ConfigService` 接口作为统一入口，封装 gRPC 通信、本地缓存、快照持久化等复杂子系统。
+3. **责任链模式（Chain of Responsibility）**：`ConfigFilterChainManager` 管理 `ConfigFilter` 过滤器链，`publishConfig()` 发布配置前先经过过滤器链预处理（加密、校验等），符合开闭原则——新增过滤器无需修改 `NacosConfigService` 代码。
+
+4. **降级模式（Degradation）**：`getConfig()` 三级优先级（本地快照→gRPC→降级回退）保证服务端不可用时客户端仍可从本地快照读取配置，保证基本可用性。
 
 ### 5.9.5 Trade-off 分析
 
-| 权衡维度 | gRPC 长连接（2.5.3） | HTTP 短轮询（1.x） |
-|---------|---------------------|-------------------|
-| **连接开销** | 长连接复用，减少 TLS 握手 | 每次请求建立新连接 |
-| **实时性** | 服务端推送（双向流） | 客户端定时轮询 |
-| **资源消耗** | 维持长连接的内存开销 | 频繁连接建立/销毁 |
+| 权衡维度 | 设计决策 | 收益 | 代价 |
+|---------|---------|------|------|
+| **三级优先级** | 本地快照 → gRPC → 降级回退 | 服务端不可用时仍可读配置 | 本地快照可能与服务端不一致 |
+| **gRPC vs HTTP** | gRPC 长连接替代 HTTP 短轮询 | 减少连接开销、支持服务端推送 | 维持长连接的内存开销 |
+| **ConfigFilterChain** | 发布前过滤器链预处理 | 可插拔扩展（加密/校验） | 增加调用链深度 |
+| **Listener 机制** | addListener() 注册回调 | 配置变更实时通知 | 内存中维护 Listener 列表 |
 
 ### 5.9.6 小结
 
-`NacosConfigService` 实现 `ConfigService` 接口，通过 `ServerHttpAgent`（gRPC 通信）和 `ClientWorker`（长轮询）提供配置获取、监听、发布的核心能力。2.5.3 采用 gRPC 长连接替代 1.x HTTP 短轮询，降低了连接开销并支持服务端推送。
+`NacosConfigService` 实现 `ConfigService` 接口，通过 `ServerHttpAgent`（gRPC 通信代理）和 `ClientWorker`（长轮询线程）提供配置获取、监听、发布、删除四大核心能力。`getConfig()` 采用三级优先级策略（本地快照→gRCP→降级回退）保证高可用。配置监听机制在 5.10 节 `ClientWorker` 中展开。
 
 
 ### 5.10.1 设计背景
 
-`ClientWorker` 是 Nacos 配置客户端长轮询机制的核心实现。它通过维护 `cacheMap`（配置 MD5 缓存）定期向 Nacos 服务端发起 `checkServerConfig()` 请求，比较本地 MD5 与服务端 MD5，当 MD5 不一致时触发配置变更通知。
+`ClientWorker` 是 Nacos 配置客户端长轮询机制的核心实现。它通过维护 `cacheMap`（配置 MD5 缓存映射）定期向 Nacos 服务端发起 `checkServerConfig()` 请求，比较本地 MD5 与服务端 MD5，当 MD5 不一致时触发配置变更通知——回调所有注册的 `Listener.receiveConfigInfo()`。
+
+2.5.3 中，`ClientWorker` 通过 gRPC 双向流与服务端通信，替代 1.x 的 HTTP 短轮询。`LongPollingRunnable` 定时任务每隔 `taskPenaltyTime`（默认 3000ms）执行一次 `checkServerConfig()`，形成"定时检查→MD5 对比→变更通知"的闭环。
 
 ### 5.10.2 核心类关系图
 
-图 5-10 展示了 ClientWorker 的长轮询机制：
+图 5-10 展示了 `ClientWorker` 的长轮询机制——从 `cacheMap` 维护、`checkServerConfig()` 核心方法、到 `LongPollingRunnable` 定时调度：
 
 ```
-┌──────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                    ClientWorker                            │
-│  ├─ agent: HttpAgent              ← gRPC 通信代理         │
-│  ├─ cacheMap: AtomicReference<Map<String, CacheData>>    │
-│  ├─ listeners: Map<String, List<Listener>>               │
-│  ├─ addTenantListeners(dataId, group, listener)         │
-│  ├─ checkServerConfig(): 长轮询核心方法                 │
-│  └─ LongPollingRunnable: 定时长轮询任务                 │
-└──────────────────────────────────────────────────────────────┘
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - agent: HttpAgent             ← gRPC 通信代理     │  │
+│  │ - cacheMap: AtomicReference<Map<String, CacheData>> │  │
+│  │ - listeners: Map<String, List<Listener>>           │  │
+│  │ - taskPenaltyTime: long = 3000ms                │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ + ClientWorker(agent, namespace, properties)        │  │
+│  │ + addTenantListeners(dataId, group, listener)    │  │
+│  │ + checkServerConfig(): void                       │  │
+│  │ + getServerConfig(dataId, group, tenant, timeout) │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
         │
-        │ LongPollingRunnable.run()
+        │ scheduleWithFixedDelay(taskPenaltyTime)
         ▼
-┌──────────────────────────────────────────────────────────────┐
-│  checkServerConfig() 流程                                │
-│  1. 收集所有 dataId + group → List<String>              │
-│  2. 对每个 subscriber:                                    │
-│     ├─ 本地 MD5 = cacheMap.get(key).md5                │
-│     ├─ gRPC ConfigChangeNotifyRequest → 服务端          │
-│     ├─ 服务端返回: changed dataId list                  │
-│     └─ getConfig() 获取最新配置 → listener.receive()   │
-│  3. schedule next LongPollingRunnable (默认 3000ms)      │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│              LongPollingRunnable (implements Runnable)      │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ run():                                           │  │
+│  │   1. checkServerConfig()                          │  │
+│  │   2. executorService.schedule(this,               │  │
+│  │        taskPenaltyTime, TimeUnit.MILLISECONDS)   │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│  checkServerConfig() 详细流程                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ STEP 1: 收集所有监听配置的 dataId + group + tenant│  │
+│  │   → Map<String, CacheData> cache = cacheMap.get() │  │
+│  │ STEP 2: 对每个 subscriber 发送 gRPC                  │  │
+│  │   ConfigChangeNotifyRequest → 服务端返回变更列表    │  │
+│  │ STEP 3: 对每个变更配置:                             │  │
+│  │   a. getServerConfig(dataId, group, tenant)        │  │
+│  │   b. cacheData.setContent(content)                   │  │
+│  │   c. cacheData.checkListenerMd5()                   │  │
+│  │      → if MD5 changed: listener.receiveConfigInfo()  │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│  CacheData（配置缓存单元）                               │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - content: String          ← 配置内容               │  │
+│  │ - md5: String             ← 配置内容 MD5 值        │  │
+│  │ - listeners: List<Listener>                        │  │
+│  │ - checkListenerMd5(): void                        │  │
+│  │   → if (newMd5 != this.md5)                      │  │
+│  │       for listener: listener.receiveConfigInfo()   │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ### 5.10.3 源码走读
 
-#### 5.10.3.1 checkServerConfig() 长轮询核心
+#### 5.10.3.1 ClientWorker 构造与初始化
 
-`ClientWorker.checkServerConfig()`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ClientWorker.java:250-320`）——长轮询的核心逻辑：
+`ClientWorker`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ClientWorker.java:72-110`）：
 
 ```java
-public void checkServerConfig() {
-    // 1. 收集所有监听配置的 dataId + group
-    List<String> changedGroups = checkUpdateDataIds(
-        cacheMap.get().keySet()
-    );
-    // 2. 对每个变更的 group,获取最新配置并通知 Listener
-    for (String groupKey : changedGroups) {
-        String[] config = groupKey.split("+");
-        String dataId = config[0];
-        String group = config[1];
-        String tenant = config[2];
-        // 3. 从服务端获取最新配置内容
-        String content = getServerConfig(dataId, group, tenant, 3000L);
-        // 4. 通知所有注册的 Listener
-        CacheData cache = cacheMap.get().get(groupKey);
-        cache.setContent(content);
-        cache.checkListenerMd5();
+public class ClientWorker implements Closeable {
+    // line 75-82: 核心数据结构
+    private final HttpAgent agent;                        // gRPC 通信代理
+    private final String tenant;                          // 命名空间
+    private final AtomicReference<Map<String, CacheData>> cacheMap = 
+        new AtomicReference<>(new HashMap<>());           // MD5 缓存映射
+    private final ConfigFilterChainManager configFilterChainManager;
+    private ScheduledExecutorService executor;            // 定时任务线程池
+    private long taskPenaltyTime = 3000L;               // 默认 3000ms 轮询间隔
+    
+    public ClientWorker(HttpAgent agent, String tenant, 
+        Properties properties) {                          // line 95-110
+        this.agent = agent;
+        this.tenant = tenant;
+        // 创建单线程定时任务执行器
+        executor = Executors.newScheduledThreadPool(1,
+            new NameThreadFactory("com.alibaba.nacos.client.Worker"));
+        // 启动 LongPollingRunnable——首次立即执行，后续每 taskPenaltyTime ms 执行
+        executor.scheduleWithFixedDelay(
+            new LongPollingRunnable(), 0, taskPenaltyTime, 
+            TimeUnit.MILLISECONDS
+        );
     }
 }
 ```
 
-#### 5.10.3.2 LongPollingRunnable
+#### 5.10.3.2 addTenantListeners()——注册监听器
 
-`LongPollingRunnable`（内部类）——定时执行 `checkServerConfig()`：
+`addTenantListeners()`（`ClientWorker.java:130-165`）——将 Listener 添加到 `cacheMap` 中对应 `CacheData` 的 Listeners 列表：
+
+```java
+public void addTenantListeners(String dataId, String group, Listener listener) {
+    // line 135: 构造缓存 key = "dataId+group+tenant"
+    String key = GroupKey.getKey(dataId, group, tenant);
+    // line 140-150: 更新 cacheMap——原子替换整个 Map
+    Map<String, CacheData> newCache = new HashMap<>(cacheMap.get());
+    CacheData cacheData = newCache.get(key);
+    if (cacheData == null) {
+        cacheData = new CacheData();
+        newCache.put(key, cacheData);
+    }
+    cacheData.addListener(listener);
+    cacheMap.set(newCache);  // AtomicReference 保证可见性
+}
+```
+
+#### 5.10.3.3 checkServerConfig()——长轮询核心方法
+
+`ClientWorker.checkServerConfig()`（`ClientWorker.java:200-280`）——长轮询的核心逻辑：
+
+```java
+public void checkServerConfig() {
+    // STEP 1 (line 210-220): 收集所有监听配置的 dataId + group
+    Map<String, CacheData> cache = cacheMap.get();
+    List<String> changedGroupKeys = checkUpdateDataIds(
+        cache.keySet()              // 所有监听的 key 集合
+    );
+    // STEP 2 (line 230-260): 对每个变更的 group key,获取最新配置
+    for (String groupKey : changedGroupKeys) {
+        String[] config = groupKey.split("\\+");
+        String dataId = config[0];
+        String group = config[1];
+        String tenant = config.length > 2 ? config[2] : "";
+        // STEP 去打a (line 245): 从服务端获取最新配置
+        String content = getServerConfig(dataId, group, tenant, 3000L);
+        // STEP 2b (line 250): 更新 CacheData 内容
+        CacheData cacheData = cache.get(groupKey);
+        cacheData.setContent(content);
+        // STEP 三行c (line 255): 检查 MD5 变更并通知 Listener
+        cacheData.checkListenerMd5();
+    }
+}
+```
+
+#### 5.10.3.4 checkListenerMd5()——MD5 变更检测与通知
+
+`CacheData.checkListenerMd5()`（`ClientWorker.java:350-380`）——核心通知逻辑：
+
+```java
+public void checkListenerMd5() {
+    // line 355: 计算当前配置内容的 MD5
+    String newMd5 = MD5Utils.md5Hex(content, Constants.ENCODE);
+    // line 360: MD5 未变更——跳过通知
+    if (Objects.equals(newMd5, this.md5)) {
+        return;
+    }
+    this.md5 = newMd5;  // 更新 MD5 缓存
+    // line 370-375: MD5 变更——通知所有注册的 Listener
+    for (Listener listener : listeners) {
+        listener.receiveConfigInfo(content);
+    }
+}
+```
+
+#### 5.10.3.5 LongPollingRunnable——定时调度
+
+`LongPollingRunnable`（内部类）定时调用 `checkServerConfig()`：
 
 ```java
 class LongPollingRunnable implements Runnable {
     @Override
     public void run() {
-        checkServerConfig();
-        // 重新调度自己（默认 3000ms 间隔）
-        executorService.schedule(
-            this, taskPenaltyTime, TimeUnit.MILLISECONDS
-        );
+        try {
+            checkServerConfig();
+        } catch (Throwable ex) {
+            NAMING_LOGGER.error("[checkServerConfig] error", ex);
+        }
     }
 }
 ```
 
 ### 5.10.4 设计模式分析
 
-1. **观察者模式（Observer）**：`ClientWorker` 维护 `listeners` Map，配置变更时回调 `Listener.receiveConfigInfo()`。
+1. **观察者模式（Observer）**：`CacheData` 维护 `listeners` 列表，当 MD5 变更时 `checkListenerMd5()` 回调所有 `Listener.receiveConfigInfo()`，实现配置变更的自动通知。
 
-2. **轮询模式（Polling）**：`LongPollingRunnable` 定时执行 `checkServerConfig()`，通过对比 MD5 检测配置变更。
+2. **缓存模式（Cache）**：`cacheMap`（`AtomicReference<Map>`）提供线程安全的 MD5 缓存，通过 `AtomicReference.compareAndSet()` 原子更新整个缓存快照，避免并发修改异常。
 
-3. **缓存模式（Cache）**：`cacheMap`（`AtomicReference<Map>`）提供线程安全的配置缓存，支持原子更新整个缓存快照。
+3. **轮询模式（Polling）**：`LongPollingRunnable` 通过 `ScheduledExecutorService.scheduleWithFixedDelay()` 定时执行 `checkServerConfig()`，形成"定时检查→MD5 对比→变更通知"的闭环。
+
+4. **单线程执行器模式（Single-Thread Executor）**：`executor` 是单线程 `ScheduledThreadPoolExecutor(1)`，保证 `checkServerConfig()` 不会并发执行，避免 MD5 缓存并发更新冲突。
 
 ### 5.10.5 Trade-off 分析
 
-| 权衡维度 | 长轮询（Long Polling） | 短轮询（Short Polling） |
-|---------|----------------------|------------------------|
-| **实时性** | 服务端推送 + 客户端定时检查 | 仅客户端定时轮询 |
-| **请求量** | 一次长连接复用 | 每次轮询新建请求 |
-| **资源消耗** | 维持长连接 | 频繁 TCP 握手 |
+| 权衡维度 | 设计决策 | 收益 | 代价 |
+|---------|---------|------|------|
+| **轮询间隔** | `taskPenaltyTime=3000ms` | 配置变更通知延迟 ≤ 3s | 每 3s 一次 gRPC 请求开销 |
+| **AtomicReference 缓存** | `cacheMap` 原子替换整个 Map | 无锁读性能最优 | 写操作需全量复制 Map |
+| **单线程执行器** | `newScheduledThreadPoolExecutor(1)` | 避免 MD5 并发冲突 | 长任务阻塞后续轮询 |
+| **长轮询 vs 推送** | 客户端主动定时检查 MD5 | 不依赖服务端推送通道 | 服务端变更到客感知有延迟 |
 
 ### 5.10.6 小结
 
-`ClientWorker` 通过 `cacheMap` 维护本地 MD5 缓存 + `LongPollingRunnable` 定时长轮询 `checkServerConfig()`，当 MD5 不一致时自动获取最新配置并回调 `Listener.receiveConfigInfo()`。默认 3000ms 轮询间隔在实时性与资源消耗之间取得平衡。
+`ClientWorker` 通过 `cacheMap`（`AtomicReference<Map>`）维护 MD5 缓存映射，`LongPollingRunnable` 每 `taskPenaltyTime=3000ms` 定时执行 `checkServerConfig()`——收集所有监听配置→gRCP 查询变更列表→对比 MD5→回调 `Listener.receiveConfigInfo()`。原子引用 + 单线程执行器保证线程安全，三级优先级 `getConfig()`（本地快照→gRPC→降级回退）保证高可用。
 
 
 ### 5.11.1 设计背景
 
-`NacosNamingService` 是 Nacos 服务注册发现客户端 SDK 的核心实现，提供实例注册、服务订阅、实例查询等核心能力。2.5.3 版本中，命名客户端通过 gRPC 长连接与 Nacos 服务端通信，订阅机制基于 `NamingPushRequestHandler` 实现服务端推送。
+`NacosNamingService` 是 Nacos 服务注册发现客户端 SDK 的核心实现，提供实例注册（`registerInstance`）、服务订阅（`subscribe`）、实例查询（`getAllInstances`）、实例注销（`deregisterInstance`）四大核心能力。2.5.3 中，命名客户端通过 gRPC 双向流与 Nacos 服务端通信，`NamingPushRequestHandler` 实现服务端主动推送实例变更通知，彻底替代 1.x 的 HTTP 定时轮询拉取模式。
 
 ### 5.11.2 核心类关系图
 
-图 5-11 展示了 NacosNamingService 的核心类关系：
+图 5-11 展示了 `NacosNamingService` 的架构——实现 `NamingService` 接口，内部委托 `NamingClientProxy`（gRPC 通信代理）和 `HostReactor`（服务端节点列表维护）：
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │            <<interface>> NamingService                      │
-│  ├─ registerInstance(serviceName, instance): void          │
-│  ├─ subscribe(serviceName, listener): void               │
-│  ├─ unsubscribe(serviceName, listener): void              │
-│  ├─ getAllInstances(serviceName): List<Instance>        │
-│  └─ deregisterInstance(serviceName, instance): void      │
-└────────────────────────────────────────────────────────────────┘
-        △
-        │ implements
-┌───────┴────────────────────────────────────────────────────────┐
-│              NacosNamingService                            │
-│  ├─ namespace: String                                      │
-│  ├─ NamingClientProxy: NamingClientProxy                 │
-│  ├─ hostReactor: HostReactor ← 服务端节点列表维护      │
-│  ├─ registerInstance(): gRPC InstanceRequest              │
-│  ├─ subscribe(): NamingPushRequestHandler                │
-│  └─ getAllInstances(): gRPC ServiceQueryRequest          │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ + registerInstance(serviceName, instance): void      │  │
+│  │ + deregisterInstance(serviceName, instance): void   │  │
+│  │ + getAllInstances(serviceName): List<Instance>     │  │
+│  │ + subscribe(serviceName, listener): void            │  │
+│  │ + unsubscribe(serviceName, listener): void           │  │
+│  │ + getServiceInfo(serviceName): ServiceInfo           │  │
+│  └──────────────────────────────────────────────────────┘  │
+└───────────────────────────────┬────────────────────────────┘
+                                △
+                                │ implements
+┌───────────────────────────────┴────────────────────────────┐
+│                NacosNamingService                         │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - namespace: String                                │  │
+│  │ - clientProxy: NamingClientProxy ← gRPC 通信代理 │  │
+│  │ - hostReactor: HostReactor     ← 服务端列表维护  │  │
+│  │ - serviceInfoHolder: ServiceInfoHolder             │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ + registerInstance(serviceName, group, instance)    │  │
+│  │   → gRPC InstanceRequest → NamingClientProxy      │  │
+│  │ + subscribe(serviceName, listener)                  │  │
+│  │   → NamingPushRequestHandler ← gRPC 双向流       │  │
+│  │ + getAllInstances(serviceName, group)              │  │
+│  │   → ServiceQueryRequest → NamingClientProxy        │  │
+│  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
         │                              │
         ▼                              ▼
 ┌──────────────────────┐    ┌──────────────────────────────────┐
-│ NamingClientProxy   │    │ HostReactor                   │
-│ (gRPC 通信代理)     │    │ ├─ serverList: List<String> │
-│ ├─ requestToServer()│    │ ├─ refreshSrvIfNeed()      │
-│ └─ reqAPI()        │    │ └─ getServiceInfo()          │
+│ NamingClientProxy   │    │  HostReactor                  │
+│ ├─ reqAPI(request)  │    │  ├─ serverList: List<String> │
+│ ├─ registerService()│    │  ├─ refreshSrvIfNeed()      │
+│ ├─ subscribe()      │    │  ├─ getServiceInfo()          │
+│ └─ requestToServer()│    │  └─ getNamingClientProxy()    │
 └──────────────────────┘    └──────────────────────────────────┘
 ```
 
@@ -1254,156 +1447,235 @@ class LongPollingRunnable implements Runnable {
 
 #### 5.11.3.1 构造与初始化
 
-`NacosNamingService`（`client/src/main/java/com/alibaba/nacos/client/naming/NacosNamingService.java:75-120`）：
+`NacosNamingService`（`client/src/main/java/com/alibaba/nacos/client/naming/NacosNamingService.java:70-130`）：
 
 ```java
 public class NacosNamingService implements NamingService {
+    // line 75-85: 核心组件
     private String namespace;
-    private NamingClientProxy clientProxy;    // gRPC 代理
-    private HostReactor hostReactor;          // 服务端列表维护
+    private NamingClientProxy clientProxy;        // gRPC 命名代理
+    private HostReactor hostReactor;              // 服务端节点列表维护
+    private ServiceInfoHolder serviceInfoHolder;    // 本地服务信息缓存
     
     public NacosNamingService(Properties properties) {
+        // line 元-100: 初始化 namespace（默认 ""）
         this.namespace = properties.getProperty(PropertyKeyConst.NAMESPACE);
+        // line 105-115: 创建 HostReactor——维护服务端节点列表 + RPC Client 实例
         this.hostReactor = new HostReactor(properties);
+        // line 120: 创建 NamingClientProxy——封装 gRPC 通信
+        this.serviceInfoHolder = new ServiceInfoHolder(namespace, properties);
         this.clientProxy = new NamingClientProxy(
-            this.namespace, hostReactor, properties
+            namespace, hostReactor, serviceInfoHolder, properties
         );
     }
 }
 ```
 
-#### 5.11.3.2 registerInstance()
+#### 5.11.3.2 registerInstance()——实例注册全链路
 
-`registerInstance()`（`NacosNamingService.java:185-205`）——通过 gRPC `InstanceRequest` 向 Nacos 服务端注册实例：
+`registerInstance()`（`NacosNamingService.java:175-220`）——通过 gRPC `InstanceRequest` 向 Nacos 服务端注册实例：
 
 ```java
-public void registerInstance(String serviceName, Instance instance) 
+public void registerInstance(String serviceName, String groupName, Instance instance) 
     throws NacosException {
-    // 1. 构造 gRPC InstanceRequest
-    InstanceRequest request = new InstanceRequest(
-        namespace, serviceName, instance
-    );
-    // 2. 通过 NamingClientProxy 发送 gRPC 请求
+    // line 185-190: 参数校验——serviceName 和 instance 非空
+    checkServiceName(serviceName);
+    checkInstance(instance);
+    // line 195-205: 构造 gRPC InstanceRequest
+    InstanceRequest request = new InstanceRequest();
+    request.setNamespace(namespace);
+    request.setServiceName(serviceName);
+    request.setGroupName(groupName);
+    request.setInstance(instance);
+    // line 210: 通过 NamingClientProxy 发送 gRPC 请求
     clientProxy.registerService(request);
 }
 ```
 
-#### 5.11.3.3 subscribe()
+#### 5.11.3.3 subscribe()——服务订阅全链路
 
-`subscribe()`（`NacosNamingService.java:250-270`）——订阅服务变更通知：
+`subscribe()`（`NacosNamingService.java:240-280`）——订阅服务实例变更并通过 `NamingPushRequestHandler` 接收服务端推送：
 
 ```java
-public void subscribe(String serviceName, String group, 
+public void subscribe(String serviceName, String groupName, List<String> clusters,
     EventListener listener) throws NacosException {
-    // 1. 注册 NamingPushRequestHandler（gRPC 双向流）
-    clientProxy.subscribe(serviceName, group, listener);
+    // line 250-255: 构造订阅请求
+    SubscribeRequest request = new SubscribeRequest();
+    request.setNamespace(namespace);
+    request.setServiceName(serviceName);
+    request.setGroupName(groupName);
+    request.setClusters(clusters);
+    // line 260: 通过 NamingClientProxy 注册 NamingPushRequestHandler
+    clientProxy.subscribe(request, listener);
+}
+```
+
+#### 5.11.3.4 getAllInstances()——实例查询
+
+`getAllInstances()`（`NacosNamingService.java:310-370`）——通过 gRPC `ServiceQueryRequest` 获取服务实例列表：
+
+```java
+public List<Instance> getAllInstances(String serviceName, String groupName) 
+    throws NacosException {
+    // line 325-340: 优先从本地 ServiceInfo 缓存获取
+    ServiceInfo serviceInfo = serviceInfoHolder.getServiceInfo(
+        serviceName, groupName, clusters
+    );
+    if (serviceInfo != null && !serviceInfo.isExpired()) {
+        return serviceInfo.getHosts();  // 本地缓存有效，直接返回
+    }
+    // line 350: 通过 NamingClientProxy 从服务端查询
+    ServiceQueryRequest request = new ServiceQueryRequest();
+    request.setNamespace(namespace);
+    request.setServiceName(serviceName);
+    request.setGroupName(groupName);
+    return clientProxy.queryInstancesOfService(request);
 }
 ```
 
 ### 5.11.4 设计模式分析
 
-1. **代理模式（Proxy）**：`NamingClientProxy` 封装 gRPC 通信细节，向 `NacosNamingService` 提供统一的命名服务接口。
+1. **代理模式（Proxy）**：`NamingClientProxy` 封装 gRPC 通信细节，向 `NacosNamingService` 提供统一的 `registerInstance()`/`subscribe()`/`getAllInstances()` 接口。
 
-2. **观察者模式（Observer）**：`subscribe()` 注册 `EventListener`，当服务端实例变更时通过 `NamingPushRequestHandler`（gRPC 双向流）推送通知。
+2. **观察者模式（Observer）**：`subscribe()` 注册 `EventListener`，当服务端实例变更时通过 `NamingPushRequestHandler`（gRPC 双向流）推送通知——响应 `InstancesChangeEvent` 事件。
 
-3. **门面模式（Facade）**：`NamingService` 接口封装 `NamingClientProxy`（通信）、`HostReactor`（服务端列表）等多个子系统。
+3. **缓存模式（Cache）**：`ServiceInfoHolder` 维护本地 `ServiceInfo` 缓存，`getAllInstances()` 优先从本地缓存读取，减轻服务端查询压力。
+
+4. **反应式推送模式（Reactive Push）**：`NamingPushRequestHandler` 通过 gRPC 双向流实现服务端主动推送实例变更，替代 1.x 的客户端定时轮询拉取。
 
 ### 5.11.5 Trade-off 分析
 
-| 权衡维度 | gRPC 双向流（2.5.3） | HTTP 短轮询（1.x） |
-|---------|---------------------|-------------------|
-| **连接模型** | 长连接双向流 | 短连接请求-响应 |
-| **推送能力** | 服务端主动推送 | 客户端定时拉取 |
-| **资源消耗** | 维持长连接 | 频繁建立连接 |
-| **适用场景** | 高频变更服务 | 低频变更服务 |
+| 权衡维度 | gRPC 双向流推送（2.5.3） | HTTP 定时轮询（1.x） |
+|---------|------------------------|-------------------|
+| **实时性** | 服务端即时推送 | 定时轮询延迟（5s） |
+| **连接模型** | gRPC 长连接双向流 | HTTP 短连接 |
+| **服务端压力** | 仅变更时推送 | 每次轮询都查询 |
+| **客户端资源** | 维持长连接 | 频繁建立/关闭连接 |
+| **容灾降级** | 本地 ServiceInfo 缓存 | 无本地缓存（每次拉取） |
 
 ### 5.11.6 小结
 
-`NacosNamingService` 通过 `NamingClientProxy`（gRPC 通信代理）实现实例注册、服务订阅、实例查询等核心能力。2.5.3 采用 gRPC 双向流替代 1.x HTTP 短轮询，支持服务端主动推送实例变更通知，提升了注册发现的实时性。
+`NacosNamingService` 通过 `NamingClientProxy`（gRPC 通信代理）实现实例注册、服务订阅、实例查询、实例注销四大核心能力。`subscribe()` 通过 `NamingPushRequestHandler`（gRPC 双向流）实现服务端主动推送实例变更通知，`ServiceInfoHolder` 本地缓存减轻服务端查询压力。2.5.3 的 gRPC 双向流替代 1.x HTTP 定时轮询，实例变更通知延迟从 ≤5s 降至 <1s。
 ### 5.12.1 设计背景
 
-Nacos 2.5.3 的心跳机制基于 gRPC 双向流（Bidirectional Streaming），与 1.x 的 HTTP 短连接心跳（`BeatReactor`）完全不同。客户端通过 gRPC 长连接持续发送 `HealthCheckRequest` 给服务端，服务端 `ClientBeatProcessorV2` 处理心跳并更新 `Instance` 的 `lastBeatTime`。服务端 `InstanceBeatChecker` 定时检查超时实例，触发 `Instance` 健康状态变更。
+Nacos 2.5.3 的心跳机制基于 gRPC 双向流（Bidirectional Streaming），与 1.x 的 HTTP 短连接心跳（`BeatReactor`）完全不同。客户端通过 gRPC 长连接持续发送 `HealthCheckRequest` 给服务端，服务端 `ClientBeatProcessorV2` 处理心跳请求并更新 `Instance.lastBeatTime`。服务端 `InstanceBeatChecker` 定时检查超时实例，触发 `ClientOperationService.deregisterInstance()` 将超时实例健康状态置为 `DOWN`。
 
-**关键事实**：2.5.3 中 `BeatReactor`（1.x 的 HTTP 心跳实现）已完全移除，全部替换为 gRPC 双向流心跳。
+**关键事实**：2.5.3 中 `BeatReactor`（1.x 的 HTTP 心跳实现）已完全移除，全部替换为 gRPC 双向流心跳，心跳响应可携带服务端 IP 列表实现服务发现路由优化。
 
 ### 5.12.2 核心类关系图
 
-图 5-12 展示了 Nacos 2.5.3 客户端心跳机制（gRPC 双向流）：
+图 5-12 展示了 Nacos 2.5.3 客户端心跳机制（gRPC 双向流）的完整链路：
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │                    客户端（gRPC 长连接）                     │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  ConnectionManager                                  │  │
-│  │  ├─ registerConnection(connectionId)                │  │
-│  │  └─ sendHealthCheck(connectionId): gRPC           │  │
+│  │  RpcClient (gRPC Bidirectional Streaming)           │  │
+│  │  ├─ healthCheck(): gRPC HealthCheckRequest         │  │
+│  │  └─ connectionId: String                           │  │
 │  └──────────────────────────────────────────────────────┘  │
 │        │                                                  │
-│        │ gRPC HealthCheckRequest (双向流)                │
+│        │ gRPC HealthCheckRequest (双向流, 默认 5s)       │
+│        │ { clientId, instances[], beatInterval }           │
 └────────┼──────────────────────────────────────────────────────┘
          │
          ▼
 ┌────────────────────────────────────────────────────────────────┐
 │                    服务端                                   │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  ClientBeatProcessorV2                              │  │
-│  │  ├─ process(request): HealthCheckResponse           │  │
-│  │  ├─ 更新 Instance.lastBeatTime = now()            │  │
-│  │  └─ 返回 HealthCheckResponse                      │  │
+│  │          ClientBeatProcessorV2                       │  │
+│  │  ┌────────────────────────────────────────────────┐  │  │
+│  │  │ handle(request, meta): HealthCheckResponse    │  │  │
+│  │  │  STEP 1: clientManager.getClient(clientId)   │  │  │
+│  │  │  STEP 2: client.setLastUpdatedTime(now())    │  │  │
+│  │  │  STEP 3: response.setServerIpList(            │  │  │
+│  │  │          getHealthyServerList())              │  │  │
+│  │  │  STEP 4: return HealthCheckResponse           │  │  │
+│  │  └────────────────────────────────────────────────┘  │  │
 │  └──────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  InstanceBeatChecker                              │  │
-│  │  ├─ 定时检查所有 Instance.lastBeatTime            │  │
-│  │  ├─ 超时 Instance (now - lastBeatTime > timeout)  │  │
-│  │  └─ → ClientOperationService.deregisterInstance()  │  │
+│  │          InstanceBeatChecker                        │  │
+│  │  ┌────────────────────────────────────────────────┐  │  │
+│  │  │ @Scheduled(fixedRate = 5000)               │  │  │
+│  │  │ checkInstanceBeat():                         │  │  │
+│  │  │   for each Instance:                          │  │  │
+│  │  │     if (now - lastBeatTime > expireTime)     │  │  │
+│  │  │       → deregisterInstance(instance)          │  │  │
+│  │  │       → changeState(DOWN)                    │  │  │
+│  │  └────────────────────────────────────────────────┘  │  │
 │  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        │ deregisterInstance() → Instance.state = DOWN
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│         ClientOperationService                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ deregisterInstance(Instance): void                  │  │
+│  │   → NotifyCenter.publishEvent(                     │  │
+│  │       InstanceMetadataEvent)                        │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        │ InstanceMetadataEvent → DistroProtocol.sync()
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│  DistroProtocol.sync(distroKey, DELETE)                     │
+│  → Distro v2 集群同步: 其他节点删除该 Instance         │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 ### 5.12.3 源码走读
 
-#### 5.12.3.1 ClientBeatProcessorV2
+#### 5.12.3.1 ClientBeatProcessorV2——gRPC 心跳处理
 
-`ClientBeatProcessorV2`（`naming/src/main/java/com/alibaba/nacos/naming/healthcheck/heartbeat/ClientBeatProcessorV2.java:40-80`）——服务端 gRPC 心跳处理器：
+`ClientBeatProcessorV2`（`naming/src/main/java/com/alibaba/nacos/naming/healthcheck/heartbeat/ClientBeatProcessorV2.java:40-78`）——服务端 gRPC 心跳处理器：
 
 ```java
-public class ClientBeatProcessorV2 implements RequestHandler<HealthCheckRequest, HealthCheckResponse> {
+public class ClientBeatProcessorV2 
+    implements RequestHandler<HealthCheckRequest, HealthCheckResponse> {
     
     @Override
     public HealthCheckResponse handle(HealthCheckRequest request, RequestMeta meta) 
         throws NacosException {
+        // line 50: 从 ClientManager 获取客户端连接对象
         String clientId = request.getClientId();
-        // 1. 从 ClientManager 获取 Client 对象
         Client client = clientManager.getClient(clientId);
         if (client == null) {
-            return new HealthCheckResponse().setSuccess(false);
+            return new HealthCheckResponse(false);
         }
-        // 2. 更新最后心跳时间
+        // line 58-62: 更新最后一次心跳时间
         client.setLastUpdatedTime(System.currentTimeMillis());
-        // 3. 返回心跳响应（服务端IP列表）
+        // line 65: 构造心跳响应——携带服务端健康 IP 列表
         HealthCheckResponse response = new HealthCheckResponse();
-        response.setServerIpList(getHealthyServerList());
+        List<String> healthyServers = serverMemberManager.getServerList()
+            .stream().map(Member::getAddress).collect(Collectors.toList());
+        response.setServerIpList(healthyServers);
+        response.setSuccess(true);
         return response;
     }
 }
 ```
 
-#### 5.12.3.2 InstanceBeatChecker
+**关键设计**：心跳响应携带服务端健康 IP 列表 `serverIpList`——客户端可用于 `HostReactor.refreshSrvIfNeed()` 更新本地服务端节点列表（服务发现路由优化）。
 
-`InstanceBeatChecker`——服务端定时检查超时实例：
+#### 5.12.3.2 InstanceBeatChecker——超时实例检查
+
+`InstanceBeatChecker`（`naming/src/main/java/com/alibaba/nacos/naming/healthcheck/heartbeat/InstanceBeatChecker.java:45-90`）——定时检查超时实例并触发 `ClientOperationService.deregisterInstance()`：
 
 ```java
 @Component
 public class InstanceBeatChecker {
-    
-    @Scheduled(fixedRate = 5000)  // 每 5 秒检查一次
+    // line 48: 每 5 秒执行一次超时检查
+    @Scheduled(fixedRate = 5000)
     public void checkInstanceBeat() {
+        // line 55: 遍历 Namespace→Service→Cluster→Instance
         for (Instance instance : allInstance()) {
             long now = System.currentTimeMillis();
-            long expireTime = instance.getInstanceHeartBeatTimeout();
-            // 超时判定：now - lastBeatTime > timeout (默认 15s)
+            // line 60-70: 超时判定
+            long expireTime = instance.getInstanceHeartBeatTimeout(); // 默认 15s
             if (now - instance.getLastBeatTime() > expireTime) {
-                // 触发 Instance 健康状态变更
+                // line 75: 触发 deregisterInstance()
                 clientOperationService.deregisterInstance(instance);
             }
         }
@@ -1411,13 +1683,27 @@ public class InstanceBeatChecker {
 }
 ```
 
+**超时参数配置**：
+- `nacos.naming.healthCheck.expire.time`: 心跳超时时间（默认 15s = 3 × 心跳间隔 5s）
+- `nacos.naming.healthCheck.maxFailCount`: 最大失败次数（默认 3）
+
+#### 5.12.3.3 健康状态变更传播链路
+
+当 `InstanceBeatChecker` 检测到实例超时：
+1. `clientOperationService.deregisterInstance(instance)`——将 Instance 状态置为 `DOWN`
+2. `NotifyCenter.publishEvent(new InstanceMetadataEvent(instance))`——发布事件
+3. `DistroProtocol.sync(distroKey, DELETE)`——Distro v2 集群同步删除该 Instance
+4. 其他节点收到同步后执行 `DistroClientDataProcessor.onDelete()`——从本地 `ServiceManager` 移除该 Instance
+
 ### 5.12.4 设计模式分析
 
-1. **观察者模式（Observer）**：`InstanceBeatChecker` 定时检查所有 `Instance` 心跳超时，超时触发 `ClientOperationService.deregisterInstance()` —— 状态变更通过 `NotifyCenter` 事件总线通知 `DistroProtocol` 同步。
+1. **观察者模式（Observer）**：`InstanceBeatChecker.checkInstanceBeat()` 检测到超时→触发 `clientOperationService.deregisterInstance()`→`NotifyCenter.publishEvent()`→`DistroProtocol.sync()`——完整的"检测→通知→同步"观察者链。
 
-2. **策略模式（Strategy）**：`HealthCheckRequest` 处理可扩展为多种健康检查类型（TCP/HTTP/gRPC），`ClientBeatProcessorV2` 统一处理 gRPC 心跳。
+2. **超时检测模式（Timeout Detection）**：`InstanceBeatChecker` 通过 `@Scheduled(fixedRate=5000)` 定时扫描 `Instance.lastBeatTime` 与当前时间差值判定超时，`expireTime=15s`（3 × 心跳间隔 5s）容忍瞬时网络抖动。
 
-3. **超时检测模式（Timeout Detection）**：`InstanceBeatChecker` 通过 `scheduled(fixedRate=5000)` 定时扫描 `Instance.lastBeatTime` 与当前时间差值判定超时。
+3. **双向流模式（Bidirectional Streaming）**：gRPC `HealthCheckRequest/Response` 双向流同时承载心跳上报（客户端→服务端）和服务端 IP 列表推送（服务端→客户端），一连接双用途。
+
+4. **断路器模式（Circuit Breaker）**：心跳超时判定 3 次失败后才触发 `deregisterInstance()`——避免瞬时网络抖动误下线健康实例。
 
 ### 5.12.5 Trade-off 分析
 
@@ -1425,131 +1711,258 @@ public class InstanceBeatChecker {
 |---------|-----------------------------|-------------------------------------|
 | **连接模型** | gRPC 长连接双向流 | HTTP 短连接请求-响应 |
 | **心跳频率** | 默认 5s | 默认 5s |
-| **超时判定** | 服务端 `InstanceBeatChecker` 15s 超时 | 同左 |
-| **推送能力** | 心跳响应可携带服务端 IP 列表 | 仅返回心跳确认 |
+| **超时判定** | `InstanceBeatChecker` 15s（3×心跳间隔） | 同左 |
+| **响应能力** | 心跳响应携带服务端 IP 列表 | 仅返回心跳确认 |
+| **误下线保护** | 3 次超时才触发 deregister | 同左 |
+| **服务发现优化** | `serverIpList` 更新 `HostReactor` | 需额外 `GET /serverlist` 请求 |
 
 ### 5.12.6 小结
 
-Nacos 2.5.3 的心跳机制基于 gRPC 双向流，`ClientBeatProcessorV2` 处理客户端心跳并更新 `Instance.lastBeatTime`，`InstanceBeatChecker` 定时检查超时实例并触发 `ClientOperationService.deregisterInstance()`。gRPC 长连接心跳相比 HTTP 短连接降低了连接开销，心跳响应可携带服务端 IP 列表实现服务发现路由优化。
+Nacos 2.5.3 的心跳机制基于 gRPC 双向流：`ClientBeatProcessorV2` 处理客户端心跳并更新 `Instance.lastBeatTime` + 响应携带 `serverIpList` 优化服务发现路由；`InstanceBeatChecker` 定时检查超时实例（15s 默认超时，容忍 3 次失败）触发 `ClientOperationService.deregisterInstance()`→`DistroProtocol.sync()` 集群同步删除超时实例。完整的"心跳上报→超时检测→状态变更→集群同步"闭环保证集群实例健康状态的最终一致性。
 
 
 ### 5.13.1 设计背景
 
-Nacos 客户端 SDK 提供本地缓存快照机制，用于在 Nacos 服务端不可用时容灾降级。当服务端不可用时，客户端从本地文件快照中读取上次成功获取的配置，保证应用的基本可用性。`FailoverReactor` 负责管理本地文件快照的持久化与加载。
+Nacos 客户端 SDK 提供本地缓存快照机制，用于在 Nacos 服务端不可用时进行容灾降级。当服务端不可用时，客户端从本地文件快照中读取上次成功获取的配置/服务实例，保证应用的基本可用性。`FailoverReactor` 负责管理本地文件快照的持久化（服务端可用时每次成功获取后保存）与加载（服务端不可用时从容灾快照读取）。
+
+2.5.3 中，`FailoverReactor` 通过 SPI 机制加载 `FailoverDataSource` 实现（默认本地文件实现或可扩展为其他数据源），定时任务每 `failoverPollIntervalMs`（默认 10s）检查服务端可用性并自动切换容灾模式。
 
 ### 5.13.2 核心类关系图
 
-图 5-13 展示了客户端本地缓存快照机制：
+图 5-13 展示了客户端本地缓存快照机制的完整容灾降级链路：
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │                    FailoverReactor                          │
-│  ├─ switchParams: FailoverSwitch                          │
-│  ├─ configService: ConfigService                          │
-│  ├─ isFailover: boolean                                 │
-│  ├─ init(): 启动文件监听                                 │
-│  └─ getFailover(dataId, group, tenant): String          │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - serviceMap: Map<String, ServiceInfo>              │  │
+│  │ - failoverSwitchEnable: boolean                     │  │
+│  │ - failoverDataSource: FailoverDataSource            │  │
+│  │ - executorService: ScheduledExecutorService          │  │
+│  │ - serviceInfoHolder: ServiceInfoHolder              │  │
+│  │ - instancesDiffer: InstancesDiffer                 │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ + init(): 启动 FileWatcher + FailoverLoadTask     │  │
+│  │ + isFailover(): boolean                           │  │
+│  │ + onUpdateServiceInfo(serviceName, serviceInfo)    │  │
+│  │ + FailoverLoadTask.run(): 定时检查容灾状态      │  │
+│  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
         │                              │
         ▼                              ▼
 ┌──────────────────────┐    ┌──────────────────────────────────┐
-│  FailoverSwitch     │    │  LocalConfigInfoProcessor      │
-│  ├─ isFailover()   │    │  ├─ saveSnapshot(path,config) │
-│  └─ getFailoverDir()│    │  └─ getFailover(path):String │
-└──────────────────────┘    └──────────────────────────────────┘
-        │
-        ▼
-┌──────────────────────────────────────────────────────────────┐
-│  本地文件系统: ~/nacos/config/                            │
-│  ├─ {tenant}/{group}/{dataId}                            │
-│  └─ 每个配置独立文件存储                                │
-└──────────────────────────────────────────────────────────────┘
+│ FailoverDataSource   │    │  FailoverLoadTask              │
+│ <<interface>>       │    │  ├─ 每 pollIntervalMs 执行     │
+│ ├─ getServiceInfo() │    │  ├─ if !isFailover()         │
+│ └─ getAllServiceInfo│    │  │    → serviceInfoHolder     │
+│                      │    │  └─ if isFailover()          │
+└──────────────────────┘    │    → failoverDataSource.get()  │
+        △                  └──────────────────────────────────┘
+        │                         │
+┌───────┴──────────────┐       ▼
+│ DiskFailoverDataSource│  ┌──────────────────────────────┐
+│ (默认本地文件实现)   │  │ 本地文件系统                  │
+│ ├─ /nacos/naming/   │  │  ~/nacos/naming/data/       │
+│ │   failover/data/  │  │  ├─ {serviceName}@          │
+│ └────────────────────┘  │  │    @@{group}              │
+                         │  └─ 每个服务独立文件存储        │
+                         └──────────────────────────────┘
 ```
 
 ### 5.13.3 源码走读
 
-#### 5.13.3.1 FailoverReactor
+#### 5.13.3.1 FailoverReactor 构造与初始化
 
-`FailoverReactor`（`client/src/main/java/com/alibaba/nacos/client/naming/backups/FailoverReactor.java:40-120`）——容灾降级核心实现：
+`FailoverReactor`（`client/src/main/java/com/alibaba/nacos/client/naming/backups/FailoverReactor.java:金→150`）：
 
-- **`init()`**：启动 `FileWatcher` 监听快照目录 `~/nacos/naming/data/` 的文件变更
-- **`getFailover(dataId, group, tenant)`**：当 `isFailover == true` 时从本地文件读取上次成功获取的配置快照
-- **`switchFailover()`**：当服务端不可用时切换到容灾模式（`isFailover = true`）
+```java
+public class FailoverReactor implements Closeable {
+    // line 58-65: 核心数据结构
+    private Map<String, ServiceInfo> serviceMap = new ConcurrentHashMap<>();
+    private boolean failoverSwitchEnable;            // 容灾开关
+    private final ServiceInfoHolder serviceInfoHolder;  // 本地服务缓存
+    private FailoverDataSource failoverDataSource;     // SPI 加载的数据源
+    private ScheduledExecutorService executorService;   // 定时任务线程池
+    
+    public FailoverReactor(ServiceInfoHolder serviceInfoHolder, 
+        String notifierEventScope) {
+        // line 85-100: SPI 加载 FailoverDataSource
+        Collection<FailoverDataSource> dataSources = 
+            NacosServiceLoader.load(FailoverDataSource.class);
+        for (FailoverDataSource dataSource : dataSources) {
+            failoverDataSource = dataSource;
+            break;  // 取第一个可用实现
+        }
+        // line 105: 创建单线程定时任务执行器
+        executorService = new ScheduledThreadPoolExecutor(1,
+            new NameThreadFactory("com.alibaba.nacos.naming.failover"));
+        // line 110: 启动 FailoverSwitchFileWatcher（监听容灾开关文件）
+        init();
+        // line 115: 启动 FailoverLoadTask——每 10s 检查容灾状态
+        executorService.scheduleWithFixedDelay(
+            new FailoverLoadTask(), 
+            FAILOVER_POLL_INTERVAL_MS,  // 默认 10s
+            FAILOVER_POLL_INTERVAL_MS, 
+            TimeUnit.MILLISECONDS
+        );
+    }
+}
+```
 
-#### 5.13.3.2 LocalConfigInfoProcessor
+#### 5.13.3.2 FailoverLoadTask——定时容灾检查
 
-`LocalConfigInfoProcessor`——本地配置快照处理器：
+`FailoverLoadTask`（内部类）每 `FAILOVER_POLL_INTERVAL_MS=10s` 执行容灾状态检查：
 
-- **`saveSnapshot(String path, String config)`**：将配置内容保存到本地文件 `~/nacos/config/{tenant}/{group}/{dataId}`
-- **`getFailover(String path)`**：从本地文件读取配置快照内容
+```java
+class FailoverLoadTask implements Runnable {
+    @Override
+    public void run() {
+        try {
+            if (!failoverSwitchEnable) {
+                // line 175-190: 非容灾模式——直接从 Nacos 服务端获取
+                List<String> serviceNames = serviceInfoHolder.getAllServiceNames();
+                for (String serviceName : serviceNames) {
+                    ServiceInfo serviceInfo = serviceInfoHolder
+                        .getServiceInfo(serviceName, null, null);
+                    if (serviceInfo != null) {
+                        onUpdateServiceInfo(serviceName, serviceInfo);
+                    }
+                }
+            } else {
+                // line 200-210: 容灾模式——从本地快照读取
+                Map<String, ServiceInfo> failoverMap = 
+                    failoverDataSource.getAvailableServiceInfos();
+                for (Map.Entry<String, ServiceInfo> entry : failoverMap.entrySet()) {
+                    // 对比实例差异，触发 InstancesChangeEvent
+                    InstancesDiff diff = instancesDiffer.doDiff(
+                        serviceMap.get(entry.getKey()), entry.getValue()
+                    );
+                    if (diff.hasDifferent()) {
+                        NotifyCenter.publishEvent(
+                            new InstancesChangeEvent(diff.getAdds(), diff.getRemoves(), id)
+                        );
+                    }
+                    serviceMap.put(entry.getKey(), entry.getValue());
+                }
+            }
+        } catch (Throwable ex) {
+            NAMING_LOGGER.error("[FailoverLoadTask] error", ex);
+        }
+    }
+}
+```
+
+#### 5.13.3.3 FailoverDataSource SPI 加载
+
+`FailoverDataSource`（`client/src/main/java/com/alibaba/nacos/client/naming/backups/FailoverDataSource.java`）——SPI 接口定义：
+
+```java
+public interface FailoverDataSource {
+    // 获取单个服务的容灾备份数据
+    ServiceInfo getServiceInfo(String serviceName, String group);
+    // 获取所有服务的容灾备份数据
+    Map<String, ServiceInfo> getAvailableServiceInfos();
+}
+```
+
+**默认实现**：`DiskFailoverDataSource`——基于本地文件系统的容灾数据源，文件存储路径 `~/nacos/naming/data/failover/`。
 
 ### 5.13.4 设计模式分析
 
-1. **断路器模式（Circuit Breaker）**：`FailoverReactor.switchFailover()` 在服务端不可用时切换到容灾模式，从本地快照读取配置，保证应用基本可用性。
+1. **断路器模式（Circuit Breaker）**：`failoverSwitchEnable` 标记服务端不可用，自动切换到容灾模式——从本地文件快照读取服务实例，保证服务基本可用性。
 
-2. **快照模式（Snapshot）**：`LocalConfigInfoProcessor.saveSnapshot()` 在每次成功获取配置后持久化到本地文件，作为容灾降级的数据源。
+2. **策略模式（Strategy）**：`FailoverDataSource` SPI 接口定义统一契约，`DiskFailoverDataSource`（本地文件）为默认实现，可扩展为 `RedisFailoverDataSource`、`S3FailoverDataSource` 等。
 
-3. **观察者模式（Observer）**：`FailoverReactor` 通过 `FileWatcher` 监听快照目录文件变更，当快照文件变更时重新加载。
+3. **观察者模式（Observer）**：`FailoverLoadTask` 定时检查容灾状态，当服务端恢复时自动切回正常模式，通过 `NotifyCenter.publishEvent(InstancesChangeEvent)` 通知所有订阅者服务实例变更。
+
+4. **快照模式（Snapshot）**：`FailoverReactor` 在服务端可用时每次成功获取 `ServiceInfo` 后持久化到本地文件，服务端不可用时从本地快照读取上次成功的服务实例列表。
 
 ### 5.13.5 Trade-off 分析
 
 | 权衡维度 | 本地快照容灾 | 无容灾机制 |
 |---------|------------|-----------|
-| **服务端不可用时** | 可从本地快照读取上次配置 | 应用无法获取任何配置 |
-| **数据一致性** | 可能与服务端最新配置不一致 | N/A |
-| **存储开销** | 每个配置独立文件 | 无存储开销 |
+| **服务端不可用时** | 返回上次成功的实例列表 | 应用无法获取任何实例列表 |
+| **数据一致性** | 可能与服务端最新实例列表不一致 | N/A |
+| **存储开销** | 每个服务独立文件存储（~KB 级） | 无存储开销 |
+| **恢复自动性** | 定时 10s 检查自动切回 | N/A |
 
 ### 5.13.6 小结
 
-`FailoverReactor` + `LocalConfigInfoProcessor` 提供客户端本地缓存快照机制：服务端可用时每次成功获取配置后持久化到本地文件；服务端不可用时从本地快照读取上次配置，保证应用基本可用性。这是 Nacos 客户端"容灾降级"设计原则的体现。
+`FailoverReactor` 通过 SPI 机制加载 `FailoverDataSource` 实现（默认 `DiskFailoverDataSource` 本地文件存储），定时 `FailoverLoadTask` 每 10s 检查容灾状态——服务端可用时从 Nacos 获取最新实例并持久化到本地文件，服务端不可用时从本地快照读取上次成功实例列表。断路器模式保证服务端不可用时仍可基本可用，策略模式支持扩展容灾数据源。
 
 
 ### 5.14.1 设计背景
 
-Nacos 通过 Java SPI（Service Provider Interface）机制实现插件化扩展。`NacosServiceLoader` 是 Nacos 对 Java SPI 的封装，支持 `@Order` 注解排序和 SPI 扩展点自动发现。2.5.3 中 SPI 机制应用于认证插件、数据源插件、加密插件等 6 种插件类型（参见第 6 章）。
+Nacos 通过 Java SPI（Service Provider Interface）机制实现插件化扩展。`NacosServiceLoader` 是 Nacos 对 Java SPI 的封装，支持 `@Order` 注解排序和 SPI 扩展点自动发现。2.5.3 中 SPI 机制应用于认证插件、数据源插件、加密插件等 6 种插件类型（参见第 6 章插件体系深度分析）。
 
 ### 5.14.2 核心类关系图
 
-图 5-14 展示了 `NacosServiceLoader` 的 SPI 加载机制：
+图 5-14 展示了 `NacosServiceLoader` 的 SPI 加载机制——从 `META-INF/services/` 文件声明到 `@Order` 排序的完整流程：
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │                  NacosServiceLoader                         │
-│  ├─ load(Class<T> serviceClass): Collection<T>           │
-│  ├─ load(Class<T> serviceClass, ClassLoader loader)     │
-│  └─ newServiceInstance(Class<?> clazz): T              │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ static <T> load(Class<T> serviceClass)               │  │
+│  │ static <T> load(Class<T> serviceClass,              │  │
+│  │               ClassLoader classLoader)               │  │
+│  │ static <T> T newServiceInstance(Class<?> clazz)    │  │
+│  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
         │
-        │ META-INF/services/{interface_full_name}
+        │ Java SPI ServiceLoader.load(serviceClass, classLoader)
         ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  META-INF/services/                                      │
-│  ├─ com.alibaba.nacos.plugin.auth.spi.AuthPluginService │
-│  │   └─ com.alibaba.nacos.plugin.auth.impl.NacosAuth    │
-│  ├─ com.alibaba.nacos.plugin.datasource.spi.DataSource  │
-│  │   └─ com.alibaba.nacos.plugin.datasource.impl.MySQL   │
-│  └─ ...                                                  │
+│              META-INF/services/                              │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ com.alibaba.nacos.plugin.auth.spi.                 │  │
+│  │   AuthPluginService                                │  │
+│  │   └─ com.alibaba.nacos.plugin.auth                 │  │
+│  │        .impl.NacosAuthPluginService                 │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ com.alibaba.nacos.plugin.datasource               │  │
+│  │   .spi.DataSourcePluginService                     │  │
+│  │   └─ com.alibaba.nacos.plugin.datasource          │  │
+│  │        .impl.MySQLDataSourcePluginService           │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        │ 排序: @Order 注解值升序
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│                @Order 排序规则                              │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ @Order(0)              → 最高优先级（第一个加载）   │  │
+│  │ @Order(Integer.MAX_VALUE) → 最低优先级              │  │
+│  │ 未标注 @Order         → 默认 Integer.MAX_VALUE     │  │
+│  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  @Order 排序                                             │
-│  ├─ @Order(0) → 最高优先级                              │
-│  ├─ @Order(Integer.MAX_VALUE) → 最低优先级              │
-│  └─ 未标注 @Order → 默认最低优先级                      │
+│  Nacos 2.5.3 中应用的 6 种 SPI 扩展点                     │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ 1. AuthPluginService       → 认证插件              │  │
+│  │ 2. DataSourcePluginService → 数据源插件            │  │
+│  │ 3. EncryptionPluginService → 加密插件              │  │
+│  │ 4. TracePluginService      → 追踪插件              │  │
+│  │ 5. EnvironmentPluginService → 环境插件              │  │
+│  │ 6. ControlManagerPluginService → 控制插件          │  │
+│  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 ### 5.14.3 源码走读
 
-#### 5.14.3.1 load() SPI 加载
+#### 5.14.3.1 load()——SPI 加载与 @Order 排序
 
-`NacosServiceLoader.load()`（`client/src/main/java/com/alibaba/nacos/client/utils/NacosServiceLoader.java:42-80`）：
+`NacosServiceLoader.load()`（`common/src/main/java/com/alibaba/nacos/common/spi/NacosServiceLoader.java:42-87`）：
 
 ```java
-public static <T> Collection<T> load(final Class<T> serviceClass, 
-    final ClassLoader classLoader) {
-    // 1. 使用 Java SPI ServiceLoader 加载所有实现
+public static <T> Collection<T> load(
+    final Class<T> serviceClass, final ClassLoader classLoader) {
+    
+    // line 48-55: 使用 Java SPI ServiceLoader 加载所有实现
     ServiceLoader<T> serviceLoader = ServiceLoader.load(
         serviceClass, classLoader
     );
@@ -1557,48 +1970,80 @@ public static <T> Collection<T> load(final Class<T> serviceClass,
     for (T service : serviceLoader) {
         services.add(service);
     }
-    // 2. 按 @Order 注解排序
+    // line 58-75: 按 @Order 注解排序
     services.sort((o1, o2) -> {
+        // 获取 @Order 注解值——未标注默认为 Integer.MAX_VALUE
         Order or1 = o1.getClass().getAnnotation(Order.class);
         Order or2 = o2.getClass().getAnnotation(Order.class);
         int order1 = or1 == null ? Integer.MAX_VALUE : or1.value();
         int order2 = or2 == null ? Integer.MAX_VALUE : or2.value();
         return Integer.compare(order1, order2);
     });
+    // line 80: 返回排序后的服务列表
     return services;
 }
 ```
 
-#### 5.14.3.2 SPI 扩展点应用
+**关键设计**：
+- `ServiceLoader.load()` 从 `META-INF/services/{interface_full_name}` 文件读取所有实现类全限定名
+- `@Order` 注解排序——值越小优先级越高，未标注 `@Order` 默认最低优先级（`Integer.MAX_VALUE`）
 
-Nacos 2.5.3 中 `NacosServiceLoader` 应用于以下扩展点：
+#### 5.14.3.2 NacosServiceLoader 应用实例
 
-| 插件类型 | SPI 接口 | 默认实现 |
-|---------|---------|---------|
-| 认证插件 | `AuthPluginService` | `NacosAuthPluginService` |
-| 数据源插件 | `DataSourcePluginService` | `MySQLDataSourcePluginService` |
-| 加密插件 | `EncryptionPluginService` | `AESEncryptionPluginService` |
-| 跟踪插件 | `TracePlugin` | 无默认（可选） |
-| 环境插件 | `EnvironmentPlugin` | 无默认（可选） |
-| 控制插件 | `ControlManagerPlugin` | 无默认（可选） |
+**FailoverReactor 加载 FailoverDataSource**（`FailoverReactor.java:90-100`）：
+
+```java
+Collection<FailoverDataSource> dataSources = 
+    NacosServiceLoader.load(FailoverDataSource.class);
+for (FailoverDataSource dataSource : dataSources) {
+    this.failoverDataSource = dataSource;
+    break;  // 取第一个可用实现（即最高优先级 @Order(0) 的实现）
+}
+```
+
+#### 5.14.3.3 AuthPluginService SPI 扩展点
+
+`com.alibaba.nacos.plugin.auth.spi.AuthPluginService`——认证插件 SPI 接口：
+
+```java
+public interface AuthPluginService {
+    // 用户名/密码认证
+    boolean login(User user);
+    // 获取已认证用户列表
+    List<String> getUsers();
+    // 获取角色列表
+    List<String> getRoles();
+    // 获取权限列表
+    List<Permission> getPermissions();
+    // 检查权限
+    boolean hasPermission(String username, String resource, String action);
+    // 是否启用认证
+    boolean isAuthEnabled();
+}
+```
+
+默认实现 `NacosAuthPluginService` 通过 BCrypt 密码加密 + JWT Token 生成/验证实现认证。
 
 ### 5.14.4 设计模式分析
 
-1. **服务提供者模式（Service Provider）**：Java SPI 机制通过 `META-INF/services/{interface}` 文件声明接口与实现的映射关系，实现插件化扩展。
+1. **服务提供者模式（Service Provider）**：Java SPI 机制通过 `META-INF/services/{interface}` 文件声明接口与实现的映射关系，`NacosServiceLoader.load()` 封装 Java SPI `ServiceLoader`。
 
-2. **策略模式（Strategy）**：多个 SPI 实现通过 `@Order` 排序决定优先级，运行时选择最高优先级的实现。
+2. **策略模式（Strategy）**：多个 SPI 实现通过 `@Order` 排序决定优先级，运行时选择最高优先级的实现——如 `FailoverDataSource` 多个实现中取第一个（`@Order(0)` 的最高优先级）。
 
-3. **工厂模式（Factory）**：`NacosServiceLoader.load()` 作为工厂方法返回所有可用的 SPI 实现集合。
+3. **工厂模式（Factory）**：`NacosServiceLoader.load()` 作为工厂方法返回所有可用的 SPI 实现集合，调用方无需手动管理实例创建。
+
+4. **插件化模式（Plugin）**：6 种插件类型均通过 `NacosServiceLoader` 动态加载，新增插件只需添加 `META-INF/services` 文件和实现类即可，无需修改 Nacos 核心代码。
 
 ### 5.14.5 Trade-off 分析
 
 | 权衡维度 | Java SPI | Spring Factories | OSGi |
 |---------|---------|----------------|------|
 | **复杂度** | 低（标准 Java） | 中 | 高 |
-| **动态加载** | 不支持 | 不支持 | 支持 |
-| **排序能力** | @Order 注解 | @Order 注解 | Service Ranking |
+| **动态加载** | 不支持（需重启） | 不支持 | 支持 |
+| **排序能力** | `@Order` 注解 | `@Order` 注解 | Service Ranking |
+| **依赖注入** | 不支持 | 支持 | 支持 |
 | **适用场景** | 简单插件扩展 | Spring 生态集成 | 复杂模块化应用 |
 
 ### 5.14.6 小结
 
-`NacosServiceLoader` 封装 Java SPI 机制，通过 `META-INF/services` 文件声明 + `@Order` 排序实现插件化扩展。2.5.3 中 6 种插件类型均通过此机制实现动态加载。详细的插件体系分析与自定义插件开发指南参见第 6 章。
+`NacosServiceLoader` 封装 Java SPI 机制，通过 `META-INF/services` 文件声明 + `@Order` 排序实现插件化扩展。`load()` 方法通过 `ServiceLoader.load()` 加载所有实现类→按 `@Order` 排序→返回排序后的服务列表。2.5.3 中 6 种插件类型（认证、数据源、加密、追踪、环境、控制管理）均通过此机制实现动态加载。详细的插件体系分析、自定义插件开发指南（5 步从零到部署）与插件热加载机制参见第 6 章插件体系深度分析。
