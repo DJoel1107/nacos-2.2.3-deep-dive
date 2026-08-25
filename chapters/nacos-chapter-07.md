@@ -326,3 +326,80 @@ Nacos 2.5.3 引入 `RpcClient`（`client/src/main/java/com/alibaba/nacos/client/
 ### 7.4.6 小结
 
 `ClientWorker`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ClientWorker.java:80-500`）作为配置管理的核心线程——在 2.2.x 中作为唯一的长轮询引擎——在 Nacos 2.5.3 中——gRPC `BiResponseStream` 双向流推送替代了 HTTP 长轮询——`LongPollingRunnable` 仍保留作为兜底机制——当 gRPC 不可用时（旧版 Nacos Server、企业防火墙拦截 HTTP/2）——自动回退到 HTTP `/v1/cs/configs/listener` 长轮询——保证客户端 SDK 向后兼容——`cacheMap`（`ConcurrentHashMap<String, CacheData>`）本地配置缓存 + `LocalConfigInfoProcessor` 本地磁盘快照——Nacos Server 完全不可用时——仍可读取本地缓存/磁盘快照——保证业务服务的配置可用性。
+
+
+### 7.5 故障转移与重试机制
+
+#### 7.5.1 设计背景
+
+Nacos 客户端 SDK 内置三层故障转移机制——保证 Nacos Server 不可用时业务服务不中断：
+
+1. **serverList 地址路由层**：`ServerListManager`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ServerListManager.java:50-200`）管理 Nacos Server 地址列表——定时心跳探测 server 可用性——自动剔除不可用 server
+2. **命名空间隔离层**：`namespace` 隔离不同环境的配置和服务——一个 namespace 的 Nacos Server 不可用——不影响其他 namespace
+3. **本地缓存兜底层**：`LocalConfigInfoProcessor` 本地磁盘快照 + `ServiceInfoHolder` 本地服务缓存——Nacos Server 完全不可用时——仍可读取本地缓存——保证业务服务可用
+
+#### 7.5.2 ServerListManager——服务器地址路由
+
+`ServerListManager`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ServerListManager.java:50-200`）管理 Nacos Server 地址列表：
+
+1. **静态配置模式**：`Properties.getProperty("serverAddr")`——业务代码直接指定 Nacos Server 地址——`serverList = Arrays.asList(serverAddr.split(","))`——逗号分隔多个 server 地址——定时心跳探测每个 server 可用性——自动剔除不可用 server
+2. **动态 AddressServer 模式**：`EndpointUtils.discoverAddressServer()`——通过 AddressServer 动态获取 Nacos Server 地址列表——`HttpSimpleClient.getServerListFromAddressServer()`——定期（每 30s）拉取最新 server 列表——支持动态扩缩容——新增 Nacos Server 自动纳入——下线 Nacos Server 自动剔除
+3. **心跳探测**：`serverList.forEach(server -> pingServer(server))`——定时（每 `10s`）向每个 server 发送 HTTP `GET /nacos/v1/console/health` 健康检查请求——HTTP 200 OK 表示 server 健康——连续 3 次健康检查失败——`serverList.remove(unhealthyServer)`——剔除不可用 server——`RpcClient.switchServer()` 切换到下一个可用 server
+
+#### 7.5.3 重试机制
+
+`ConfigRpcTransportClient`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ConfigRpcTransportClient.java:50-120`）内置重试机制：
+
+1. **exponential backoff 重试**：`for (int i = 0; i < maxRetry; i++)`——重试次数 `maxRetry = 3`——每次重试间隔 `backoff = Math.pow(2, i) * 1000ms`——第 1 次重试 2s——第 2 次重试 4s——第 3 次重试 8s——避免频繁重试导致 Nacos Server 过载
+2. **幂等性保证**：配置发布 `publishConfig()` 等写操作——重试前检查是否已成功——避免重复发布相同配置——`MD5.equals(lastPublishedMd5)`——如果 MD5 相同——跳过重试——避免重复写入 MySQL `config_info` 表
+3. **超时控制**：`ConfigConstants.DEFAULT_TIMEOUT_MS = 30000`——默认 30 秒超时——如果 gRPC 请求在 30 秒内未收到响应——抛出 `NacosException`——触发重试或 `switchServer()`
+
+### 7.6 认证鉴权（AK/SK）
+
+#### 7.6.1 设计背景
+
+Nacos 2.5.3 客户端 SDK 支持阿里云 AK/SK（AccessKey/SecretKey）认证——通过 `CredentialsProvider`（`client/src/main/java/com/alibaba/nacos/client/auth/impl/NacosClientAuthServiceImpl.java:50-150`）自动获取临时 AccessToken——`SecurityProxy`（`client/src/main/java/com/alibaba/nacos/client/security/SecurityProxy.java:30-80`）在每个 gRPC/HTTP 请求中注入 `accessToken` HTTP Header——Nacos Server 端 `AuthFilterChain`（`plugin/auth/`）拦截请求——校验 `accessToken` 有效性——保证请求安全。
+
+### 7.7 BeatReactor——心跳上报定时器
+
+`BeatReactor`（`client/src/main/java/com/alibaba/nacos/client/naming/core/BeatReactor.java:50-150`）定时向 Nacos Server 上报客户端心跳——`BeatInfo` 包含 `serviceName`/`ip`/`port`/`cluster`/`scheduled`——`ScheduledExecutorService.scheduleAtFixedRate(beatTask, beatInterval, beatInterval, TimeUnit.MILLISECONDS)`——默认 `beatInterval = 5000ms`（5s）——Nacos Server 收到心跳——更新临时实例的 `lastBeatTime`——如果超过 `instanceExpireTime = 15000ms`（15s）未收到——标记 `healthy=false`——自动下线不健康实例——触发 `ServiceChangedEvent`——通过 gRPC `BiResponseStream` 向所有订阅客户端推送 `ServiceInfo` 增量更新。
+
+### 7.8 AddressServer——地址服务器路由
+
+`AddressServer`（`client/src/main/java/com/alibaba/nacos/client/address/AddressServer.java:30-100`）独立部署的地址服务器模式——通过 `EndpointUtils.discoverAddressServer()`（`client/src/main/java/com/alibaba/nacos/client/utils/EndpointUtils.java:50-120`）动态获取 Nacos Server 地址列表——`HttpSimpleClient.getServerListFromAddressServer()`——HTTP GET `/nacos/serverlist`——返回 `List<String>` Nacos Server 地址列表——支持动态扩缩容——新增 Nacos Server 自动纳入——下线 Nacos Server 自动剔除——无需重启客户端——实现客户端零停机动态切换 Nacos Server。
+
+### 7.9 ConfigFilter——配置过滤器链
+
+`ConfigFilterChain`（`client/src/main/java/com/alibaba/nacos/client/config/filter/ConfigFilterChain.java:30-80`）配置过滤器链——在配置拉取/发布前执行一系列过滤器——`ConfigRequest.getConfigFilters()` 返回已注册的 `IConfigFilter` 列表——逐个调用 `IConfigFilter.doFilter(ConfigRequest, ConfigResponse, ConfigFilterChain)`——支持自定义过滤器——如加密/解密过滤器——配置内容自动加密存储/解密读取——签名校验过滤器——验证配置内容未被篡改——限流过滤器——限制配置拉取 QPS——防止恶意高频拉取配置导致 Nacos Server 过载。
+
+### 7.10 HttpSimpleClient——HTTP 短连接请求
+
+`HttpSimpleClient`（`client/src/main/java/com/alibaba/nacos/client/config/http/HttpSimpleClient.java:30-150`）HTTP 短连接请求工具类——`httpGet(url, headers, timeoutMs)` 发送 HTTP GET 请求——`httpPost(url, headers, body, timeoutMs)` 发送 HTTP POST 请求——`healthCheck(url)` HTTP 健康检查——默认超时 `timeoutMs = DEFAULT_TIMEOUT_MS = 30000`（30s）——支持自定义 `HttpClientConfig`——如 `maxTotal = 200`（最大连接数）——`maxPerRoute = 50`（每个路由最大连接数）——`connectionTimeout = 3000ms`（连接超时）——`socketTimeout = 10000ms`（读取超时）——避免 HTTP 连接池资源耗尽导致 Out of Memory。
+
+### 7.11 设计模式总结
+
+Nacos 2.5.3 客户端 SDK 综合运用了 7 种设计模式：
+
+1. **代理模式**：`NamingClientProxy` 封装 gRPC/HTTP 双协议通信——`RpcClient` 封装 gRPC 底层 `ManagedChannel`
+2. **观察者模式**：`Listener` 配置变更监听——`EventListener` 服务实例变更监听——`BiResponseStream.onNext()` 推送通知
+3. **策略模式**：`RpcClient` vs `LongPollingRunnable`——gRPC 可用时推送策略——gRPC 不可用时兜底策略
+4. **缓存模式**：`cacheMap` 配置缓存——`ServiceInfoHolder` 服务缓存——Cache-Aside 模式
+5. **工厂模式**：`NacosConfigService` 构造函数——`NacosNamingService` 构造函数——封装初始化逻辑
+6. **重试模式**：`reconnect()` exponential backoff——`publishConfig()` 重试 + MD5 幂等
+7. **过滤器链模式**：`ConfigFilterChain`——可插拔配置过滤器
+
+### 7.12 Trade-off 全景分析
+
+| 权衡维度 | gRPC 双向流推送（2.5.3） | HTTP 长轮询（2.2.x） |
+|---------|--------------------------|---------------------|
+| **配置变更通知延迟** | ✅ <100ms（`BiResponseStream.onNext()`） | ❌ ~2s（`LongPollingRunnable.run()`） |
+| **服务实例变更通知延迟** | ✅ <100ms（`BiResponseStream.onNext()`） | ❌ ~2s（`HostReactor.getServiceInfo()`） |
+| **心跳上报开销** | ✅ 复用同一 gRPC 长连接——零额外连接 | ✅ HTTP 短连接——每次心跳建立新 TCP |
+| **服务发现延迟** | ✅ <10ms（读本地缓存）——仅在缓存过期时远程拉取 | ✅ <10ms（同左） |
+| **本地兜底** | ✅ `LocalConfigInfoProcessor` 磁盘快照 + `ServiceInfoHolder` 内存缓存 | ✅ 同左 |
+| **向后兼容** | ✅ gRPC + HTTP 双协议自动切换——兼容旧版 HTTP-only Nacos Server | ❌ 不兼容 gRPC-only 新版 Nacos Server |
+| **连接复用** | ✅ HTTP/2 多路复用——1 个 gRPC 长连接——Stream Multiplexing | ❌ HTTP/1.1 短连接——每次请求新建 TCP 连接 |
+
+### 7.13 小结
+
+Nacos 2.5.3 客户端 SDK（`client/` 模块，136 个 Java 文件）通过 `RpcClient`（`client/src/main/java/com/alibaba/nacos/client/config/impl/RpcClient.java:50-400`）gRPC 双向流推送替代 2.2.x HTTP 长轮询——配置变更通知和服务实例变更通知延迟从平均 ~2s 降至 <100ms——消除空轮询服务器 CPU 消耗。`ClientWorker`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ClientWorker.java:80-500`）仍保留 `LongPollingRunnable` 作为兜底——当 gRPC 不可用时自动回退到 HTTP 长轮询——保证向后兼容旧版 Nacos Server。`NacosConfigService`（`client/src/main/java/com/alibaba/nacos/client/config/NacosConfigService.java:60-350`）和 `NacosNamingService`（`client/src/main/java/com/alibaba/nacos/client/naming/NacosNamingService.java:50-400`）封装配置管理和服务发现两大核心能力——`ServiceInfoHolder` + `LocalConfigInfoProcessor` 提供本地缓存兜底——Nacos Server 完全不可用时——业务服务仍可读取本地缓存/磁盘快照——保证业务服务的配置可用性和服务发现可用性。
