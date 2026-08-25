@@ -251,3 +251,78 @@ Nacos 2.5.3 引入 `RpcClient`（`client/src/main/java/com/alibaba/nacos/client/
 ### 7.3.6 小结
 
 `RpcClient`（`client/src/main/java/com/alibaba/nacos/client/config/impl/RpcClient.java:50-400`）基于 gRPC 的 `BiRequestStream` / `BiResponseStream` 双向流推送——替代 2.2.x 的 HTTP 长轮询。`connect()`（`:80-150`）创建 `ManagedChannel` + `BiRequestStream`——`serverCheck()`（`:200-250`）定时健康检查 + 自动切换 server——`reconnect()`（`:300-380`）exponential backoff + max retry 断线重连——`switchServer()` 兜底——保证客户端 SDK 高可用。gRPC 双向流推送消除空轮询——配置变更通知 + 服务实例变更通知延迟降至 <100ms——同时减少 Nacos Server 的 CPU 消耗。
+
+
+### 7.4 ClientWorker——长轮询兜底机制
+
+### 7.4.1 设计背景
+
+`ClientWorker`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ClientWorker.java:80-500`）是 Nacos 客户端 SDK 配置管理的核心线程——在 2.2.x 中作为唯一的长轮询引擎——使用 HTTP `/v1/cs/configs/listener` 接口定期轮询配置变更。在 Nacos 2.5.3 中——gRPC `BiResponseStream` 双向流推送替代了 HTTP 长轮询——`ClientWorker` 仍保留 `LongPollingRunnable` 作为兜底机制——当 gRPC 不可用时（例如旧版 Nacos Server 仅支持 HTTP、或企业防火墙拦截 HTTP/2 ALPN 协商）——自动回退到 HTTP 长轮询——保证客户端 SDK 向后兼容。
+
+`ClientWorker` 构造函数初始化以下核心组件：
+
+1. **`agentName`**（客户端标识——格式为 `"{localIp}-{appName}-{namespace}"`——用于 Nacos Server 端识别客户端——避免重复推送）
+2. **`executorService`**（线程池——`Executors.newScheduledThreadPool(poolSize)`——核心线程数 = Nacos Server 数量——每个 Nacos Server 一个长轮询线程——避免线程爆炸）
+3. **`cacheMap`**（`ConcurrentHashMap<String, CacheData>`——本地配置缓存——key 为 `"{group}-{dataId}"`——缓存配置内容 + MD5——避免重复拉取未变更配置）
+
+### 7.4.2 核心类关系图
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                      ClientWorker                                    │
+│  ┌────────────────────────────────────────────────────────────────┐     │
+│  │ LongPollingRunnable (兜底机制)                              │     │
+│  │ ├─ checkServerConfig() — 对比 MD5 检查配置变更            │     │
+│  │ ├─ getServerConfig() — HTTP GET /v1/cs/configs            │     │
+│  │ └─ checkLocalConfig() — 读取本地快照优先                  │     │
+│  └────────────────────────────────────────────────────────────────┘     │
+│  ┌────────────────────────────────────────────────────────────────┐     │
+│  │ CacheMap (本地配置缓存)                                    │     │
+│  │ ├─ CacheData.groupKey = "{group}-{dataId}"               │     │
+│  │ ├─ CacheData.content (缓存的配置内容)                     │     │
+│  │ ├─ CacheData.md5 (MD5 摘要——检测变更)                    │     │
+│  │ ├─ CacheData.listeners (CopyOnWriteArrayList<Listener>)    │     │
+│  │ └─ CacheData.lastModifiedTs (最后修改时间戳)              │     │
+│  └────────────────────────────────────────────────────────────────┘     │
+│  ┌────────────────────────────────────────────────────────────────┐     │
+│  │ agentName = "{localIp}-{appName}-{namespace}"               │     │
+│  │ executorService = ScheduledThreadPool(poolSize)               │     │
+│  │ gRPC 可用 → gRPC BiResponseStream 推送                     │     │
+│  │ gRPC 不可用 → HTTP LongPollingRunnable 兜底               │     │
+│  └────────────────────────────────────────────────────────────────┘     │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 7.4.3 源码走读
+
+#### 7.4.3.1 LongPollingRunnable.run()——HTTP 长轮询兜底
+
+`LongPollingRunnable.run()`（`:200-400`）是 HTTP 长轮询的核心逻辑——当 gRPC 不可用时的兜底机制：
+
+1. **checkServerConfig()**（`:220-280`）：向 Nacos Server 发送 HTTP POST 请求 `/v1/cs/configs/listener`——请求体为 `Listening-Data-{group}-{dataId}%02{MD5}` 格式——携带本地缓存中所有监听配置的 `dataId`/`group`/`MD5`——Nacos Server 收到请求后——对比每个 `{group}-{dataId}` 的 MD5——如果 MD5 相同——表示配置内容未变更——Nacos Server 挂起请求——不立即返回——等待配置变更（长轮询——Hold 请求 29.5s——`longPollingTimeout = 29500ms`）——如果 MD5 不同——表示配置内容已变更——Nacos Server 立即返回变更的 `dataId`/`group`/`content`——客户端收到响应后——遍历变更列表——`CacheData.setContent(content)`——更新本地缓存——`CacheData.checkListenerMd5()`——调用 `Listener.receiveConfigInfo(content)`——通知业务代码
+
+2. **getServerConfig()**（`:300-350`）：如果 `checkServerConfig()` 超时（30s 无配置变更）——主动向 Nacos Server 发送 HTTP GET 请求 `/v1/cs/configs?dataId={dataId}&group={group}&tenant={namespace}`——拉取全量配置内容——更新本地缓存——避免长时间无变更导致本地缓存过期
+
+3. **checkLocalConfig()**（`:360-380`）：在 HTTP 请求之前——先检查 `LocalConfigInfoProcessor.getSnapshot(namespace, dataId, group)`——如果本地磁盘快照存在——优先返回本地快照内容——避免网络请求——减少 Nacos Server 压力——适用于 Nacos Server 完全不可用的极端场景——保证业务服务的配置可用性
+
+### 7.4.4 设计模式分析
+
+1. **策略模式（Strategy）**：`ClientWorker` 根据 gRPC 是否可用的条件——自动切换配置变更通知的获取策略——gRPC `BiResponseStream.onNext(ConfigChangeNotify)` 推送策略——HTTP `LongPollingRunnable.run()` 长轮询策略——两种策略实现同一目标（获取配置变更通知）——对上层 `NacosConfigService` 透明——`NacosConfigService.getConfig()` 无需关心底层是 gRPC 还是 HTTP 通信
+
+2. **缓存模式（Cache-Aside）**：`cacheMap`（`ConcurrentHashMap<String, CacheData>`）作为配置本地缓存——`CacheData` 包含 `content`（缓存的配置内容）+ `md5`（MD5 摘要）+ `listeners`（已注册的监听器列表）——读取配置时先查 `cacheMap`——缓存命中直接返回——缓存未命中才发起远程请求——写入配置时先更新 `cacheMap` + `LocalConfigInfoProcessor.saveSnapshot()` 保存本地磁盘快照——保证 Nacos Server 不可用时本地缓存兜底
+
+3. **观察者模式（Observer）**：`CacheData.listeners`（`CopyOnWriteArrayList<Listener>`）维护所有已注册的配置变更监听器——当 Nacos Server 推送配置变更通知或 HTTP 长轮询检测到 MD5 变更——遍历 `CacheData.listeners`——逐个调用 `Listener.receiveConfigInfo(String configInfo)`——通知所有监听器配置已变更——实现配置变更的发布-订阅模式——多个业务模块可独立注册自己的 `Listener`——互不干扰
+
+### 7.4.5 Trade-off 分析
+
+| 权衡维度 | HTTP 长轮询（兜底策略） | gRPC 双向流推送（主策略） | WebSocket 推送 |
+|---------|--------------------------|------------------------|---------------|
+| **兼容性** | ✅ HTTP/1.1 全版本 Nacos Server | ⚠️ 需 Nacos 2.5.3+ Server + HTTP/2 | ⚠️ 需 Nacos Server 支持 WebSocket |
+| **防火墙兼容** | ✅ 几乎所有防火墙放行 HTTP/1.1 | ⚠️ 企业防火墙可能拦截 HTTP/2 ALPN | ⚠️ 部分代理不支持 WebSocket |
+| **推送延迟** | ❌ 平均 ~2s（`longPollingTimeout = 29.5s`—但 30s 超时后主动拉取） | ✅ <100ms | ✅ <100ms |
+| **服务器负载** | ❌ 每次轮询都需查询 MySQL `config_info` 表 | ✅ 零空轮询 | ✅ 零空轮询 |
+| **客户端资源** | ⚠️ 每个 Nacos Server 一个长轮询线程——线程数 = Nacos Server 数量 | ✅ 单 gRPC 长连接——多路复用 | ✅ 单 WebSocket 连接 |
+
+### 7.4.6 小结
+
+`ClientWorker`（`client/src/main/java/com/alibaba/nacos/client/config/impl/ClientWorker.java:80-500`）作为配置管理的核心线程——在 2.2.x 中作为唯一的长轮询引擎——在 Nacos 2.5.3 中——gRPC `BiResponseStream` 双向流推送替代了 HTTP 长轮询——`LongPollingRunnable` 仍保留作为兜底机制——当 gRPC 不可用时（旧版 Nacos Server、企业防火墙拦截 HTTP/2）——自动回退到 HTTP `/v1/cs/configs/listener` 长轮询——保证客户端 SDK 向后兼容——`cacheMap`（`ConcurrentHashMap<String, CacheData>`）本地配置缓存 + `LocalConfigInfoProcessor` 本地磁盘快照——Nacos Server 完全不可用时——仍可读取本地缓存/磁盘快照——保证业务服务的配置可用性。
