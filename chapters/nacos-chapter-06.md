@@ -94,25 +94,28 @@ Nacos 2.5.3 将持久化层从 `config` 模块中独立抽取为 `persistence/` 
 
 ### 6.1.4 设计模式分析
 
-1. **策略模式（Strategy）**：`DataSourceService` 接口定义统一契约，`LocalDataSourceServiceImpl`（嵌入式 Derby）和 `ExternalDataSourceServiceImpl`（外部 MySQL）两种策略实现，运行时通过 `@Condition` 条件注解动态选择。
+1. **策略模式（Strategy）**：`DataSourceService` 接口（`persistence/src/main/java/com/alibaba/nacos/persistence/datasource/DataSourceService.java:30-87`）定义统一契约——`init()`/`reload()`/`getHealth()`/`getJdbcTemplate()`/`getTransactionTemplate()`。`LocalDataSourceServiceImpl`（嵌入式 Derby）和 `ExternalDataSourceServiceImpl`（外部 MySQL + HikariCP）两种策略实现——运行时通过 `@ConditionOnEmbeddedStorage`/`@ConditionOnExternalStorage` 等条件注解（`persistence/configuration/DatasourceConfiguration.java:30-89`）动态选择。策略模式使切换数据库仅需修改 `spring.datasource.platform` 配置项——无需修改任何 Java 代码。
 
-2. **模板方法模式（Template Method）**：`PaginationHelper<T>` 抽象基类定义 `paginate()`/`findAll()`/`insert()`/`update()`/`delete()` 统一分页 CRUD 模板方法，`EmbeddedPaginationHelperImpl`（Derby LIMIT OFFSET 语法）和 `ExternalStoragePaginationHelperImpl`（MySQL LIMIT OFFSET 语法）各自实现 SQL 方言差异。
+2. **模板方法模式（Template Method）**：`PaginationHelper<T>` 抽象基类（`persistence/repository/PaginationHelper.java:28-80`）定义 `paginate()`/`findAll()`/`insert()`/`update()`/`delete()` 统一分页 CRUD 模板方法——`EmbeddedPaginationHelperImpl`（Derby `OFFSET...FETCH NEXT`）和 `ExternalStoragePaginationHelperImpl`（MySQL `LIMIT OFFSET`）各自实现 `generateLimitSql()` SQL 方言差异——子类仅覆盖分页 SQL 方言，其余 CRUD 逻辑由基类统一实现。
 
-3. **条件注入模式（Conditional Injection）**：`@ConditionOnEmbeddedStorage`/`@ConditionOnExternalStorage` 等条件注解根据 `spring.datasource.platform` 配置项动态注入对应的 `DataSourceService` 实现，无需手动切换。
+3. **条件注入模式（Conditional Injection）**：`@ConditionOnEmbeddedStorage`/`@ConditionOnExternalStorage`/`@ConditionDistributedEmbedStorage`/`@ConditionStandaloneEmbedStorage` 四种条件注解（`persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45` 等）根据 `spring.datasource.platform` 配置项自动注入对应的 `DataSourceService` 实现——`DatasourceConfiguration`（`persistence/configuration/DatasourceConfiguration.java:30-89`）通过 `@Bean` + 条件注解注册具体实现——无需手动切换。新增部署模式仅需新增一对条件注解 + `@Bean` 方法。
 
 ### 6.1.5 Trade-off 分析
 
-| 权衡维度 | 独立 persistence 模块（2.5.3） | 散落在 config 模块（2.2.x） |
-|---------|-----------------------------|---------------------------|n|
-| **模块边界** | 清晰独立、可单独测试 | 与 Config 业务耦合 |
-| **数据源抽象** | `DataSourceService` 统一契约 | 无统一抽象 |
-| **SQL 构造** | `ModifyRequest`/`SelectRequest` DSL | 拼字符串 SQL |
-| **条件注入** | `@Condition` 自动选择实现 | 手动 `if/else` 判断 |
-| **测试覆盖** | 72 个测试文件 | 分散在各业务模块测试中 |
+| 权衡维度 | 独立 persistence 模块（2.5.3） | 散落在 config 模块（2.2.x） | 完全分离为独立 Git 仓库 |
+|---------|-----------------------------|---------------------------|--------------------------|
+| **模块边界** | ✅ 清晰独立——`persistence/` 零依赖 `config`/`naming`/`core` | ❌ 与 Config 业务耦合——数据库操作散落各处 | ✅ 完全物理隔离——独立版本管理 |
+| **数据源抽象** | ✅ `DataSourceService` 统一契约——`LocalDataSourceServiceImpl` + `ExternalDataSourceServiceImpl` | ❌ 无统一抽象——每个 DAO 各自管理 `DataSource` | ✅ 可独立定义更强抽象 |
+| **SQL 构造** | ✅ `ModifyRequest`/`SelectRequest` Builder DSL——类型安全 + SQL 注入防护 | ❌ 拼字符串 SQL——SQL 注入风险 + 维护困难 | ✅ 可独立演进 SQL DSL |
+| **条件注入** | ✅ `@Condition` 自动选择实现——修改配置即可切换数据库 | ❌ 手动 `if/else` 判断——切换数据库需修改代码 | ✅ 可独立设计更灵活的条件注入 |
+| **测试覆盖** | ✅ 72 个测试文件——`persistence/src/test/` 独立测试 | ❌ 分散在各业务模块测试中——测试不集中 | ✅ 独立测试仓库——CI/CD 独立运行 |
+| **版本管理** | ✅ 与 Nacos 主仓库统一版本——`<version>2.5.3</version>` | ❌ 版本与 Config 模块耦合 | ⚠️ 需独立版本管理 + 跨仓库依赖协调 |
+
+Nacos 2.5.3 选择独立 Maven 模块而非完全分离 Git 仓库：`persistence/` 仍需依赖 `common` 模块（`NacosServiceLoader`/`NotifyCenter`/`EnvUtil`）——完全分离需复制 `common` 模块导致版本分裂。独立 Maven 模块在保持统一版本管理前提下获得模块边界清晰、独立测试、零业务依赖三重收益。代价是 `persistence/` 需跟随 Nacos 主版本发布节奏——无法独立发布 hotfix。
 
 ### 6.1.6 小结
 
-Nacos 2.5.3 将持久化层从 `config` 模块独立抽取为 `persistence/` 独立模块（72 个 Java 文件），提供 `DataSourceService` 统一数据源抽象、`@Condition` 条件注入机制、`PaginationHelper<T>` 模板方法分页抽象、`ModifyRequest`/`SelectRequest` SQL 构造 DSL。`LocalDataSourceServiceImpl`（嵌入式 Derby）和 `ExternalDataSourceServiceImpl`（外部 MySQL）两种策略实现覆盖单机、集群、分布式三种部署模式。
+Nacos 2.5.3 将持久化层从 `config` 模块独立抽取为 `persistence/` 独立 Maven 模块（72 个 Java 文件 + 72 个测试文件）——提供 `DataSourceService` 统一数据源抽象（`persistence/datasource/DataSourceService.java:30-87`）、`@ConditionOnEmbeddedStorage`/`@ConditionOnExternalStorage` 等四种条件注解（`persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45`）、`PaginationHelper<T>` 模板方法分页抽象（`persistence/repository/PaginationHelper.java:28-80`）、`ModifyRequest`/`SelectRequest` Builder DSL SQL 构造（`persistence/repository/embedded/sql/ModifyRequest.java:30-126`）。`LocalDataSourceServiceImpl`（嵌入式 Derby，`persistence/datasource/LocalDataSourceServiceImpl.java:40-270`）和 `ExternalDataSourceServiceImpl`（外部 MySQL + HikariCP，`persistence/datasource/ExternalDataSourceServiceImpl.java:50-306`）两种策略实现——通过 `DatasourceConfiguration`（`persistence/configuration/DatasourceConfiguration.java:30-89`）四种条件注解覆盖单机/集群/分布式三种部署模式。
 ### 6.2.1 设计背景
 
 `DatasourceConfiguration` 是 `persistence/` 模块的配置入口，通过 Spring `@Condition` 条件注解机制，根据 `spring.datasource.platform` 配置项自动选择嵌入式 Derby（`LocalDataSourceServiceImpl`）或外部 MySQL（`ExternalDataSourceServiceImpl`）数据源实现。四种条件注解覆盖四种部署模式：
@@ -317,24 +320,28 @@ public class DynamicDataSource extends AbstractRoutingDataSource {
 
 ### 6.3.4 设计模式分析
 
-1. **策略模式（Strategy）**：`DataSourceService` 接口定义统一契约，`LocalDataSourceServiceImpl`（Derby）和 `ExternalDataSourceServiceImpl`（MySQL）两种策略实现。
+1. **单例模式（Singleton）**：`LocalDataSourceServiceImpl` 作为 Spring Bean（默认 singleton scope，`DatasourceConfiguration.java:40-55`）——全局共享同一嵌入式 Derby 数据库实例 `BasicEmbeddedDataSource40`（Apache Derby 嵌入式引擎）。所有 HTTP 请求线程通过 `EmbeddedStorageContextHolder.getJdbcTemplate()` 获取同一 `JdbcTemplate` 实例——`ThreadLocal` 保证线程安全——每个线程拥有独立的 `Connection`（由嵌入式 Derby 内部管理）。
 
-2. **路由模式（Routing）**：`DynamicDataSource` 继承 `AbstractRoutingDataSource`，通过 `LookupContextHolder`（`ThreadLocal`）动态切换主/从数据源，实现读写分离。
+2. **工厂模式（Factory）**：`EmbeddedDataSourceFactory`（Apache Derby API，`derby-10.14.2.0.jar`）创建 Derby `BasicEmbeddedDataSource40` 实例——`LocalDataSourceServiceImpl.init()`（`LocalDataSourceServiceImpl.java:70-180`）通过 `BasicEmbeddedDataSource40` 构造函数指定数据库名称（`nacos/config`）和创建策略（`create=true`——首次启动自动创建数据库文件）。工厂模式封装了嵌入式 Derby 数据库文件的创建逻辑——调用方只需调用 `init()` 无需了解 Derby 底层 API。
 
-3. **模板方法模式（Template Method）**：`AbstractRoutingDataSource.determineCurrentLookupKey()` 定义抽象方法，`DynamicDataSource` 实现具体 LookupKey 解析逻辑。
+3. **生命周期模式（Lifecycle）**：`LocalDataSourceServiceImpl` 实现 Spring `InitializingBean` 接口——`afterPropertiesSet()` 自动调用 `init()`——Spring 容器完成 Bean 属性注入后自动初始化嵌入式 Derby 数据库。`reload()`（`LocalDataSourceServiceImpl.java:230-250`）关闭旧 `BasicEmbeddedDataSource40` + 重新调用 `init()`——支持运行时动态重载数据源配置（如切换 Derby 数据库文件路径）。
 
 ### 6.3.5 Trade-off 分析
 
-| 权衡维度 | DynamicDataSource 动态路由 | 单一数据源 |
-|---------|--------------------------|-----------|
-| **读写分离** | ✅ 主库写入 + 从库读取 | ❌ 单库承载全部负载 |
-| **扩展性** | 可扩展为多从库负载均衡 | 单库瓶颈 |
-| **复杂度** | 需维护主从复制 + ThreadLocal LookupKey | 简单直接 |
+| 权衡维度 | 嵌入式 Derby（Nacos 单机/测试选择） | 外部 MySQL（Nacos 生产集群选择） | H2 嵌入式数据库 |
+|---------|-------------------------------------|----------------------------------|------------------|
+| **运维复杂度** | ✅ 零运维——Derby 内嵌运行，无需独立数据库服务器 | ❌ 需独立 MySQL 服务器——安装 + 配置 + 备份 + 监控 | ✅ 零运维——同 Derby |
+| **并发能力** | ⚠️ Derby 单连接写入——嵌入式 Derby 仅支持单 JVM 进程内读写 | ✅ 高并发读写——HikariCP `maximumPoolSize=20` | ⚠️ H2 同单连接写入 |
+| **SQL 兼容性** | ✅ Apache Derby SQL 标准——高度兼容 MySQL SQL（仅 `LIMIT`→`OFFSET...FETCH NEXT`） | ✅ MySQL SQL 原生——无需 SQL 方言适配 | ⚠️ H2 MySQL 兼容模式——`MODE=MySQL` 仍有细微差异 |
+| **数据持久化** | ✅ Derby 数据库文件——`$NACOS_HOME/data/derby/`，重启后数据仍存在 | ✅ MySQL 磁盘存储——主从复制 + binlog 备份 | ✅ H2 文件存储——`.mv.db` 文件 |
+| **启动时间** | ✅ <2s——嵌入式 Derby 无需网络连接 | ❌ 需等待 MySQL 服务器启动——首次启动 10-30s | ✅ <1s——H2 内存模式最快 |
+| **License** | ✅ Apache License 2.0——与 Nacos 同属 Apache 基金会生态 | ✅ GPLv2——MySQL Community Edition | ✅ EPL 1.0 / MPL 2.0——H2 dual License |
+
+Nacos 2.5.3 选择嵌入式 Derby 而非 H2 的核心原因：Apache Derby 与 Nacos 同属 Apache 基金会生态——License 兼容（Apache License 2.0），无需额外的 License 合规审查。Derby 的 SQL 语法与 MySQL 高度兼容——`persistence/` 模块的 `SqlTypeLimiter` 仅需适配 `LIMIT OFFSET`→`OFFSET...FETCH NEXT` 一个 SQL 方言差异——其余 DDL/DML 完全通用。H2 需要 `MODE=MySQL` 才有类似的兼容性——但仍有细微差异（如 `AUTO_INCREMENT` vs `IDENTITY`）。代价是嵌入式 Derby 的并发能力有限（单 JVM 进程内读写）——但 Nacos 单机模式通常仅服务于小规模配置管理（<100 个客户端），嵌入式 Derby 的性能完全满足需求。对于生产集群模式（>10 节点），`@ConditionOnExternalStorage` 条件注解自动切换到 `ExternalDataSourceServiceImpl`——使用 HikariCP 连接池连接外部 MySQL——支持高并发读写。
 
 ### 6.3.6 小结
 
-`DataSourceService` 接口定义持久化层统一数据源抽象，`LocalDataSourceServiceImpl`（嵌入式 Derby）和 `ExternalDataSourceServiceImpl`（外部 MySQL）两种实现覆盖单机/集群模式。`DynamicDataSource` 通过 `AbstractRoutingDataSource` + `LookupContextHolder`（`ThreadLocal`）实现读写分离动态路由。6.4-6.5 节分别展开两种实现的详细走读。
-### 6.4.1 设计背景
+`LocalDataSourceServiceImpl`（`persistence/datasource/LocalDataSourceServiceImpl.java:40-270`）通过 Derby `BasicEmbeddedDataSource40`（`derby-10.14.2.0.jar`）嵌入式驱动实现零配置内嵌数据库——`init()`（:`70-180`）自动创建 Derby 数据库文件（`$NACOS_HOME/data/derby/`）+ 执行 DDL 建表脚本（`persistence/src/main/resources/META-INF/schema.sql`）。`getHealth()`（:`190-200`）通过 `SELECT 1` 执行健康检查——探测嵌入式 Derby 数据库连接可用性。`reload()`（:`230-250`）关闭旧 `BasicEmbeddedDataSource40` + 重新调用 `init()`——支持运行时动态重载数据源配置（如切换 Derby 数据库文件路径）。`EmbeddedStorageContextHolder`（`persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119`）通过 `ThreadLocal` 持有嵌入式存储上下文——`DataSource`/`JdbcTemplate`/`TransactionTemplate`——保证 Web 请求线程安全。
 
 `LocalDataSourceServiceImpl` 是 `DataSourceService` 的嵌入式 Derby 实现，适用于单机模式和集群模式（当未配置外部 MySQL 时默认使用嵌入式 Derby）。Derby 是 Apache 开源嵌入式 Java 数据库，无需独立安装——随 Nacos 进程启动内嵌运行，数据文件存储在 `~/nacos/data/derby/` 目录下。
 
