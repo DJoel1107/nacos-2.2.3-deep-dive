@@ -102,6 +102,8 @@ Nacos 2.5.3 将持久化层从 `config` 模块中独立抽取为 `persistence/` 
 
 ### 6.1.5 Trade-off 分析
 
+**表 6.1：persistence 模块独立化架构 trade-off**
+
 | 权衡维度 | 独立 persistence 模块（2.5.3） | 散落在 config 模块（2.2.x） | 完全分离为独立 Git 仓库 |
 |---------|-----------------------------|---------------------------|--------------------------|
 | **模块边界** | ✅ 清晰独立——`persistence/` 零依赖 `config`/`naming`/`core` | ❌ 与 Config 业务耦合——数据库操作散落各处 | ✅ 完全物理隔离——独立版本管理 |
@@ -220,6 +222,8 @@ public @interface ConditionOnEmbeddedStorage {
 
 ### 6.2.5 Trade-off 分析
 
+**表 6.2：条件注入 vs 手动切换 trade-off**
+
 | 权衡维度 | @Condition 条件注入 | 手动 if/else 切换 |
 |---------|---------------------|-------------------|
 | **扩展性** | 新增部署模式只需新增 Condition + Bean | 需修改所有切换判断点 |
@@ -331,6 +335,8 @@ public class DynamicDataSource extends AbstractRoutingDataSource {
 3. **生命周期模式（Lifecycle）**：`LocalDataSourceServiceImpl` 实现 Spring `InitializingBean` 接口——`afterPropertiesSet()` 自动调用 `init()`——Spring 容器完成 Bean 属性注入后自动初始化嵌入式 Derby 数据库。`reload()`（`LocalDataSourceServiceImpl.java:230-250`）关闭旧 `BasicEmbeddedDataSource40` + 重新调用 `init()`——支持运行时动态重载数据源配置（如切换 Derby 数据库文件路径）。
 
 ### 6.3.5 Trade-off 分析
+
+**表 6.3：Derby vs MySQL vs H2 trade-off**
 
 | 权衡维度 | 嵌入式 Derby（Nacos 单机/测试选择） | 外部 MySQL（Nacos 生产集群选择） | H2 嵌入式数据库 |
 |---------|-------------------------------------|----------------------------------|------------------|
@@ -453,6 +459,8 @@ public String getHealth() {
 
 ### 6.4.5 Trade-off 分析
 
+**表 6.4：嵌入式 Derby vs 外部 MySQL trade-off**
+
 | 权衡维度 | 嵌入式 Derby（Nacos 单机/测试选择） | 外部 MySQL（Nacos 生产集群选择） | H2 嵌入式数据库 |
 |---------|-------------------------------------|----------------------------------|------------------|
 | **运维复杂度** | ✅ 零运维——内嵌运行，无需独立数据库服务器 | ❌ 需独立 MySQL 服务器——安装 + 配置 + 备份 + 监控 | ✅ 零运维——同 Derby |
@@ -567,6 +575,8 @@ public class ExternalDataSourceServiceImpl implements DataSourceService {
 
 ### 6.5.5 Trade-off 分析
 
+**表 6.5：HikariCP vs DriverManager vs DBCP2 trade-off**
+
 | 权衡维度 | HikariCP 连接池（Nacos 选择） | 单连接 DriverManager | DBCP2 连接池 |
 |---------|-----------------------------|--------------------|--------------|
 | **并发能力** | ✅ 多连接并发读写——`maximumPoolSize=20` 可并行处理 20 个 SQL 操作 | ❌ 单连接串行——所有 SQL 排队等待唯一连接 | ✅ 多连接并发——连接池复用——DBCP2 性能约 1.5x 耗时 vs HikariCP |
@@ -670,6 +680,8 @@ public class EmbeddedPaginationHelperImpl<T> extends PaginationHelper<T> {
 3. **上下文持有者模式（Context Holder）**：`EmbeddedStorageContextHolder`（`persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119`）通过 `ThreadLocal<EmbeddedStorageContext>` 持有嵌入式存储上下文——包含当前线程的 `DataSource`、`JdbcTemplate`、`TransactionTemplate`。在 Web 请求处理中，每个 HTTP 请求线程拥有独立的嵌入式存储上下文——保证线程安全，避免多个请求线程共享同一 `JdbcTemplate` 导致的连接泄漏。
 
 ### 6.6.5 Trade-off 分析
+
+**表 6.6：Derby OFFSET FETCH vs MySQL LIMIT trade-off**
 
 | 权衡维度 | Derby `OFFSET ? ROWS FETCH NEXT ? ROWS ONLY` | MySQL `LIMIT ? OFFSET ?` | 应用程序内存分页 |
 |---------|--------------------------|----------------------------|---------------|
@@ -789,6 +801,8 @@ public class StandaloneDatabaseOperateImpl implements DatabaseOperate {
 
 ### 6.7.5 Trade-off 分析
 
+**表 6.7：SQL DSL vs 字符串拼接 vs MyBatis trade-off**
+
 | 权衡维度 | SQL DSL `ModifyRequest`/`SelectRequest`（Nacos 选择） | 字符串拼接 SQL | MyBatis XML Mapper |
 |---------|------------------------------|----------------|-------------------|
 | **类型安全** | ✅ Builder 方法编译期检查——`.where("data_id"=?, value)` 参数类型匹配 | ❌ 运行时字符串拼接——类型错误运行时才暴露 | ✅ XML Mapper 编译期生成代理 |
@@ -859,6 +873,8 @@ public Page<T> paginate(int pageNo, int pageSize, T criteria) {
 3. **适配器模式（Adapter）**：`SqlTypeLimiter` 接口（`persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/sql/limiter/SqlTypeLimiter.java:30-70`）定义 `limit(pageNo, pageSize)` 方法——`EmbeddedPaginationHelperImpl` 内部的 Derby 适配器将 `LIMIT ? OFFSET ?` 适配为 `OFFSET ? ROWS FETCH NEXT ? ROWS ONLY`，`ExternalStoragePaginationHelperImpl` 内部的 MySQL 适配器直接透传 `LIMIT ? OFFSET ?`。
 
 ### 6.8.5 Trade-off 分析
+
+**表 6.8：MySQL LIMIT vs Derby OFFSET FETCH trade-off**
 
 | 权衡维度 | MySQL `LIMIT ? OFFSET ?` | Derby `OFFSET ? ROWS FETCH NEXT ? ROWS ONLY` | 应用程序内存分页 |
 |---------|--------------------------|--------------------------------------------------|---------------|
@@ -995,6 +1011,8 @@ public class SelectRequest {
 
 ### 6.9.5 Trade-off 分析
 
+**表 6.9：Builder DSL vs 字符串拼接 vs ORM trade-off**
+
 | 权衡维度 | Builder DSL（Nacos 选择） | 字符串拼接 SQL | ORM 框架（MyBatis/Hibernate） |
 |---------|--------------------------|----------------|------------------------------|
 | **类型安全** | ✅ Builder 方法编译期检查——`.where("data_id"=?, value)` 参数类型匹配 | ❌ 运行时字符串拼接——`"WHERE data_id=" + value` 类型错误运行时才暴露 | ✅ XML Mapper 编译期生成代理——类型安全 |
@@ -1094,6 +1112,8 @@ public class RaftDbErrorEvent {
 
 ### 6.10.5 Trade-off 分析
 
+**表 6.10：事件驱动 vs gRPC vs 共享文件 trade-off**
+
 | 权衡维度 | 事件驱动快照导入/导出（Nacos 选择） | 直接 gRPC 调用 | 共享文件系统（NFS/HDFS） |
 |---------|--------------------------------------|-------------------|------------------------|
 | **解耦性** | ✅ 事件发布者与订阅者通过 `NotifyCenter` 完全解耦——新增 Follower 无需修改 Leader 代码 | ❌ Leader 需维护所有 Follower 的 gRPC stub 列表 | ⚠️ 共享文件系统权限管理复杂 |
@@ -1175,6 +1195,8 @@ public class DatasourceMetrics {
 3. **策略模式（Strategy）**：`DatasourceMetrics` 针对不同数据源指标类型采用不同的 Micrometer 指标类型——`datasource.health` 使用 `Gauge<Double>`（瞬时值）、`datasource.active.connections` 使用 `Gauge<Integer>`（瞬时值）、`datasource.query.time` 使用 `TimeGauge`（带时间单位的计时器），每种指标类型采用最适合的 Micrometer 度量策略。
 
 ### 6.11.5 Trade-off 分析
+
+**表 6.11：Micrometer vs 自定义日志 vs Spring Actuator trade-off**
 
 | 权衡维度 | Micrometer + Prometheus（Nacos 选择） | 自定义日志监控 | Spring Boot Actuator 仅 Health |
 |---------|--------------------------------------|---------------|-------------------------------|
@@ -1270,6 +1292,8 @@ public static String getPlatform(DataSource ds) {
 2. **适配器模式（Adapter）**：`DatasourcePlatformUtil.getPlatform()` 将 JDBC `DatabaseMetaData.getDatabaseProductName()` 的原始返回值适配为 Nacos 内部平台标识（`"derby"`/`"mysql"`）。
 
 ### 6.12.5 Trade-off 分析
+
+**表 6.12：工具类静态方法 vs Spring Bean trade-off**
 
 | 权衡维度 | 工具类静态方法（Nacos 选择） | Spring Bean 实例方法 |
 |---------|-----------------------------|-------------------|
