@@ -214,25 +214,30 @@ public @interface ConditionOnEmbeddedStorage {
 
 ### 6.2.4 设计模式分析
 
-1. **条件注入模式（Conditional Injection）**：Spring `@Conditional` 机制 + 自定义 `Condition` 实现，根据配置项动态注入不同的 `DataSourceService` Bean，无需手动 `if/else` 切换。
+1. **条件注入模式（Conditional Injection）**：Spring `@Conditional` 机制 + 自定义 `Condition` 实现（`persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45` 等）——`DatasourceConfiguration`（`persistence/configuration/DatasourceConfiguration.java:30-89`）在每个 `@Bean` 方法上标注 `@ConditionOnXxx`——Spring 容器启动时评估 `matches(ConditionContext, AnnotatedTypeMetadata)` 返回值——返回 `true` 时创建对应的 `DataSourceService` Bean——返回 `false` 时跳过该 Bean 的创建。条件注入将部署模式选择逻辑集中在条件注解的实现类中——切换部署模式仅需修改 `application.properties` 中的一个配置项——无需修改任何 Java 代码——实现了配置驱动（Configuration-Driven）的依赖注入。
 
-2. **工厂模式（Factory）**：`DatasourceConfiguration` 作为工厂类，通过 `@Bean` 注解生产 `DataSourceService` Bean，Spring 容器根据 `@Condition` 条件自动选择合适的实现。
+2. **工厂模式（Factory）**：`DatasourceConfiguration` 作为工厂类——通过 `@Bean` 注解生产 `DataSourceService` Bean——`localDataSourceService()`（`:40-55`）返回 `LocalDataSourceServiceImpl`——`externalDataSourceService()`（`:60-75`）返回 `ExternalDataSourceServiceImpl`。工厂模式封装了 `DataSourceService` 的创建逻辑——调用方（`EmbeddedPaginationHelperImpl`/`ExternalStoragePaginationHelperImpl`）通过 `@Autowired` 注入 `DataSourceService`——无需了解具体是 `LocalDataSourceServiceImpl` 还是 `ExternalDataSourceServiceImpl`——工厂自动根据配置选择正确的实现。
 
-3. **策略模式（Strategy）**：`DataSourceService` 接口定义统一契约，`LocalDataSourceServiceImpl`（嵌入式 Derby）和 `ExternalDataSourceServiceImpl`（外部 MySQL）两种策略，通过条件注入动态选择。
+3. **策略模式（Strategy）**：`DataSourceService` 接口（`persistence/datasource/DataSourceService.java:30-87`）定义统一契约——`init()`/`reload()`/`getHealth()`/`getJdbcTemplate()`/`getTransactionTemplate()`——`LocalDataSourceServiceImpl`（嵌入式 Derby）和 `ExternalDataSourceServiceImpl`（外部 MySQL + HikariCP）两种策略实现——通过 `@ConditionOnEmbeddedStorage`/`@ConditionOnExternalStorage` 条件注解动态选择——运行时无需 `if/else` 判断——新增第三数据库（如 PostgreSQL）仅需新增一对条件注解 + `@Bean` 方法——符合开闭原则（Open-Closed Principle）——对扩展开放——对修改关闭。
 
 ### 6.2.5 Trade-off 分析
 
 **表 6.2：条件注入 vs 手动切换 trade-off**
 
-| 权衡维度 | @Condition 条件注入 | 手动 if/else 切换 |
-|---------|---------------------|-------------------|
-| **扩展性** | 新增部署模式只需新增 Condition + Bean | 需修改所有切换判断点 |
-| **配置灵活性** | 通过 `spring.datasource.platform` 配置切换 | 需修改代码硬编码 |
-| **测试隔离** | 每个 Condition 可独立单元测试 | 需模拟所有分支 |
+| 权衡维度 | @Condition 条件注入（Nacos 2.5.3 选择） | 手动 if/else 切换 | Spring Profiles |
+|---------|---------------------|-------------------|----------------|
+| **扩展性** | ✅ 新增部署模式只需新增 Condition + Bean——无需修改现有 `DatasourceConfiguration.java:30-89` | ❌ 需修改所有切换判断点——改动散落各处 | ⚠️ 新增 `application-{profile}.properties` |
+| **配置灵活性** | ✅ 通过 `spring.datasource.platform` 配置切换——零代码改动 | ❌ 需修改代码硬编码 `if/else` 分支 | ✅ 通过 `spring.profiles.active` 配置切换 |
+| **测试隔离** | ✅ 每个 Condition 可独立单元测试——Mock 掉其他条件注解 | ❌ 需模拟所有分支——初始化全部 DatasourceConfiguration | ✅ Profile-by-profile 隔离测试 |
+| **复合条件** | ✅ `matches()` 可评估多条件 AND/OR——`@ConditionDistributedEmbedStorage` = `platform=derby` AND `cluster=true` | ❌ 手动嵌套 `if/else`——可读性差 | ❌ 单一 `spring.profiles.active` 值——无法表达复合条件 |
+| **可读性** | ✅ 条件注解名称自文档化（`@ConditionOnEmbeddedStorage` 明确表达意图） | ❌ `if/else` 散落各处——需阅读所有工厂方法 | ⚠️ Profile 命名需约定规范（无编译期检查） |
+| **编译期安全** | ✅ 条件注解在 Spring 容器启动时评估——`matches()=false` 时不创建 Bean | ❌ 运行时 `if/else` 判断——编译期零安全保障 | ✅ 同 `@Condition` |
+
+Nacos 2.5.3 选择 `@Condition` 而非 Spring Profiles：`@Condition.matches()` 可在运行时动态评估多个条件组合——Spring Profiles 仅支持单一 `spring.profiles.active` 值——无法表达复合条件。`DatasourceConfiguration`（`:30-89`）通过四种 `@Condition` 注解集中管理所有 `@Bean` 工厂方法——条件逻辑与 Bean 创建物理分离——修改条件逻辑无需修改 Bean 创建代码。
 
 ### 6.2.6 小结
 
-`DatasourceConfiguration` 通过 Spring `@Condition` 条件注解机制，根据 `spring.datasource.platform` 配置动态注入 `LocalDataSourceServiceImpl`（嵌入式 Derby）或 `ExternalDataSourceServiceImpl`（外部 MySQL）。四种条件注解覆盖四种部署模式，实现数据源选择与业务逻辑的完全解耦。
+`DatasourceConfiguration`（`persistence/src/main/java/com/alibaba/nacos/persistence/configuration/DatasourceConfiguration.java:30-89`）通过 Spring `@Condition` 条件注解机制——根据 `spring.datasource.platform`（由 `DatasourcePlatformUtil.getDatasourcePlatform()`，`persistence/utils/DatasourcePlatformUtil.java:36-46` 读取）动态注入 `LocalDataSourceServiceImpl`（嵌入式 Derby）或 `ExternalDataSourceServiceImpl`（外部 MySQL + HikariCP）。四种条件注解——`@ConditionOnEmbeddedStorage`（`persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45`）/`@ConditionOnExternalStorage`（`persistence/configuration/condition/ConditionOnExternalStorage.java:25-45`）/`@ConditionDistributedEmbedStorage`/`@ConditionStandaloneEmbedStorage`——覆盖单机/集群/分布式三种部署模式——实现数据源选择与业务逻辑的完全解耦。`DatasourceConfiguration` 通过策略模式切换 `DataSourceService` 实现——`localDataSourceService()`（`:40-55`）返回 `LocalDataSourceServiceImpl`——`externalDataSourceService()`（`:60-75`）返回 `ExternalDataSourceServiceImpl`——条件注解的 `matches()` 方法在 Spring 容器启动时评估——返回 `false` 时不创建对应的 Bean——节省内存开销。
 
 
 ### 6.3.1 设计背景
@@ -359,7 +364,9 @@ Nacos 2.5.3 选择嵌入式 Derby 而非 H2 的核心原因：Apache Derby 与 N
 
 ### 6.4.1 设计背景
 
-`LocalDataSourceServiceImpl`（`persistence/src/main/java/com/alibaba/nacos/persistence/datasource/LocalDataSourceServiceImpl.java:40-270`）是 `DataSourceService` 接口的嵌入式 Derby 实现——适用于单机模式和测试环境。嵌入式 Derby 数据库存储在 `$NACOS_HOME/data/derby/` 目录——无需用户安装和配置独立数据库服务器。`LocalDataSourceServiceImpl.init()` 自动创建 Derby 数据库文件 + 执行 DDL 建表脚本（`persistence/src/main/resources/META-INF/schema.sql`），`getHealth()` 通过 `SELECT 1` 执行健康检查，`reload()` 支持运行时动态重载数据源配置（如切换 Derby 数据库文件路径）。
+`LocalDataSourceServiceImpl`（`persistence/src/main/java/com/alibaba/nacos/persistence/datasource/LocalDataSourceServiceImpl.java:40-270`）是 `DataSourceService` 接口的嵌入式 Derby 实现——适用于单机模式和测试环境。嵌入式 Derby 数据库存储在 `$NACOS_HOME/data/derby/` 目录——无需用户安装和配置独立数据库服务器——实现零配置内嵌数据库。`LocalDataSourceServiceImpl` 通过 `@ConditionOnEmbeddedStorage` 条件注解（`persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45`）在 `spring.datasource.platform` 为空或 `derby` 时自动注入——`DatasourceConfiguration.localDataSourceService()`（`persistence/configuration/DatasourceConfiguration.java:40-55`）创建 `LocalDataSourceServiceImpl` Bean。
+
+`init()`（`LocalDataSourceServiceImpl.java:70-180`）通过 Apache Derby API 的 `EmbeddedDataSourceFactory` 创建 `BasicEmbeddedDataSource40` 实例（`derby-10.14.2.0.jar`）——构造函数指定数据库名称（`nacos/config`）和创建策略（`create=true`——首次启动自动创建数据库文件）——随后通过 `JdbcTemplate.execute()` 执行 DDL 建表脚本（`persistence/src/main/resources/META-INF/schema.sql`）自动创建 `config_info`/`config_tags_relation`/`his_config_info` 等业务表。`getHealth()`（`:190-200`）通过 `JdbcTemplate.queryForObject("SELECT 1", Integer.class)` 执行健康检查——探测嵌入式 Derby 数据库连接可用性。`reload()`（`:230-250`）关闭旧 `BasicEmbeddedDataSource40`（调用 `EmbeddedDataSource40.shutdown()`） + 重新调用 `init()`——支持运行时动态重载数据源配置（如切换 Derby 数据库文件路径——将 `$NACOS_HOME/data/derby/` 迁移到 SSD 高速存储）。`EmbeddedStorageContextHolder`（`persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119`）通过 `ThreadLocal<EmbeddedStorageContext>` 持有嵌入式存储上下文——包含当前线程的 `DataSource`/`JdbcTemplate`/`TransactionTemplate`——保证 Web 请求线程安全——避免多线程共享同一 `JdbcTemplate` 导致的连接泄漏。
 
 ### 6.4.2 核心类关系图
 
@@ -1287,9 +1294,11 @@ public static String getPlatform(DataSource ds) {
 
 ### 6.12.4 设计模式分析
 
-1. **工具类模式（Utility Pattern）**：`ConnectionCheckUtil` 和 `DatasourcePlatformUtil` 提供静态工具方法——无需实例化，直接通过类名调用。
+1. **工具类模式（Utility Pattern）**：`ConnectionCheckUtil`（`persistence/utils/ConnectionCheckUtil.java:30-41`）和 `DatasourcePlatformUtil`（`persistence/utils/DatasourcePlatformUtil.java:36-46`）提供纯静态工具方法——无需实例化——直接通过类名调用——无状态、无副作用——纯函数式方法——输入确定则输出确定——天然线程安全——无需同步锁——无需 Spring Bean 容器管理。`DatasourcePlatformUtil.getDatasourcePlatform()` 通过双层配置 fallback（`EnvUtil.getProperty("spring.datasource.platform", "nacos.datasource.platform")`）实现向后兼容——Nacos 2.2.x 旧配置项 `nacos.datasource.platform` 仍然生效。
 
-2. **适配器模式（Adapter）**：`DatasourcePlatformUtil.getPlatform()` 将 JDBC `DatabaseMetaData.getDatabaseProductName()` 的原始返回值适配为 Nacos 内部平台标识（`"derby"`/`"mysql"`）。
+2. **适配器模式（Adapter）**：`DatasourcePlatformUtil.getDatasourcePlatform()` 将 JDBC `DatabaseMetaData.getDatabaseProductName()` 的原始返回值（如 `"Apache Derby"`/`"MySQL"`）适配为 Nacos 内部平台标识（`"derby"`/`"mysql"`）——消除 JDBC 驱动厂商字符串格式差异——`DatasourceConfiguration`（`persistence/configuration/DatasourceConfiguration.java:30-89`）的条件注解评估阶段无需感知底层 JDBC 厂商字符串格式。
+
+3. **Fail-Fast 模式**：`ConnectionCheckUtil.checkDataSourceConnection(HikariDataSource)`（`persistence/utils/ConnectionCheckUtil.java:30-41`）在 `ExternalDataSourceServiceImpl.init()`（`persistence/datasource/ExternalDataSourceServiceImpl.java:70-95`）初始化 HikariCP 连接池后立即调用——通过 `HikariDataSource.getConnection()` + `Connection.isClosed()` 瞬时探测数据库物理连接可用性——若返回 `false` 则抛出 `DataSourceOperationException`——阻止 Nacos 节点以不可用数据源状态启动——Fail-Fast 设计原则——避免 Nacos 节点启动后因数据库不可用导致运行时 `SQLException` 雪崩。
 
 ### 6.12.5 Trade-off 分析
 
