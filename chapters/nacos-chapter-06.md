@@ -347,6 +347,10 @@ Nacos 2.5.3 选择嵌入式 Derby 而非 H2 的核心原因：Apache Derby 与 N
 
 嵌入式 Derby 的优势：零运维（无需独立数据库服务器）、零配置（开箱即用）、适合中小规模集群（<10 节点）。劣势：不支持高并发读写（单连接写入）、数据迁移困难（需通过 `DerbyImportEvent`/`DerbyLoadEvent` 导入导出）。
 
+### 6.4.1 设计背景
+
+`LocalDataSourceServiceImpl`（`persistence/src/main/java/com/alibaba/nacos/persistence/datasource/LocalDataSourceServiceImpl.java:40-270`）是 `DataSourceService` 接口的嵌入式 Derby 实现——适用于单机模式和测试环境。嵌入式 Derby 数据库存储在 `$NACOS_HOME/data/derby/` 目录——无需用户安装和配置独立数据库服务器。`LocalDataSourceServiceImpl.init()` 自动创建 Derby 数据库文件 + 执行 DDL 建表脚本（`persistence/src/main/resources/META-INF/schema.sql`），`getHealth()` 通过 `SELECT 1` 执行健康检查，`reload()` 支持运行时动态重载数据源配置（如切换 Derby 数据库文件路径）。
+
 ### 6.4.2 核心类关系图
 
 图 6-4 展示了 `LocalDataSourceServiceImpl` 的嵌入式 Derby 初始化流程：
@@ -561,7 +565,7 @@ public class ExternalDataSourceServiceImpl implements DataSourceService {
 
 | 权衡维度 | HikariCP 连接池（Nacos 选择） | 单连接 DriverManager | DBCP2 连接池 |
 |---------|-----------------------------|--------------------|--------------|
-| **并发能力** | ✅ 多连接并发读写——`maximumPoolSize=20` 可并行处理 20 个 SQL 操作 | ❌ 单连接串行——所有 SQL 排队等待唯一连接 | ✅ 多连接并发——类似 HikariCP |
+| **并发能力** | ✅ 多连接并发读写——`maximumPoolSize=20` 可并行处理 20 个 SQL 操作 | ❌ 单连接串行——所有 SQL 排队等待唯一连接 | ✅ 多连接并发——连接池复用——DBCP2 性能约 1.5x 耗时 vs HikariCP |
 | **连接复用** | ✅ 连接池复用——避免 TCP 三次握手 + MySQL 认证开销（~10ms/次） | ❌ 每次新建连接——TCP 三次握手 + MySQL 认证开销 | ✅ 连接池复用 |
 | **连接超时** | `connectionTimeout=30,000ms`——超时抛 `CannotGetJdbcConnectionException`（`ExternalDataSourceServiceImpl.java:85-90`）| 无超时控制——可能无限等待 TCP 连接 | `maxWaitMillis` 默认无限制 |
 | **空闲回收** | `idleTimeout=600000ms`——空闲 10 分钟自动回收连接 + `minimumIdle=10` 保持最小空闲连接数 | 无自动回收——需手动关闭连接 | `timeBetweenEvictionRunsMillis` + `minEvictableIdleTimeMillis` |
