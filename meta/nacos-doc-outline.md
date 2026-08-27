@@ -155,123 +155,123 @@
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 6.1 | 插件体系概览：6 种插件类型 + Java SPI 机制基础 | 5,000 |
-| 6.2 | AuthPluginService 接口设计：6 个核心方法详解 | 5,000 |
-| 6.3 | NacosAuthPluginService：BCrypt 密码加密 + JWT Token 生成/验证 | 8,000 |
-| 6.4 | RBAC 权限模型：User/Role/Permission 三实体 + SQL 表结构 | 8,000 |
-| 6.5 | AuthFilter 认证过滤器链完整源码走读 | 8,000 |
-| 6.6 | DataSourcePlugin：MySQL vs Derby 切换机制 + HikariCP 配置 | 6,000 |
-| 6.7 | EncryptionPluginService：AES/GCM/NoPadding 加密 + SecretKey 生成 | 6,000 |
-| 6.8 | TracePlugin + EnvironmentPlugin + ControlManagerPlugin | 5,000 |
-| 6.9 | 自定义插件开发完整指南：5 步从零到部署（Maven→SPI→打包→部署→验证） | 8,000 |
-| 6.10 | 插件热加载机制（Nacos 2.2.3 支持情况 + 未来 3.x 规划） | 4,000 |
+| 8.1 | 插件体系概览：6 种插件类型 + Java SPI 机制基础 | 5,000 |
+| 8.2 | AuthPluginService 接口设计：6 个核心方法详解 | 5,000 |
+| 8.3 | NacosAuthPluginService：BCrypt 密码加密 + JWT Token 生成/验证 | 8,000 |
+| 8.4 | RBAC 权限模型：User/Role/Permission 三实体 + SQL 表结构 | 8,000 |
+| 8.5 | AuthFilter 认证过滤器链完整源码走读 | 8,000 |
+| 8.6 | DataSourcePlugin：MySQL vs Derby 切换机制 + HikariCP 配置 | 6,000 |
+| 8.7 | EncryptionPluginService：AES/GCM/NoPadding 加密 + SecretKey 生成 | 6,000 |
+| 8.8 | TracePlugin + EnvironmentPlugin + ControlManagerPlugin | 5,000 |
+| 8.9 | 自定义插件开发完整指南：5 步从零到部署（Maven→SPI→打包→部署→验证） | 8,000 |
+| 8.10 | 插件热加载机制（Nacos 2.2.3 支持情况 + 未来 3.x 规划） | 4,000 |
 
 ### 第 9 章：全量配置项详解（~120,000 字）
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 16.1 | Spring Boot 基础配置（port / contextPath / include-message / tomcat） | 5,000 |
-| 16.2 | 网络相关配置（prefer-hostname-over-ip / inetutils.ip-address） | 4,000 |
-| 16.3 | Config 模块——数据源配置（platform / num / url / user / password） | 6,000 |
-| 16.4 | Config 模块——持久化配置（history / history.max.size / max.content.size / max.config.count） | 6,000 |
-| 16.5 | Config 模块——长轮询配置（timeout / thread.core / thread.max / batch.size） | 8,000 |
-| 16.6 | Config 模块——配置加密（encrypt.data.key / enabled） | 5,000 |
-| 16.7 | Config 模块——Dump 配置（enabled / interval / dir） | 5,000 |
-| 16.8 | Config 模块——性能配置（query.timeout / notify.batch.size / cache） | 6,000 |
-| 16.9 | Naming 模块——健康检查配置（heartbeat / timeout / expire / health.check.*） | 8,000 |
-| 16.10 | Naming 模块——防雪崩保护配置（protect.enabled / threshold） | 5,000 |
-| 16.11 | Naming 模块——Distro 协议配置（sync / verify / batch / full.sync / retry / timeout） | 8,000 |
-| 16.12 | Naming 模块——元数据配置（metadata.max.size / instance.metadata.max.size） | 4,000 |
-| 16.13 | Naming 模块——注册表配置（max.service / instance.count / snapshot） | 5,000 |
-| 16.14 | Core 模块——集群管理配置（member.lookup / lookup.address / fail.timeout / heartbeat / sync） | 8,000 |
-| 16.15 | Core 模块——gRPC 通信配置（port.offset / sdk.* / cluster.*） | 8,000 |
-| 16.16 | Core 模块——连接管理配置（max.connection / idle.timeout / clean.period / push.*） | 6,000 |
-| 16.17 | 鉴权安全配置（enabled / system.type / token.secret.key / token.expire.seconds） | 6,000 |
-| 16.18 | Istio 集成配置（enabled / mcp.server.addr / sync.period / domain.suffix） | 4,000 |
-| 16.19 | 监控与 Metrics 配置（prometheus / jmx / elasticsearch / access.log / slow.sql） | 6,000 |
-| 16.20 | 日志配置（logback.xml 完整配置：5 个 appender + 4 个 logger） | 6,000 |
-| 16.21 | logger-adapter-impl 日志适配器模块（2.5.3 新增）：Log4j2NacosLoggingAdapter + LogbackNacosLoggingAdapter + NacosClientPropertiesLookup + 动态日志级别热切换 | 5,000 |
+| 9.1 | Spring Boot 基础配置（port / contextPath / include-message / tomcat） | 5,000 |
+| 9.2 | 网络相关配置（prefer-hostname-over-ip / inetutils.ip-address） | 4,000 |
+| 9.3 | Config 模块——数据源配置（platform / num / url / user / password） | 6,000 |
+| 9.4 | Config 模块——持久化配置（history / history.max.size / max.content.size / max.config.count） | 6,000 |
+| 9.5 | Config 模块——长轮询配置（timeout / thread.core / thread.max / batch.size） | 8,000 |
+| 9.6 | Config 模块——配置加密（encrypt.data.key / enabled） | 5,000 |
+| 9.7 | Config 模块——Dump 配置（enabled / interval / dir） | 5,000 |
+| 9.8 | Config 模块——性能配置（query.timeout / notify.batch.size / cache） | 6,000 |
+| 9.9 | Naming 模块——健康检查配置（heartbeat / timeout / expire / health.check.*） | 8,000 |
+| 9.10 | Naming 模块——防雪崩保护配置（protect.enabled / threshold） | 5,000 |
+| 9.11 | Naming 模块——Distro 协议配置（sync / verify / batch / full.sync / retry / timeout） | 8,000 |
+| 9.12 | Naming 模块——元数据配置（metadata.max.size / instance.metadata.max.size） | 4,000 |
+| 9.13 | Naming 模块——注册表配置（max.service / instance.count / snapshot） | 5,000 |
+| 9.14 | Core 模块——集群管理配置（member.lookup / lookup.address / fail.timeout / heartbeat / sync） | 8,000 |
+| 9.15 | Core 模块——gRPC 通信配置（port.offset / sdk.* / cluster.*） | 8,000 |
+| 9.16 | Core 模块——连接管理配置（max.connection / idle.timeout / clean.period / push.*） | 6,000 |
+| 9.17 | 鉴权安全配置（enabled / system.type / token.secret.key / token.expire.seconds） | 6,000 |
+| 9.18 | Istio 集成配置（enabled / mcp.server.addr / sync.period / domain.suffix） | 4,000 |
+| 9.19 | 监控与 Metrics 配置（prometheus / jmx / elasticsearch / access.log / slow.sql） | 6,000 |
+| 9.20 | 日志配置（logback.xml 完整配置：5 个 appender + 4 个 logger） | 6,000 |
+| 9.21 | logger-adapter-impl 日志适配器模块（2.5.3 新增）：Log4j2NacosLoggingAdapter + LogbackNacosLoggingAdapter + NacosClientPropertiesLookup + 动态日志级别热切换 | 5,000 |
 
 ### 第 10 章：生产环境部署架构（~75,000 字）
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 16.1 | 部署模式全景：单机 / 集群 / K8s 三种模式对比矩阵 | 5,000 |
-| 16.2 | 单机模式部署：startup.sh -m standalone + Derby 嵌入式数据库 | 5,000 |
-| 16.3 | 3 节点集群架构图 + 完整部署 4 步骤（MySQL 初始化→cluster.conf→application.properties→启动验证） | 10,000 |
-| 16.4 | Nginx 负载均衡配置：HTTP upstream + gRPC TCP stream 代理 | 8,000 |
-| 16.5 | 5 节点集群架构：3 Raft + 2 Learner 节点的读写分离优势 | 8,000 |
-| 16.6 | Kubernetes StatefulSet 完整 YAML（Headless Service + PodAntiAffinity + PVC） | 10,000 |
-| 16.7 | K8s 部署常用命令（apply / get / logs / scale / rollout / port-forward） | 5,000 |
-| 16.8 | 多数据中心双活架构：GeoDNS + MySQL 异步复制 + 命名空间前缀隔离 | 8,000 |
-| 16.9 | MySQL 主从复制 + 读写分离中间件（ShardingSphere-proxy / ProxySQL） | 6,000 |
-| 16.10 | OS 级优化：sysctl.conf（file-max / tcp_tw_reuse / keepalive / rmem / wmem） | 6,000 |
-| 16.11 | 文件描述符限制：limits.conf（soft / hard nofile / nproc） | 4,000 |
+| 10.1 | 部署模式全景：单机 / 集群 / K8s 三种模式对比矩阵 | 5,000 |
+| 10.2 | 单机模式部署：startup.sh -m standalone + Derby 嵌入式数据库 | 5,000 |
+| 10.3 | 3 节点集群架构图 + 完整部署 4 步骤（MySQL 初始化→cluster.conf→application.properties→启动验证） | 10,000 |
+| 10.4 | Nginx 负载均衡配置：HTTP upstream + gRPC TCP stream 代理 | 8,000 |
+| 10.5 | 5 节点集群架构：3 Raft + 2 Learner 节点的读写分离优势 | 8,000 |
+| 10.6 | Kubernetes StatefulSet 完整 YAML（Headless Service + PodAntiAffinity + PVC） | 10,000 |
+| 10.7 | K8s 部署常用命令（apply / get / logs / scale / rollout / port-forward） | 5,000 |
+| 10.8 | 多数据中心双活架构：GeoDNS + MySQL 异步复制 + 命名空间前缀隔离 | 8,000 |
+| 10.9 | MySQL 主从复制 + 读写分离中间件（ShardingSphere-proxy / ProxySQL） | 6,000 |
+| 10.10 | OS 级优化：sysctl.conf（file-max / tcp_tw_reuse / keepalive / rmem / wmem） | 6,000 |
+| 10.11 | 文件描述符限制：limits.conf（soft / hard nofile / nproc） | 4,000 |
 
 ### 第 11 章：高可用架构设计（~65,000 字）
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 16.1 | CAP 理论在 Nacos 中的实践：AP vs CP 属性对比表 | 6,000 |
-| 16.2 | AP vs CP 模式选择决策树（需要持久化？→CP / 高频心跳？→AP） | 6,000 |
-| 16.3 | 集群脑裂场景分析：网络分区导致双 Leader 的完整时序图 | 8,000 |
-| 16.4 | Raft Pre-Vote 防脑裂机制：3 层检查（term / Leader 存活 / 日志最新） | 8,000 |
-| 16.5 | 脑裂恢复 3 阶段策略：检测→仲裁→数据合并 | 6,000 |
-| 16.6 | 异地三中心多活架构：同城灾备 + 异地灾备 + MySQL 半同步复制 | 8,000 |
-| 16.7 | 流量切换策略：单节点故障 <30s / 中心 A 故障 <5min / 双中心故障 <10min | 5,000 |
-| 16.8 | MySQL 半同步复制配置：rpl_semi_sync_master + slave 完整 SQL | 6,000 |
-| 16.9 | 优雅停机流程：从 LB 摘除→等待连接→shutdown.sh→kill -15 | 6,000 |
-| 16.10 | 滚动重启流程：逐个节点摘除→停机→启动→验证→恢复 LB | 6,000 |
+| 11.1 | CAP 理论在 Nacos 中的实践：AP vs CP 属性对比表 | 6,000 |
+| 11.2 | AP vs CP 模式选择决策树（需要持久化？→CP / 高频心跳？→AP） | 6,000 |
+| 11.3 | 集群脑裂场景分析：网络分区导致双 Leader 的完整时序图 | 8,000 |
+| 11.4 | Raft Pre-Vote 防脑裂机制：3 层检查（term / Leader 存活 / 日志最新） | 8,000 |
+| 11.5 | 脑裂恢复 3 阶段策略：检测→仲裁→数据合并 | 6,000 |
+| 11.6 | 异地三中心多活架构：同城灾备 + 异地灾备 + MySQL 半同步复制 | 8,000 |
+| 11.7 | 流量切换策略：单节点故障 <30s / 中心 A 故障 <5min / 双中心故障 <10min | 5,000 |
+| 11.8 | MySQL 半同步复制配置：rpl_semi_sync_master + slave 完整 SQL | 6,000 |
+| 11.9 | 优雅停机流程：从 LB 摘除→等待连接→shutdown.sh→kill -15 | 6,000 |
+| 11.10 | 滚动重启流程：逐个节点摘除→停机→启动→验证→恢复 LB | 6,000 |
 
 ### 第 12 章：性能调优深度分析（~85,000 字）
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 16.1 | JVM 堆内存配置指南：小型/中型/大型集群的 -Xms / -Xmx / -Xmn 推荐 | 6,000 |
-| 16.2 | GC 策略选择：G1GC 完整参数详解（G1HeapRegionSize / G1ReservePercent / InitiatingHeapOccupancyPercent） | 8,000 |
-| 16.3 | GC 调优目标参考表（Young GC 频率 / 暂停时间 / Full GC 频率 / 堆使用率 / 晋升速率） | 6,000 |
-| 16.4 | GC 日志配置：-Xloggc + PrintGCDetails + PrintGCApplicationStoppedTime | 5,000 |
-| 16.5 | 线程栈大小优化：-Xss512k vs -Xss256k 内存占用计算 | 5,000 |
-| 16.6 | gRPC 线程池优化：server.sdk + server.cluster 的 core / max size | 6,000 |
-| 16.7 | 推送线程池 + 队列容量优化：push.thread.count + push.queue.capacity | 6,000 |
-| 16.8 | 健康检查参数优化：heartbeat.timeout / interval + expire.time | 6,000 |
-| 16.9 | 防雪崩保护阈值优化：protect.threshold 从默认 0.5 调整到 0.3 | 5,000 |
-| 16.10 | MySQL 连接池优化：HikariCP 完整参数（maximumPoolSize / minimumIdle / connectionTimeout / leakDetectionThreshold） | 6,000 |
-| 16.11 | MySQL 连接数规划表（3/5/7 节点对应的 max_connections + innodb_buffer_pool_size） | 6,000 |
-| 16.12 | 压测工具选择对比：JMH / JMeter / gRPC sampler 适用场景 | 5,000 |
-| 16.13 | JMeter 压测配置完整 XML：ThreadGroup + HTTPSampler 配置示例 | 8,000 |
-| 16.14 | Nacos 2.2.3 官方性能基线表（3/5 节点集群的 TPS / QPS / 延迟） | 6,000 |
-| 16.15 | OS 内核参数优化：sysctl.conf 完整配置（TCP / Socket / 端口范围） | 6,000 |
+| 12.1 | JVM 堆内存配置指南：小型/中型/大型集群的 -Xms / -Xmx / -Xmn 推荐 | 6,000 |
+| 12.2 | GC 策略选择：G1GC 完整参数详解（G1HeapRegionSize / G1ReservePercent / InitiatingHeapOccupancyPercent） | 8,000 |
+| 12.3 | GC 调优目标参考表（Young GC 频率 / 暂停时间 / Full GC 频率 / 堆使用率 / 晋升速率） | 6,000 |
+| 12.4 | GC 日志配置：-Xloggc + PrintGCDetails + PrintGCApplicationStoppedTime | 5,000 |
+| 12.5 | 线程栈大小优化：-Xss512k vs -Xss256k 内存占用计算 | 5,000 |
+| 12.6 | gRPC 线程池优化：server.sdk + server.cluster 的 core / max size | 6,000 |
+| 12.7 | 推送线程池 + 队列容量优化：push.thread.count + push.queue.capacity | 6,000 |
+| 12.8 | 健康检查参数优化：heartbeat.timeout / interval + expire.time | 6,000 |
+| 12.9 | 防雪崩保护阈值优化：protect.threshold 从默认 0.5 调整到 0.3 | 5,000 |
+| 12.10 | MySQL 连接池优化：HikariCP 完整参数（maximumPoolSize / minimumIdle / connectionTimeout / leakDetectionThreshold） | 6,000 |
+| 12.11 | MySQL 连接数规划表（3/5/7 节点对应的 max_connections + innodb_buffer_pool_size） | 6,000 |
+| 12.12 | 压测工具选择对比：JMH / JMeter / gRPC sampler 适用场景 | 5,000 |
+| 12.13 | JMeter 压测配置完整 XML：ThreadGroup + HTTPSampler 配置示例 | 8,000 |
+| 12.14 | Nacos 2.2.3 官方性能基线表（3/5 节点集群的 TPS / QPS / 延迟） | 6,000 |
+| 12.15 | OS 内核参数优化：sysctl.conf 完整配置（TCP / Socket / 端口范围） | 6,000 |
 
 ### 第 13 章：监控运维（~64,000 字）
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 16.1 | Prometheus Metrics 导出配置 + 访问 http://nacos:9999/metrics | 5,000 |
-| 16.2 | 核心 Prometheus 指标表：11 个关键指标的名称 / 类型 / 说明 / 告警阈值 | 8,000 |
-| 16.3 | Grafana Dashboard 推荐面板 JSON（5 个核心面板：连接数 / 服务数 / 配置速率 / JVM 堆 / GC 暂停） | 8,000 |
-| 16.4 | Prometheus AlertManager 告警规则：5 条核心告警（高连接 / 节点 Down / Distro 失败 / JVM 内存 / FullGC） | 8,000 |
-| 16.5 | 日志分析：5 种日志文件详解（nacos-cluster.log / naming-server.log / config-server.log / remote-server.log / access.log） | 8,000 |
-| 16.6 | 日志滚动策略：TimeBasedRollingPolicy（maxHistory + totalSizeCap） | 5,000 |
-| 16.7 | 日常运维巡检清单：7 项必检项（集群状态 / 连接数 / JVM 内存 / DB 连接池 / 磁盘 / Raft 日志 / 错误日志） | 8,000 |
-| 16.8 | 日常运维命令速查表：curl API + grep 日志 + jstack/jmap + async-profiler | 8,000 |
-| 16.9 | 定期运维任务：数据清理（历史配置 / 过期实例）+ 日志轮转 + Raft Snapshot | 6,000 |
+| 13.1 | Prometheus Metrics 导出配置 + 访问 http://nacos:9999/metrics | 5,000 |
+| 13.2 | 核心 Prometheus 指标表：11 个关键指标的名称 / 类型 / 说明 / 告警阈值 | 8,000 |
+| 13.3 | Grafana Dashboard 推荐面板 JSON（5 个核心面板：连接数 / 服务数 / 配置速率 / JVM 堆 / GC 暂停） | 8,000 |
+| 13.4 | Prometheus AlertManager 告警规则：5 条核心告警（高连接 / 节点 Down / Distro 失败 / JVM 内存 / FullGC） | 8,000 |
+| 13.5 | 日志分析：5 种日志文件详解（nacos-cluster.log / naming-server.log / config-server.log / remote-server.log / access.log） | 8,000 |
+| 13.6 | 日志滚动策略：TimeBasedRollingPolicy（maxHistory + totalSizeCap） | 5,000 |
+| 13.7 | 日常运维巡检清单：7 项必检项（集群状态 / 连接数 / JVM 内存 / DB 连接池 / 磁盘 / Raft 日志 / 错误日志） | 8,000 |
+| 13.8 | 日常运维命令速查表：curl API + grep 日志 + jstack/jmap + async-profiler | 8,000 |
+| 13.9 | 定期运维任务：数据清理（历史配置 / 过期实例）+ 日志轮转 + Raft Snapshot | 6,000 |
 
 ### 第 14 章：故障排查指南（~80,000 字）
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 16.1 | 启动失败排查：6 种常见原因表 + 启动脚本诊断 6 步骤 | 8,000 |
-| 16.2 | UnknownHostException：地址服务器域名不可达的完整排查 + 3 种解决方案 | 6,000 |
-| 16.3 | 配置不生效排查：4 步排查流程图（控制台检查→客户端订阅→MD5 对比→长轮询超时） | 8,000 |
-| 16.4 | 长轮询超时排查：客户端增大 configLongPollTimeout + clientWorker 线程堆栈分析 | 6,000 |
-| 16.5 | 服务注册异常排查：4 步排查命令（curl 查实例→grep 心跳→curl 健康→手动注册测试） | 8,000 |
-| 16.6 | 客户端心跳排查：gRPC 长连接心跳链路源码走读 + 手动心跳检测代码 | 6,000 |
-| 16.7 | 集群脑裂排查：3 步检查命令（cluster/nodes→raft/leader→DistroVerify） | 8,000 |
-| 16.8 | 脑裂恢复步骤：3 种情况处理（少数派隔离 / 多数派有 Leader / 双 Leader） | 8,000 |
-| 16.9 | JVM 内存泄漏排查：jstat → jmap HeapDump → Eclipse MAT 分析 | 8,000 |
-| 16.10 | 常见内存泄漏场景表：gRPC 连接泄漏 / Distro 数据积压 / LongPolling OOM / 推送执行器 OOM（PushExecutorDelegate） | 6,000 |
-| 16.11 | CPU 飙高排查：top -H → jstack → async-profiler 火焰图 | 8,000 |
+| 14.1 | 启动失败排查：6 种常见原因表 + 启动脚本诊断 6 步骤 | 8,000 |
+| 14.2 | UnknownHostException：地址服务器域名不可达的完整排查 + 3 种解决方案 | 6,000 |
+| 14.3 | 配置不生效排查：4 步排查流程图（控制台检查→客户端订阅→MD5 对比→长轮询超时） | 8,000 |
+| 14.4 | 长轮询超时排查：客户端增大 configLongPollTimeout + clientWorker 线程堆栈分析 | 6,000 |
+| 14.5 | 服务注册异常排查：4 步排查命令（curl 查实例→grep 心跳→curl 健康→手动注册测试） | 8,000 |
+| 14.6 | 客户端心跳排查：gRPC 长连接心跳链路源码走读 + 手动心跳检测代码 | 6,000 |
+| 14.7 | 集群脑裂排查：3 步检查命令（cluster/nodes→raft/leader→DistroVerify） | 8,000 |
+| 14.8 | 脑裂恢复步骤：3 种情况处理（少数派隔离 / 多数派有 Leader / 双 Leader） | 8,000 |
+| 14.9 | JVM 内存泄漏排查：jstat → jmap HeapDump → Eclipse MAT 分析 | 8,000 |
+| 14.10 | 常见内存泄漏场景表：gRPC 连接泄漏 / Distro 数据积压 / LongPolling OOM / 推送执行器 OOM（PushExecutorDelegate） | 6,000 |
+| 14.11 | CPU 飙高排查：top -H → jstack → async-profiler 火焰图 | 8,000 |
 
 ---
 
@@ -281,16 +281,16 @@
 
 | 小节 | 内容 | 字数 |
 |------|------|------|
-| 16.1 | Maven 依赖配置：dependencyManagement + spring-cloud-starter-alibaba-nacos-config/discovery | 6,000 |
-| 16.2 | Bootstrap 配置：bootstrap.yml 完整示例（server-addr / namespace / group / file-extension / ephemeral） | 8,000 |
-| 16.3 | @RefreshScope 配置动态刷新：@Value + @RefreshScope 完整示例 | 6,000 |
-| 16.4 | @EnableDiscoveryClient 服务注册与发现：DiscoveryClient.getServices() + 实例列表 | 6,000 |
-| 16.5 | LoadBalanced RestTemplate 服务调用：@LoadBalanced + Ribbon 负载均衡 | 6,000 |
-| 16.6 | Nacos Config 多环境配置：spring.profiles.active + namespace 隔离（dev/test/prod） | 8,000 |
-| 16.7 | Sentinel 集成：@SentinelResource + fallback 熔断降级完整示例 | 8,000 |
-| 16.8 | Sentinel Dashboard 控制台规则配置（流控 / 降级 / 热点 / 系统规则） | 6,000 |
-| 16.9 | 版本对应关系表：Spring Cloud Alibaba ↔ Spring Cloud ↔ Spring Boot ↔ Nacos | 6,000 |
-| 16.10 | 常见集成问题排查：版本不匹配 / 配置不生效 / 服务发现失败 3 大问题 | 6,000 |
+| 15.1 | Maven 依赖配置：dependencyManagement + spring-cloud-starter-alibaba-nacos-config/discovery | 6,000 |
+| 15.2 | Bootstrap 配置：bootstrap.yml 完整示例（server-addr / namespace / group / file-extension / ephemeral） | 8,000 |
+| 15.3 | @RefreshScope 配置动态刷新：@Value + @RefreshScope 完整示例 | 6,000 |
+| 15.4 | @EnableDiscoveryClient 服务注册与发现：DiscoveryClient.getServices() + 实例列表 | 6,000 |
+| 15.5 | LoadBalanced RestTemplate 服务调用：@LoadBalanced + Ribbon 负载均衡 | 6,000 |
+| 15.6 | Nacos Config 多环境配置：spring.profiles.active + namespace 隔离（dev/test/prod） | 8,000 |
+| 15.7 | Sentinel 集成：@SentinelResource + fallback 熔断降级完整示例 | 8,000 |
+| 15.8 | Sentinel Dashboard 控制台规则配置（流控 / 降级 / 热点 / 系统规则） | 6,000 |
+| 15.9 | 版本对应关系表：Spring Cloud Alibaba ↔ Spring Cloud ↔ Spring Boot ↔ Nacos | 6,000 |
+| 15.10 | 常见集成问题排查：版本不匹配 / 配置不生效 / 服务发现失败 3 大问题 | 6,000 |
 
 ### 第 16 章：附录（~76,000 字）
 
