@@ -2486,3 +2486,376 @@ fi
 ### 小结
 
 自动化运维脚本包括：自动化巡检脚本（`nacos_health_check.sh`—7 项指标每小时执行）、历史配置清理脚本（`nacos_cleanup_history_config.sh`—每月执行、支持 dry-run 预览模式）、Raft Snapshot 检查脚本（`nacos_check_raft_snapshot.sh`—每周执行）。所有脚本集成告警通知（企业微信/Slack Webhook），确保运维异常及时通知运维团队。
+
+---
+
+## 13.1 深入：Prometheus 采集模式 Trade-off 分析
+
+### Pull vs Push 采集模式对比
+
+Prometheus 默认采用 Pull 模式（Server 主动拉取 Exporter 端点的指标数据），而 Nacos 内置的 `PrometheusController` 本质上是一种"准 Push 模式"——Nacos Server 在内存中维护实例注册表，Prometheus Server 通过 HTTP GET `/prometheus` 拉取当前的注册表快照。
+
+两种模式在 Nacos 场景下的适用性分析：
+
+| 维度 | Pull 模式（Prometheus Server 拉取） | Push 模式（Nacos SDK 主动推送指标） |
+|------|-------------------------------------|--------------------------------------|
+| **数据新鲜度** | 取决于 `scrape_interval`（默认 30s），最多延迟 30s | 实时推送，延迟 < 1s |
+| **Nacos Server 开销** | 每次拉取触发全量注册表遍历 O(N×S×I)，CPU 峰值高 | 无额外开销（SDK 自行上报） |
+| **网络带宽** | 每次拉取全量 JSON Array（100K 实例约 10-20MB） | 增量推送，仅变更实例元数据 |
+| **可靠性** | Pull 失败 → 缺失整 30s 窗口数据 | Push 失败 → 缺失单个实例变更事件 |
+| **多租户隔离** | 单端点 `/prometheus` 暴露所有命名空间实例，无隔离 | Nacos SDK 按命名空间上报，天然隔离 |
+
+**推荐策略**：
+- **小型集群（< 500 实例）**：Pull 模式即可，`scrape_interval=30s`，全量遍历开销可忽略
+- **中型集群（500-2000 实例）**：Pull 模式但调大 `scrape_interval=60s`，降低 CPU 峰值
+- **大型集群（2000+ 实例）**：考虑 Push 模式替代方案（SDK 自行上报指标到 Pushgateway），避免 Pull 模式的全量注册表遍历 CPU 峰值影响业务请求
+
+### PrometheusSecurityConfiguration 源码走读
+
+`prometheus/src/main/java/com/alibaba/nacos/prometheus/conf/PrometheusSecurityConfiguration.java` 控制 Prometheus 端点的安全配置：
+
+```java
+// PrometheusSecurityConfiguration.java:30-52 (Nacos 2.5.3)
+@Configuration
+public class PrometheusSecurityConfiguration {
+
+    @Value("${nacos.prometheus.metrics.enabled:false}")
+    private boolean prometheusMetricsEnabled;
+
+    @Bean
+    public FilterRegistrationBean<PrometheusAuthFilter> prometheusAuthFilter() {
+        FilterRegistrationBean<PrometheusAuthFilter> registration = new FilterRegistrationBean<>();
+        registration.setFilter(new PrometheusAuthFilter());
+        registration.addUrlPatterns("/prometheus/*");
+        registration.setOrder(1);
+        return registration;
+    }
+}
+```
+
+**安全控制链**：
+1. `nacos.prometheus.metrics.enabled=true` → 加载 `PrometheusSecurityConfiguration`
+2. `PrometheusAuthFilter` 拦截所有 `/prometheus/*` 请求
+3. 如果 `nacos.core.auth.enabled=true` → 验证请求中的 `accessToken` 参数
+4. 验证失败 → 返回 HTTP 401 Unauthorized
+
+**生产安全最佳实践**：
+- **内网部署**：如果 Prometheus Server 与 Nacos Server 在同一内网，可禁用 Prometheus 端点的认证（`nacos.prometheus.metrics.enabled=true` + `nacos.core.auth.enabled=false`），简化配置
+- **公网部署**：必须启用认证（`nacos.core.auth.enabled=true`），且 Prometheus Server 配置 `bearer_token` 在抓取请求中携带 AccessToken
+
+```yaml
+# prometheus.yml — 带认证的抓取配置
+scrape_configs:
+  - job_name: 'nacos'
+    bearer_token: 'eyJhbGciOiJIUzI1NiJ9...'
+    metrics_path: '/prometheus'
+    static_configs:
+      - targets: ['nacos-server:8848']
+```
+
+---
+
+## 13.2 深入：核心指标的 JMX MBean 路径映射
+
+### 11 个指标的 JMX MBean 精确路径
+
+每个 Prometheus 指标在 JVM 中的 JMX MBean 精确路径如下，用于配置 JMX Exporter 的 `rules`  pattern：
+
+| # | Prometheus 指标 | JMX MBean ObjectName | Attribute |
+|---|---------------|---------------------|-----------|
+| 1 | `naming_service_total` | `com.alibaba.nacos.naming:type=ServiceManager` | `ServiceCount` |
+| 2 | `naming_instance_total` | `com.alibaba.nacos.naming:type=ServiceManager` | `InstanceCount` |
+| 3 | `grpc_connections_total` | `com.alibaba.nacos.core:type=ConnectionManager` | `ConnectionCount` |
+| 4 | `grpc_push_cost_millis` | `com.alibaba.nacos.core:type=RpcPushService` | `PushCostHistogram` |
+| 5 | `config_publish_total` | `com.alibaba.nacos.config:type=ConfigCacheService` | `PublishCount` |
+| 6 | `config_get_total` | `com.alibaba.nacos.config:type=ConfigCacheService` | `GetCount` |
+| 7 | `config_listener_total` | `com.alibaba.nacos.config:type=LongPollingService` | `ListenerCount` |
+| 8 | `jvm_heap_used_bytes` | `java.lang:type=Memory` | `HeapMemoryUsage.used` |
+| 9 | `jvm_gc_pause_seconds` | `java.lang:type=GarbageCollector,name=*` | `CollectionTime` |
+| 10 | `jvm_threads_current` | `java.lang:type=Threading` | `ThreadCount` |
+| 11 | `naming_health_check_cost_millis` | `com.alibaba.nacos.naming:type=HealthCheck` | `CheckCostHistogram` |
+
+### JMX Exporter 完整配置
+
+基于以上 JMX MBean 路径，完整的 JMX Exporter 配置文件（`jmx_exporter.yml`）：
+
+```yaml
+startDelaySeconds: 0
+ssl: false
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+rules:
+  # Nacos Naming 指标
+  - pattern: 'com.alibaba.nacos.naming:type=ServiceManager'
+    name: naming_service_total
+    attrNameSnakeCase: true
+  - pattern: 'com.alibaba.nacos.core:type=ConnectionManager'
+    name: grpc_connections_total
+    attrNameSnakeCase: true
+  - pattern: 'com.alibaba.nacos.core:type=RpcPushService'
+    name: grpc_push_cost_millis
+    attrNameSnakeCase: true
+  # Nacos Config 指标
+  - pattern: 'com.alibaba.nacos.config:type=ConfigCacheService'
+    name: config_publish_total
+    attrNameSnakeCase: true
+  - pattern: 'com.alibaba.nacos.config:type=LongPollingService'
+    name: config_listener_total
+    attrNameSnakeCase: true
+  # JVM 指标
+  - pattern: 'java.lang<type=Memory><HeapMemoryUsage>used'
+    name: jvm_heap_used_bytes
+  - pattern: 'java.lang<type=GarbageCollector, name=(.*)><CollectionCount>'
+    name: jvm_gc_collection_count
+    labels:
+      gc: '$1'
+  - pattern: 'java.lang<type=GarbageCollector, name=(.*)><CollectionTime>'
+    name: jvm_gc_collection_seconds
+    labels:
+      gc: '$1'
+  - pattern: 'java.lang<type=Threading><ThreadCount>'
+    name: jvm_threads_current
+```
+
+### 指标基线建立方法
+
+**基线计算步骤**：
+
+1. **收集 1 周的正常运行数据**（排除故障时段），每个指标计算：
+   - 均值 μ = Σ(x_i) / n
+   - 标准差 σ = sqrt(Σ(x_i - μ)² / (n-1))
+2. **设定告警阈值**：
+   - Warning 阈值：μ + 2σ（覆盖 95% 正常波动）
+   - Critical 阈值：μ + 3σ（覆盖 99.7% 正常波动）
+3. **季度重新计算基线**（业务增长后基线会上移）
+
+**示例：gRPC 连接数基线计算**
+
+```
+Week 1 数据（每小时采样）：[1200, 1250, 1180, 1220, ..., 1350]
+μ = 1230, σ = 45
+Warning 阈值 = 1230 + 2 × 45 = 1320
+Critical 阈值 = 1230 + 3 × 45 = 1365
+```
+
+---
+
+## 13.5 深入：config-server.log 排查配置不生效案例
+
+### 生产案例 3：通过 config-server.log 排查配置不生效
+
+**背景**：某电商平台 Nacos 集群，业务方反馈修改 `application.properties` 配置后，部分客户端（约 30%）未收到配置变更通知，导致线上部分服务器使用了旧配置。
+
+**排查过程**：
+
+```bash
+# Step 1: 确认配置发布成功
+grep "publish config.*application.properties" ${nacos.home}/logs/config-server.log | tail -5
+
+# 输出：
+# INFO ConfigCacheService - publish config: dataId=application.properties, group=DEFAULT_GROUP, md5=abc123
+# → 发布成功，MD5 已变更
+
+# Step 2: 确认配置变更推送成功
+grep "notify config change.*application.properties" ${nacos.home}/logs/config-server.log | tail -10
+
+# 输出：
+# INFO ConfigChangePublisher - notify config change: dataId=application.properties, group=DEFAULT_GROUP, md5=def456
+# → 推送已触发
+```
+
+**关键发现**：`notify config change` 日志仅出现 1 次，但预期应向所有 100+ 个订阅客户端推送。排查 `LongPollingService` 日志：
+
+```bash
+# Step 3: 检查 Long Polling 连接状态
+grep "long polling timeout" ${nacos.home}/logs/config-server.log | tail -20
+
+# 输出：
+# INFO LongPollingService - long polling timeout: clientId=192.168.1.101:54321, dataId=application.properties
+# INFO LongPollingService - long polling timeout: clientId=192.168.1.102:54322, dataId=application.properties
+# ... （约 30 条 timeout 记录）
+```
+
+**根因分析**：约 30 个客户端的长轮询连接已超时断开（`clientLongPollTimeout=30s` 默认），但客户端未及时重新建立长轮询连接 → 这些客户端错过了配置变更推送 → 使用了旧配置。
+
+**解决方案**：
+1. 客户端 SDK 升级至最新版本（修复了长轮询重连的 Bug）
+2. 临时措施：调大 `clientLongPollTimeout` 从 30s → 60s，减少误超时
+3. 监控 `config_listener_total` 指标 → 如果监听器数量突然下降 → 告警通知
+
+---
+
+## 13.7 深入：巡检清单发现问题的生产案例
+
+### 生产案例：磁盘使用率巡检发现 Raft 日志异常增长
+
+**背景**：某金融企业 Nacos 集群，每周日凌晨 3:00 的自动化巡检脚本（`nacos_health_check.sh`）检测到磁盘使用率从 45% 飙升至 78%（1 周内增长 33%）。
+
+**排查过程**：
+
+```bash
+# Step 1: 定位磁盘占用大户
+du -sh ${nacos.home}/logs/* ${nacos.home}/data/protocol/raft/*
+
+# 输出：
+# 2.3GB  ${nacos.home}/data/protocol/raft/ns/default/
+# 1.1GB  ${nacos.home}/logs/naming-server.log
+# → Raft 日志目录占 2.3GB，远超预期的 ~500MB
+
+# Step 2: 检查 Raft Snapshot 状态
+curl -X GET 'http://nacos-server:8848/nacos/v1/core/cluster/raft/snapshot'
+
+# 输出：
+# {"snapshotStatus": "FAILED", "lastSnapshotTime": "2026-08-25T03:00:00Z"}
+# → 最近一次 Snapshot 失败！时间：12 天前
+```
+
+**根因分析**：JRaft Snapshot 在 12 天前失败后一直未恢复，导致 Raft 日志持续增长（每 1000 条日志触发一次 Snapshot → 失败 → 日志继续增长 → 循环累积至 2.3GB）。
+
+**解决方案**：
+1. 检查 Snapshot 失败根因：磁盘空间不足（当时磁盘使用率临时飙升至 95% → Snapshot 写入失败 → JRaft 标记 Snapshot 状态为 FAILED）
+2. 手动触发 Snapshot 恢复：重启 Nacos 节点 → JRaft 自动重新触发 Snapshot → Raft 日志目录大小从 2.3GB 降至 ~500MB
+3. 添加磁盘空间监控告警：磁盘使用率 > 80% → 告警通知 → 提前扩容磁盘
+
+**教训**：
+- Raft Snapshot 失败后 JRaft 不会自动重试 → 需监控 Raft 日志目录大小变化趋势
+- 磁盘空间不足会导致 Snapshot 失败 → 磁盘监控告警阈值应设置为 80%（而非 90%），预留缓冲空间
+
+---
+
+## 13.8 深入：async-profiler 火焰图解读生产案例
+
+### 生产案例：gRPC 线程池饱和导致推送延迟飙升
+
+**背景**：某互联网公司 Nacos 集群，业务高峰时段（每天 10:00-11:00）gRPC 推送延迟 P99 从日常 50ms 飙升至 2s+，业务反馈服务发现延迟导致部分请求超时。
+
+**排查过程**：
+
+```bash
+# Step 1: top -H 定位高 CPU 线程
+top -H -p <nacos_pid>
+# 关注 %CPU 列 → 发现多个 "grpc-default-worker-ELG-1-1" 线程 CPU 占用 80%+
+
+# Step 2: jstack 抓取线程快照
+jstack <nacos_pid> > /tmp/nacos_thread_dump.txt
+grep -A 30 "grpc-default-worker-ELG-1-1" /tmp/nacos_thread_dump.txt
+
+# 输出（关键部分）：
+# "grpc-default-worker-ELG-1-1" #39 daemon prio=5 os_prio=0 tid=0x00007f8a0c001000 nid=0x7f8a runnable
+#   java.lang.Thread.State: RUNNABLE
+#     at com.alibaba.nacos.core.remote.grpc.GrpcConnection.request(GrpcConnection.java:156)
+#     at com.alibaba.nacos.core.remote.RpcPushService.push(RpcPushService.java:95)
+#     - locked <0x00000007f8a0c0010> (a java.lang.Object)
+#   → 大量线程阻塞在 GrpcConnection.request() 等待 gRPC 响应
+```
+
+**关键发现**：大量 `grpc-default-worker-ELG` 线程阻塞在 `GrpcConnection.request()` → 说明 gRPC 线程池饱和，新推送请求排队等待线程池中的空闲线程。
+
+```bash
+# Step 3: async-profiler 生成 CPU 火焰图
+async-profiler -d 30 -e cpu -f /tmp/nacos_cpu_flamegraph.html <nacos_pid>
+```
+
+**火焰图解读**（自上而下）：
+```
+100% CPU
+├── 62.3% GrpcBiStreamRequestAcceptor.processRequest()
+│   ├── 45.1% GrpcConnection.request()
+│   │   └── 38.2% gRPC writeAndFlush()  ← gRPC 写入阻塞（客户端消费慢）
+│   └── 17.2% RpcPushService.push()
+│       └── 15.8% ConnectionManager.getConnection()  ← 连接查找耗时
+├── 21.5% DistroClientDataProcessor.process()
+│   └── 18.3% DistroHttpClient.syncData()  ← Distro HTTP 同步阻塞
+└── 16.2% HealthCheckTask.run()
+    └── 12.1% InstanceOperatorClientImpl.listAllInstances()  ← 健康检查全量遍历
+```
+
+**根因分析**：
+1. **gRPC 线程池饱和**：`grpc-default-worker-ELG` 线程池默认大小 = CPU 核数 × 2（如 8 核 → 16 线程），业务高峰时段涌入大量推送请求 → 线程池饱和 → 新推送请求排队
+2. **客户端消费慢**：火焰图中 `gRPC writeAndFlush()` 占用 38.2% CPU → 说明 gRPC 写入阻塞 → 客户端处理推送消息慢 → TCP 发送缓冲区满 → 服务端 gRPC writeAndFlush() 阻塞
+
+**解决方案**：
+1. **调大 gRPC 线程池**：`nacos.core.remote.server.grpc.sdk.maxConnectionIdleSeconds` → 增加线程池大小（如从默认 CPU核数×2 → CPU核数×4）
+2. **客户端 SDK 升级**：升级至最新版本，优化推送消息处理速度
+3. **推送限流**：通过 `nacos.core.remote.server.grpc.sdk.maxPushConcurrency` 参数限制并发推送数，避免线程池饱和
+
+---
+
+## 13.9 深入：定期任务回滚策略与失败告警
+
+### 历史配置清理的回滚策略
+
+MySQL 历史配置清理脚本（`nacos_cleanup_history_config.sh`）执行前应创建回滚点（备份表），以防误删数据后无法恢复：
+
+```sql
+-- Step 1: 创建回滚点（备份表）
+CREATE TABLE his_config_info_backup_20260906 AS 
+SELECT * FROM his_config_info 
+WHERE gmt_create < DATE_SUB(NOW(), INTERVAL 30 DAY);
+
+-- Step 2: 验证备份表行数
+SELECT COUNT(*) FROM his_config_info_backup_20260906;
+
+-- Step 3: 执行清理（确认备份无误后）
+DELETE FROM his_config_info 
+WHERE gmt_create < DATE_SUB(NOW(), INTERVAL 30 DAY);
+
+-- Step 4: 如果误删 → 从备份表恢复
+INSERT INTO his_config_info 
+SELECT * FROM his_config_info_backup_20260906;
+```
+
+### Cron 任务失败告警
+
+自动化 Cron 任务应集成失败告警，确保任务失败时运维团队能及时发现：
+
+```bash
+#!/bin/bash
+# nacos_cleanup_wrapper.sh — 带失败告警的清理任务包装脚本
+
+ALERT_WEBHOOK="https://webhook.example.com/nacos-alerts"
+
+# 执行清理任务
+/opt/nacos/scripts/nacos_cleanup_history_config.sh
+EXIT_CODE=$?
+
+if [ ${EXIT_CODE} -ne 0 ]; then
+    # 发送失败告警
+    curl -s -X POST "${ALERT_WEBHOOK}" \
+        -H 'Content-Type: application/json' \
+        -d "{
+            \"text\": \"[CRITICAL] Nacos 历史配置清理任务失败！退出码: ${EXIT_CODE}。请立即检查日志: /var/log/nacos_cleanup_history_config.log\"
+        }" > /dev/null 2>&1
+    exit ${EXIT_CODE}
+fi
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') Cleanup task completed successfully"
+```
+
+### Raft Snapshot 自动修复策略
+
+如果 Raft Snapshot 失败，可通过以下 API 手动触发 Snapshot：
+
+```bash
+# 手动触发 Raft Snapshot
+curl -X POST 'http://nacos-server:8848/nacos/v1/core/cluster/raft/snapshot/trigger'
+
+# 验证 Snapshot 是否成功
+curl -X GET 'http://nacos-server:8848/nacos/v1/core/cluster/raft/snapshot'
+# 预期输出：{"snapshotStatus": "SUCCESS", "lastSnapshotTime": "2026-09-06T22:00:00Z"}
+```
+
+**自动化监控 Cron 配置**：
+
+```bash
+# crontab — 每周日检查 Raft Snapshot 状态，失败自动尝试修复
+0 3 * * 0 /opt/nacos/scripts/nacos_check_raft_snapshot.sh || \
+    curl -X POST 'http://nacos-server:8848/nacos/v1/core/cluster/raft/snapshot/trigger'
+```
+
+### 小结
+
+定期任务自动化的三个关键点：
+1. **回滚策略**：清理前创建备份表（`his_config_info_backup_YYYYMMDD`），误删可从备份表恢复
+2. **失败告警**：Cron wrapper 脚本捕获退出码 → 失败立即发送告警（企业微信/Slack）
+3. **自动修复**：Raft Snapshot 失败后自动尝试手动触发恢复（`/raft/snapshot/trigger` API）
