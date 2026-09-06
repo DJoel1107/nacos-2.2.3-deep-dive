@@ -36,9 +36,9 @@
 | 章号 | 文件 | 内容 | 状态 |
 |------|------|------|------|
 | 第9章 | `nacos-chapter-09.md` | 全量配置项详解：~200+ 配置项分类、调优建议、源码引用 | ✅ |
-| 第10章 | `nacos-chapter-10.md` | 生产环境部署架构：多数据中心部署、K8s 部署、容量规划 | ⬜ |
-| 第11章 | `nacos-chapter-11.md` | 高可用架构设计：CAP 实践、脑裂恢复、多活架构 | ⬜ |
-| 第12章 | `nacos-chapter-12.md` | 性能调优深度分析：JVM/GC 调优、线程池优化、OS 内核参数 | ⬜ |
+| 第10章 | `nacos-chapter-10.md` | 生产环境部署架构：多数据中心部署、K8s 部署、容量规划 | ✅ |
+| 第11章 | `nacos-chapter-11.md` | 高可用架构设计：CAP 实践、脑裂恢复、多活架构 | ✅ |
+| 第12章 | `nacos-chapter-12.md` | 性能调优深度分析：JVM/GC 调优、线程池优化、OS 内核参数 | ✅ |
 
 ### 第四部分：运维与实践
 
@@ -84,9 +84,9 @@
 │   ├── nacos-chapter-07.md      ✅ 第7章 认证安全+控制台+周边
 │   ├── nacos-chapter-08.md      ✅ 第6章 插件体系 ⚠️
 │   ├── nacos-chapter-09.md      ✅ 第9章 全量配置项详解
-│   ├── nacos-chapter-10.md      ⬜ 第10章 生产部署架构
-│   ├── nacos-chapter-11.md      ⬜ 第11章 高可用架构设计
-│   └── nacos-chapter-12.md      ⬜ 第12章 性能调优
+│   ├── nacos-chapter-10.md      ✅ 第10章 生产部署架构
+│   ├── nacos-chapter-11.md      ✅ 第11章 高可用架构设计
+│   └── nacos-chapter-12.md      ✅ 第12章 性能调优
 ├── chapter-html/                 # HTML 格式输出
 │   ├── nacos-chapter-01.html     ✅ Swiss Style 排版
 │   └── .gitkeep
