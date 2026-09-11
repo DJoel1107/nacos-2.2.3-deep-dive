@@ -258,6 +258,93 @@ public class ConnectionManager {
 
 **推荐**：先建立 11 个核心指标基线，运行 2-4 周后根据实际故障模式逐步增加细分指标。避免过早引入过多指标导致告警疲劳。
 
+### 源码走读：Micrometer 指标注册中心 NacosMeterRegistryCenter
+
+上述 11 个核心指标在 Nacos 源码中并非全都由 Prometheus Controller 直接导出，而是通过 **Micrometer** 抽象层的指标注册中心统一采集。Nacos 2.5.3 的 `core` 模块定义了 `NacosMeterRegistryCenter`，负责将不同的底层监控后端（如 Prometheus、Micrometer Atlas）隔离在统一的注册中心之后：
+
+```java
+// core/src/main/java/com/alibaba/nacos/core/monitor/NacosMeterRegistryCenter.java (Nacos 2.5.3, 节选)
+public final class NacosMeterRegistryCenter {
+    
+    // 稳定指标注册中心（长期稳定的核心指标）
+    public static final String CORE_STABLE_REGISTRY = "core.stable";
+    
+    private static final Map<String, MeterRegistry> METER_REGISTRY_MAP = new ConcurrentHashMap<>();
+    
+    public static AtomicInteger gauge(String registry, String name, Iterable<Tag> tags) {
+        return METER_REGISTRY_MAP.get(registry).gauge(name, tags);
+    }
+    
+    public static Counter counter(String registry, String name, String... tags) {
+        return METER_REGISTRY_MAP.get(registry).counter(name, tags);
+    }
+}
+```
+
+`MetricsMonitor`（位于 `core/src/main/java/com/alibaba/nacos/core/monitor/MetricsMonitor.java`）正是通过 `NacosMeterRegistryCenter` 声明了各类 Raft 相关的指标采集器，例如 `RAFT_READ_INDEX_FAILED`、`RAFT_FROM_LEADER`、`RAFT_APPLY_LOG_TIMER`、`RAFT_APPLY_READ_TIMER`，每个指标都携带 `name` 标签以便区分，例如：
+
+```java
+// core/src/main/java/com/alibaba/nacos/core/monitor/MetricsMonitor.java:59-79 (Nacos 2.5.3)
+static {
+    ImmutableTag immutableTag = new ImmutableTag("module", "core");
+    List<Tag> tags = new ArrayList<>();
+    tags.add(immutableTag);
+    tags.add(new ImmutableTag("name", "raft_read_index_failed"));
+    RAFT_READ_INDEX_FAILED = NacosMeterRegistryCenter.summary(METER_REGISTRY, "nacos_monitor", tags);
+    
+    tags = new ArrayList<>();
+    tags.add(new ImmutableTag("name", "raft_read_from_leader"));
+    RAFT_FROM_LEADER = NacosMeterRegistryCenter.summary(METER_REGISTRY, "nacos_monitor", tags);
+}
+```
+
+这一设计体现了**指标命名空间的统一约定**：所有指标名以 `nacos_monitor`、`nacos_timer`、`nacos_exception`、`nacos_naming_subscriber`、`nacos_config_subscriber` 等固定前缀开头，再用 `name` / `module` 标签细分。运维在 Prometheus 中抓取 /metrics 端点时，即可按这一命名约定编写查询与告警表达式，无需记忆零散的指标名。
+
+#### 命名服务的核心指标出处
+
+`naming` 模块的 `MetricsMonitor`（`naming/src/main/java/com/alibaba/nacos/naming/monitor/MetricsMonitor.java`）围绕服务注册与发现的订阅/发布数量建立指标：
+
+```java
+// naming/src/main/java/com/alibaba/nacos/naming/monitor/MetricsMonitor.java:110-134 (Nacos 2.5.3, 节选)
+// 记录 v1/v2 协议下的订阅者数量
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_naming_subscriber", tags, namingSubscriber.get("v1"));
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_naming_subscriber", tags, namingSubscriber.get("v2"));
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_naming_publisher", tags, namingPublisher.get("v1"));
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_naming_publisher", tags, namingPublisher.get("v2"));
+// 异常计数：磁盘异常、心跳发送失败
+return NacosMeterRegistryCenter.counter(METER_REGISTRY, "nacos_exception", "module", "naming", "name", "disk");
+```
+
+而 `NamingSubAndPubMetricsCollector`（`naming/src/main/java/com/alibaba/nacos/naming/monitor/collector/NamingSubAndPubMetricsCollector.java`）是一个**后台定时线程**，周期性地把 `ConnectionBasedClientManager` 中统计到的 v1/v2 订阅者、发布者数量写入上述指标，从而让指标反映实时的服务订阅规模，为"服务数/实例数"这类面板提供数据源。
+
+#### 配置服务的核心指标出处
+
+`config` 模块的 `MetricsMonitor`（`config/src/main/java/com/alibaba/nacos/config/server/monitor/MetricsMonitor.java`）则对配置读写、长轮询等操作计数：
+
+```java
+// config/src/main/java/com/alibaba/nacos/config/server/monitor/MetricsMonitor.java:82-130 (Nacos 2.5.3, 节选)
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_monitor", tags, getConfig);
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_monitor", tags, publish);
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_monitor", tags, longPolling);
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_monitor", tags, configCount);
+NacosMeterRegistryCenter.gauge(METER_REGISTRY, "nacos_monitor", tags, notifyTask);
+// 读写、通知、转储耗时：timer 类型
+NacosMeterRegistryCenter.timer(METER_REGISTRY, "nacos_timer", "module", "config", "name", "readConfigRt");
+NacosMeterRegistryCenter.timer(METER_REGISTRY, "nacos_timer", "module", "config", "name", "writeConfigRt");
+// 异常计数
+NacosMeterRegistryCenter.counter(METER_REGISTRY, "nacos_exception", "module", "config", "name", "unhealth");
+```
+
+从上述源码可以看出，Nacos 2.5.3 的指标采集是**分层解耦**的：`MetricsMonitor` 负责声明并登记指标，`MetricsCollector` 后台线程负责周期性喂值，`NacosMeterRegistryCenter` 负责将指标桥接到 Prometheus。运维只需要在 Prometheus 的 job 中配置抓取 Nacos 的 `/metrics` 端点即可获得全套指标，无需侵入 Nacos 内部。
+
+### 设计模式分析
+
+1. **门面模式（Facade Pattern）**：`MetricsMonitor` 对外暴露 `getNamingSubscriber()`、`getConfigPublisher()` 等静态方法，将底层 Micrometer 的 `Gauge` / `Counter` / `Timer` 组装细节完全封装在类内部。业务代码（如服务注册处理器）只需调用 `MetricsMonitor.getXxx().increment()`，无需关心指标底层绑定到了哪个注册中心或哪种监控后端，有效隔离了监控实现与业务逻辑。
+
+2. **工厂方法模式（Factory Method）**：`NacosMeterRegistryCenter` 相当于 `MeterRegistry` 的工厂，通过 `summary`、`timer`、`counter`、`gauge` 等工厂方法按需创建不同类型的计量器，并统一登记到对应的 `MeterRegistry`。这种工厂封装使得底层更换监控平台（例如从 Prometheus 切换到 Atlas）时，上层调用方无需改动任何业务代码。
+
+3. **发布-订阅模式（Publish-Subscribe）**：`TpsMonitorItem` 与 `TpsMetrics`（`plugin/control` 模块）构成了 TPS 监控的发布-订阅结构，业务模块将 TPS 数据发布到监控容器，指标收集器作为订阅者消费并聚合，最终呈现为完整的 QPS/耗时分布。
+
 ### 小结
 
 11 个核心 Prometheus 指标覆盖了 Nacos 集群的四层健康度：连接层、服务层、配置层、JVM 层。关键是建立每个指标的基线值（正常运行时的均值 ± 标准差），基于基线设置告警阈值，而非使用固定绝对值。
@@ -426,6 +513,83 @@ histogram_quantile(0.99, sum(rate(jvm_gc_pause_seconds_bucket{job="nacos"}[5m]))
 }
 ```
 
+### 源码走读：PrometheusController 与实例序列化链路
+
+Grafana 面板中的服务数、实例数等数据并非凭空而来，它们最终都源自 Nacos 提供的 Prometheus SD（Service Discovery）端点 `/prometheus`。Nacos 2.5.3 的 `prometheus` 模块中，`PrometheusController` 是该端点的核心入口：
+
+```java
+// prometheus/src/main/java/com/alibaba/nacos/prometheus/controller/PrometheusController.java:46-83 (Nacos 2.5.3)
+@RestController
+@ConditionalOnProperty(name = "nacos.prometheus.metrics.enabled", havingValue = "true")
+public class PrometheusController {
+    
+    @Autowired
+    private InstanceOperatorClientImpl instanceServiceV2;
+    
+    private final ServiceManager serviceManager;
+    
+    public PrometheusController() {
+        this.serviceManager = ServiceManager.getInstance();
+    }
+    
+    @GetMapping(value = ApiConstants.PROMETHEUS_CONTROLLER_PATH, produces = "application/json; charset=UTF-8")
+    public ResponseEntity<String> metric() throws NacosException {
+        ArrayNode arrayNode = JacksonUtils.createEmptyArrayNode();
+        Set<Instance> targetSet = new HashSet<>();
+        Set<String> allNamespaces = serviceManager.getAllNamespaces();
+        for (String namespace : allNamespaces) {
+            Set<Service> singletons = serviceManager.getSingletons(namespace);
+            for (Service service : singletons) {
+                List<? extends Instance> instances = instanceServiceV2.listAllInstances(
+                        namespace, service.getGroupedServiceName());
+                targetSet.addAll(instances);
+            }
+        }
+        PrometheusUtils.assembleArrayNodes(targetSet, arrayNode);
+        return ResponseEntity.ok().body(arrayNode.toString());
+    }
+}
+```
+
+**请求链路说明**：当 Prometheus Server 按 `scrape_configs` 中的间隔访问 `/prometheus` 时，`metric()` 方法先通过 `ServiceManager.getAllNamespaces()` 枚举所有命名空间，再对每个命名空间调用 `ServiceManager.getSingletons()` 获取服务单例集合，随后对每个服务调用 `InstanceOperatorClientImpl.listAllInstances()` 拉取其全部实例。最后，`PrometheusUtils.assembleArrayNodes()` 把 `Set<Instance>` 序列化为标准 JSON 数组返回给 Prometheus 抓取端。
+
+该 Controller 同样通过 `@ConditionalOnProperty(name = "nacos.prometheus.metrics.enabled", havingValue = "true")` 条件启用，即只有显式打开 `nacos.prometheus.metrics.enabled=true` 时 `/prometheus` 端点才会生效，避免默认暴露过多实例元数据造成安全隐患。
+
+`PrometheusController` 还提供了按命名空间 `/prometheus/{namespaceId}` 和按服务 `/prometheus/{namespaceId}/{service}` 两个细分端点，便于在服务规模极大时按空间/服务维度分批抓取，降低单次响应体 size：
+
+```java
+// prometheus/src/main/java/com/alibaba/nacos/prometheus/controller/PrometheusController.java:104-136 (Nacos 2.5.3)
+@GetMapping(value = ApiConstants.PROMETHEUS_CONTROLLER_SERVICE_PATH, produces = "application/json; charset=UTF-8")
+public ResponseEntity<String> metricNamespaceService(@PathVariable("namespaceId") String namespaceId,
+        @PathVariable("service") String service) throws NacosException {
+    ArrayNode arrayNode = getServiceArrayNode(namespaceId, s -> s.getName().equals(service));
+    return ResponseEntity.ok().body(arrayNode.toString());
+}
+
+private ArrayNode getServiceArrayNode(String namespaceId, Predicate<Service> serviceFilter) throws NacosException {
+    ArrayNode arrayNode = JacksonUtils.createEmptyArrayNode();
+    Set<String> allNamespaces = serviceManager.getAllNamespaces();
+    if (!allNamespaces.contains(namespaceId)) {
+        return arrayNode;
+    }
+    Set<Service> singletons = serviceManager.getSingletons(namespaceId);
+    for (Service existService : singletons) {
+        if (!serviceFilter.test(existService)) {
+            continue;
+        }
+        List<? extends Instance> instances = instanceServiceV2.listAllInstances(
+                namespaceId, existService.getGroupedServiceName());
+        targetSet.addAll(instances);
+    }
+    PrometheusUtils.assembleArrayNodes(targetSet, arrayNode);
+    return arrayNode;
+}
+```
+
+这里使用了 **`Predicate<Service>` 函数式接口**作为服务过滤条件——`s -> true` 表示不过滤（拉取命名空间内所有服务），`s -> s.getName().equals(service)` 表示仅拉取指定名服务。这一抽象使得同一套"拉取+序列化"逻辑得以复用于三个不同粒度的端点，避免代码重复。
+
+**与 Grafana 面板的关系**：Grafana 面板中的 `naming_service_total`（服务数）和 `naming_instance_total`（实例数）指标，其数据来源本质上是 Prometheus 抓取后通过 `count()` 聚合 `/prometheus` 响应中 JSON 数组的长度。因此，**面板查询的实时性受抓取间隔限制**——若 `scrape_interval` 设为 30s，则面板最多每 30s 更新一次；在生产大集群（10 万+实例）下，`/prometheus` 单次 JSON 序列化可能耗时数百毫秒，需将 `scrape_timeout` 适当调大（≥20s）以避免抓取超时，这与 13.1 节的性能建议一致。
+
 ### Trade-off 分析
 
 **Grafana 内置 Dashboard vs JSON 文件导入**：
@@ -511,7 +675,7 @@ groups:
     rules:
       - alert: NodeDown
         expr: up{job="nacos"} == 0
-        for: 丛
+        for: 1m
         labels:
           severity: critical
           team: nacos-ops
@@ -566,6 +730,81 @@ groups:
           description: "集群 {{ $labels.instance }} GC P99 暂停时间为 {{ $value }}s，超过 1s 阈值，请求延迟将飙升"
 ```
 
+### 源码走读：告警相关指标的数据出处与健康检查
+
+上述 5 条告警规则所依赖的指标各有对应的 Nacos 源码出口。以 **节点 Down** 告警（`up{job="nacos"} == 0`）为例，其本质是 Prometheus 对 Nacos `/actuator/health` 或 `/health` 端点的探测结果，而 Nacos 2.5.3 的健康状态由 Spring Boot Actuator 的 `HealthIndicator` 汇总而来。Nacos 对多种依赖（数据库、Raft、gRPC 连接池）分别注册了健康指示器，任一关键组件 Down 都会使整体健康状态降级。
+
+以 **Distro 同步失败** 告警（`rate(naming_distro_sync_failed_total[5m])`）为例，其指标准确名称为 `nacos_error` 系列，数据来源是 `naming` 模块的 `MetricsMonitor`：
+
+```java
+// naming/src/main/java/com/alibaba/nacos/naming/monitor/MetricsMonitor.java (Nacos 2.5.3, 节选)
+// 心跳发送失败异常计数（Distro/ClientBeat 同步异常归入此类）
+return NacosMeterRegistryCenter.counter(METER_REGISTRY, "nacos_exception",
+        "module", "naming", "name", "leaderSendBeatFailed");
+```
+
+而 gRPC 连接数指标 `grpc_connections_total` 的数据来源是 `LongConnectionMetricsCollector`，它实现了插件化连接指标采集接口，实时从 `ConnectionManager` 读取连接计数：
+
+```java
+// core/src/main/java/com/alibaba/nacos/core/remote/LongConnectionMetricsCollector.java:29-43 (Nacos 2.5.3)
+public class LongConnectionMetricsCollector implements ConnectionMetricsCollector {
+    
+    @Override
+    public long getGlobalConnectionCount() {
+        return ApplicationUtils.getBean(ConnectionManager.class).currentClientsCount();
+    }
+    
+    @Override
+    public Map<String, Long> getNamespaceConnectionCount() {
+        ConnectionManager connectionManager = ApplicationUtils.getBean(ConnectionManager.class);
+        // ...按命名空间聚合连接数
+    }
+}
+```
+
+**告警规则的实际生效流程**：Prometheus Server 周期性抓取 Nacos 指标 → 对每条 `rules` 中的 `expr` 求值 → 若结果持续 `for` 指定的时长仍为真 → 生成 Alert 发送给 AlertManager → AlertManager 依据 `route` 分组、去重后投递到接收者。因此，**`for` 时长直接决定告警的抗噪能力**：`for: 5m` 意味着指数波动须持续 5 分钟才告警，可过滤绝大多数瞬时尖峰。
+
+为了将 5 条告警规则正确送达，AlertManager 的 `alertmanager.yml` 需要与之配套的路由与接收者配置。下面给出一个生产推荐模板，体现"分级路由 + 分组收敛 + 抑制"三要素：
+
+```yaml
+# alertmanager.yml — 与 5 条 Nacos 告警规则配套的分发配置
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'instance']   # 同实例同类告警合并为一条通知
+  group_wait: 30s                       # 批次内首个告警等待 30s，聚合同批到达的告警
+  group_interval: 5m                    # 同组内新告警的最小通知间隔
+  repeat_interval: 4h                   # 未解决告警的重复提醒间隔（避免刷屏）
+  routes:
+    - match:
+        severity: critical                  # 关键告警走电话/PagerDuty
+      receiver: pagerduty
+      continue: true                        # 命中后继续匹配下一条路由做转发
+    - match_re:
+        severity: 'warning'                 # 一般告警走企业微信
+      receiver: wechat
+
+receivers:
+  - name: pagerduty
+    pagerduty_configs:
+      - service_key: '<PD_SERVICE_KEY>'
+  - name: wechat
+    wechat_configs:
+      - corp_id: '<CORP_ID>'
+        agent_id: '<AGENT_ID>'
+        api_secret: '<SECRET>'
+        send_resolved: true
+
+# 抑制规则：避免高连接数告警与 FullGC 告警同时触发时重复轰炸
+inhibit_rules:
+  - source_matchers: ['severity = critical']
+    target_matchers: ['severity = warning']
+    equal: ['instance']
+```
+
+该配置中 `group_by: ['alertname', 'instance']` 可令"集群 3 个节点同时触发同一告警"时仅发送一条聚合通知，而不是三条相互重复的消息；`inhibit_rules` 则保证当 critical 告警（如节点 Down）已触发时，同实例的 warning 告警被抑制，避免告警风暴淹没关键信息。
+
 ### Trade-off 分析
 
 **告警灵敏度 vs 告警疲劳**：
@@ -586,6 +825,36 @@ groups:
 1. **告警分组模式（Alert Grouping）**：通过 `group_by: [alertname]` 将同一告警规则的多个实例触发分组为单条通知，避免同一故障的多节点同时告警产生消息轰炸
 2. **告警路由模式（Alert Routing）**：通过 `severity: warning/critical` 标签将告警路由到不同接收者（warning → 企业微信 / critical → PagerDuty），实现分级响应
 3. **告警静默模式（Silence）**：AlertManager 支持按时间窗口静默特定告警（如计划维护窗口期间），避免计划维护触发误告警
+
+### 告警规则的工程落地要点
+
+**1. 指标缺失时的防御性配置**
+
+`HighGrpcConnections` 与 `FrequentFullGC` 这类告警依赖的指标（`grpc_connections_total`、`jvm_gc_pause_seconds_bucket`）只有在 Nacos 开启 Micrometer/Prometheus 导出后才会存在。若 Nacos 未配置 `nacos.prometheus.metrics.enabled=true`，Prometheus 将无法抓取这些指标，`expr` 求值结果为"无数据"，AlertManager 默认不会告警，从而**形成监控盲区**。因此上线告警规则前，应通过如下方式核对指标是否真实可抓取：
+
+```bash
+# 在 Prometheus UI 或 CLI 中验证指标存在
+curl -s 'http://prometheus:9090/api/v1/query?query=grpc_connections_total'
+# 若返回 "data.result": [] 说明指标未导出，需先开启对应开关
+```
+
+**2. 告警持续时间的业务含义**
+
+`for` 参数的选取应结合运维响应能力。以节点 Down 为例，`for: 1m` 表示节点失联持续 1 分钟才告警——这一时长通常设定为"略大于 gRPC 心跳超时与连接重建时间之和"；而 JVM 堆内存告警设定 `for: 5m`，是因为 Full GC 后内存可能回落到安全水位，5 分钟可过滤"短暂触顶后回收"的假阳性。运维可通过回顾历史告警的误报率，动态调优每个规则 `for` 的取值。
+
+**3. 告警与巡检的互补关系**
+
+13.7 节的日常巡检是"主动、周期性"的预防手段，本章告警规则是"被动、事件驱动"的兜底手段。两者结合的最佳实践是：**巡检发现存量风险（如连接数长期缓慢增长），告警捕捉突发故障（如瞬间 Full GC）**。建议将 5 条告警规则的触发记录同步到运维工单系统，与巡检日志形成闭环，持续校准阈值。
+
+**4. 告警路由的分级响应矩阵**
+
+| 严重级别 | 告警 | 接收通道 | 响应时效 |
+|---------|------|---------|---------|
+| critical | NodeDown、FrequentFullGC | PagerDuty / 电话 | ≤ 5 分钟 |
+| warning | HighGrpcConnections、HighHeapMemory | 企业微信 / Slack | ≤ 30 分钟 |
+| warning | DistroSyncFail | 邮件 / 工单 | ≤ 2 小时 |
+
+通过将不同严重级别路由到不同通道，可避免"所有告警同一渠道轰炸"导致的响应疲劳。
 
 ### 小结
 
@@ -758,6 +1027,48 @@ ERROR RpcPushService - push timeout for client: clientId=192.168.1.101:54321, da
 
 **推荐**：Nacos 默认使用 Logback SyncAppender（因为 `nacos-cluster.log` 等包含 Raft 选举等关键审计信息，不允许丢失），但在超高吞吐场景（100,000+ 实例注册）可以考虑将 `access.log` 切换为异步日志以减少磁盘 I/O 影响。
 
+### 源码走读：日志适配器与初始化加载链路
+
+Nacos 2.5.3 的日志并非直接调用 Logback API，而是通过一层"日志适配器"间接完成。`logger-adapter-impl` 模块下按 Logback/Log4j2 两个分支分别实现适配器，其核心类是 `LogbackNacosLoggingAdapterBuilder`（Logback 分支）与对应的 Log4j2 实现：
+
+```java
+// logger-adapter-impl/logback-adapter-12/src/main/java/com/alibaba/nacos/logger/adapter/logback12/
+// LogbackNacosLoggingAdapterBuilder.java (Nacos 2.5.3, 节选)
+public class LogbackNacosLoggingAdapterBuilder extends AbstractBuilder<LogbackNacosLoggingAdapter> {
+    
+    @Override
+    public LogbackNacosLoggingAdapter build(NacosLoggingProperties properties) {
+        LogbackNacosLoggingAdapter adapter = new LogbackNacosLoggingAdapter();
+        // 依据 nacos.logging.xxx 属性配置日志路径、级别
+        configureDefaultLogLevel(properties.getDefaultLogLevel());
+        return adapter;
+    }
+}
+```
+
+而真正接入 SLF4J 门面的工作由 `LogbackNacosLoggingAdapter` 完成，它实现了 SLF4J 的 `StaticLoggerBinder` 契约，把 Nacos 的自定义日志配置（如 `nacos.home`、`nacos.logging.default.config.enabled`）桥接到 Logback 上下文。Nacos 通过 `nacos.logging.default.config.enabled` 开关决定使用内置默认日志配置还是外部自定义 `logback-spring.xml`：
+
+```java
+// logger-adapter-impl/logback-adapter-12/src/main/java/com/alibaba/nacos/logger/adapter/logback12/
+// LogbackNacosLoggingAdapter.java (Nacos 2.5.3, 节选)
+public class LogbackNacosLoggingAdapter extends AbstractNacosLoggingAdapter {
+    
+    @Override
+    public void loadConfiguration() {
+        NacosClientPropertyAction propertyAction = new NacosClientPropertyAction();
+        // ... 解析 nacos.home 等属性并注入 Logback 上下文
+        LoggerContext lc = (LoggerContext) LoggerFactory.getILoggerFactory();
+        lc.putProperty("LOG_HOME", propertyAction.getNacosHome());
+    }
+}
+```
+
+**源码链路对运维的启示**：
+- 若希望完全自定义日志格式，在 `conf/` 下放置 `application.properties` 中加入 `nacos.logging.default.config.enabled=false`，并提供一个自定义 `logback.xml`，Nacos 加载时会优先采用外部配置；反之使用内置默认策略。
+- 日志路径最终由 `nacos.home` 决定（默认 `${user.home}/nacos`），`nacos.logging.default.root.level` 可覆盖根日志级别。这在排查"日志没写进 `nacos-cluster.log`"类问题时非常关键——先确认 `nacos.home` 指向的目录，再检查对应 Appender 是否命中该 Logger 的 LoggerName。
+
+**日志与指标的表里关系**：本节 5 种日志文件描述的是"运维排查的原始线索"，而 13.2 节的 Prometheus 指标则是"自动化的聚合量"。例如 `naming-server.log` 中的 `register instance` 高频出现对应指标 `naming_tps` 的突增，`config-server.log` 的长轮询超时对应配置面板的波动。推荐运维将日志关键字命中数与指标数值对比校准，判断问题究竟在业务层还是系统层。
+
 ### 设计模式分析
 
 1. **适配器模式（Adapter）**：`logger-adapter-impl/` 模块提供 Log4j2 和 Logback 两种适配器，Nacos 内部统一使用 SLF4J API，通过适配器切换底层日志实现
@@ -775,6 +1086,38 @@ ERROR RpcPushService - push timeout for client: clientId=192.168.1.101:54321, da
 ### 设计背景
 
 Nacos 2.5.3 使用 Logback 的 `TimeBasedRollingPolicy` 实现日志滚动（Rolling），通过 `maxHistory`（保留天数）和 `totalSizeCap`（总大小上限）两个参数控制日志文件的数量和磁盘占用。合理的日志滚动策略可以避免日志文件无限增长撑爆磁盘，同时保留足够的历史日志用于问题排查。
+
+### 核心类关系图（滚动触发链路）
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  Nacos 日志滚动触发链路（TimeBasedRollingPolicy）            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────┐   ┌────────────────────────────────────────┐  │
+│  │  RollingFileAppender   │   │  TimeBasedRollingPolicy (策略)         │  │
+│  │  (Appender，日志落盘)  │──▶│  • fileNamePattern: *.%d{yyyy-MM-dd}  │  │
+│  └─────────────────────────┘   │  • maxHistory: 30                    │  │
+│              │                  │  • totalSizeCap: 3GB                │  │
+│              ▼                  └───────────────┬────────────────────────┘  │
+│  ┌─────────────────────────┐                    │                          │
+│  │  RollingCalendar       │                    ▼                          │
+│  │  (周期判定：今天≠昨天？) │               ┌──────────────────────────┐    │
+│  └─────────────────────────┘               │  RolloverStrategy       │    │
+│              │                              │  (重命名+压缩+.gz)       │    │
+│              │                              └───────────┬──────────────┘    │
+│              └──下一次写日志时询问 policy───────▶        │                  │
+│                                                          ▼                  │
+│                                        ┌──────────────────────────────────┐ │
+│                                        │  SizeAndTimeBasedFNATP 触发器   │ │
+│                                        │  (按大小 %i 触发二次滚动)        │ │
+│                                        └──────────────────────────────────┘ │
+│                                                                             │
+│            图 13-6：Nacos 日志滚动触发链路示意                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+上图展示了 Nacos 日志从"写入"到"滚动归档"的完整链路：`RollingFileAppender` 每次写日志前会询问 `TimeBasedRollingPolicy` 是否已跨越滚动周期；若跨越（如当天首次写入、或当前活跃文件达到指定大小），则由 `RolloverStrategy` 将当前文件重命名归档（必要时压缩为 `.gz`），同时按 `maxHistory` / `totalSizeCap` 清理最旧归档，最后创建新的活跃日志文件继续写入。
 
 ### 核心配置参数
 
@@ -829,9 +1172,22 @@ Logback 的 `TimeBasedRollingPolicy` 通过 `RollingCalendar` 判断当前时间
 1. **策略模式（Policy Pattern）**：Logback 的 `RollingPolicy` 接口支持多种滚动策略——`TimeBasedRollingPolicy`（按时间滚动）、`SizeBasedTriggeringPolicy`（按大小滚动）、`SizeAndTimeBasedRollingPolicy`（按时间+大小组合滚动），通过策略模式实现灵活的滚动规则组合
 2. **职责链模式（Chain of Responsibility）**：Logback Appender 内部通过 `RollingPolicy` → `TriggeringPolicy` → `RolloverStrategy` 的职责链，依次判断是否触发滚动、如何命名归档文件、如何清理旧归档文件
 
+### 源码走读：fileNamePattern 与滚动判定细节
+
+`fileNamePattern` 中 `%d{yyyy-MM-dd}` 与 `%i` 的组合决定了两个独立的滚动维度：
+
+- **按时间维度**：`%d{yyyy-MM-dd}` 指定按天归档。Logback 的 `TimeBasedRollingPolicy.start()` 会调用 `RollingCalendar` 根据该 pattern 计算"下一次滚动时刻"（next check time）。当系统当前时间 ≥ 下一次滚动时刻时，触发滚动。若改用 `%d{yyyy-MM-dd_HH}` 则按月内小时滚动（每天滚动 24 次），`access.log` 在高频场景下常采用小时粒度以减小单文件体积。
+- **按大小维度**：仅当 pattern 中出现 `%i` 时，`SizeAndTimeBasedFNATP` 生效，允许在单个时间窗口内因文件达到 `maxFileSize` 而多次滚动（生成 `*.0.gz`、`*.1.gz`...）。若省略 `%i`，则同一时间段内只生成一个文件。
+
+**多个 Appender 的配置差异**：Nacos 各模块的 logback 配置相互独立，不同日志文件可设置不同的 `maxHistory`/`totalSizeCap`。例如 `access.log` 访问量大、可压缩性强，常单独设置更小的 `totalSizeCap`（如 1GB）；而 `nacos-cluster.log` 承载 Raft 审计信息，需要保留更久（如 `maxHistory=365`）。运维应根据每类日志的实际日增量分别规划归档参数，而不是对全部日志使用同一套策略。
+
+**常见坑点**：
+- `totalSizeCap` 触发清理是"滚动时顺带执行"，若长期无日志写入（无滚动事件），可能一直不清理，导致磁盘占满后才发现。建议结合 13.7 节的磁盘巡检定期确认。
+- 修改 `fileNamePattern` 会导致归档文件名规则变化，历史归档文件无法被新规则识别与清理，可能造成"旧归档残留"。生产变更前应先在测试环境验证新 pattern 的清理行为。
+
 ### 小结
 
-`maxHistory=30` + `totalSizeCap=3GB` 是 Nacos 生产环境的推荐日志滚动策略：保留 30 天历史日志覆盖绝大多数问题排查周期，`totalSizeCap=3GB` 避免日志文件无限增长撑爆磁盘。关键注意：`totalSizeCap` 仅对归档文件生效，当前活跃日志文件不计入，实际磁盘占用 = 当前日志文件大小 + `totalSizeCap`。
+`maxHistory=30` + `totalSizeCap=3GB` 是 Nacos 生产环境的推荐日志滚动策略：保留 30 天历史日志覆盖绝大多数问题排查周期，`totalSizeCap=3GB` 避免日志文件无限增长撑爆磁盘。关键注意：`totalSizeCap` 仅对归档文件生效，当前活跃日志文件不计入，实际磁盘占用 = 当前日志文件大小 + `totalSizeCap`。同时建议将 `fileNamePattern` 的时间窗口粒度与日志量匹配——访问量大的 `access.log` 采用小时粒度和更紧凑的 `totalSizeCap`，而承载 Raft 审计信息的 `nacos-cluster.log` 采用天粒度并保留更长历史，从而在磁盘成本与审计可用性之间取得平衡。
 
 ---
 
@@ -842,6 +1198,39 @@ Logback 的 `TimeBasedRollingPolicy` 通过 `RollingCalendar` 判断当前时间
 Nacos 集群的健康运行依赖定期巡检（Health Check Audit）——通过标准化检查项逐项核对集群状态，在故障发生前（Proactive）发现潜在风险。运维巡检不同于监控告警——监控告警是 Reactive（故障发生后触发），巡检是 Proactive（故障发生前的预防性检查）。
 
 7 项必检项覆盖了 Nacos 集群的 7 个关键维度：**集群状态**（节点是否全部在线）、**连接数**（gRPC 连接是否接近上限）、**JVM 内存**（堆内存是否接近上限）、**DB 连接池**（MySQL 连接池是否泄漏）、**磁盘**（磁盘使用率是否接近上限）、**Raft 日志**（Raft 日志是否持续增长）、**错误日志**（ERROR 日志是否高频出现）。
+
+### 核心类关系图（巡检维度与数据源映射）
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              Nacos 运维巡检：7 项必检项 与 数据来源映射                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  巡检项                    数据来源                   告警联动               │
+│  ┌──────────────┐   ┌────────────────────┐   ┌──────────────────────┐     │
+│  │ 集群状态      │◀──│ v1/core/cluster/   │   │ NodeDown 告警         │     │
+│  │ 节点 UP?      │   │ nodes               │   │ (13.4 Rule 2)         │     │
+│  ├──────────────┤   ├────────────────────┤   ├──────────────────────┤     │
+│  │ gRPC 连接数   │◀──│ ConnectionManager  │   │ HighGrpcConnections   │     │
+│  │ <80%上限?     │   │ (currentClients)   │   │ (13.4 Rule 1)         │     │
+│  ├──────────────┤   ├────────────────────┤   ├──────────────────────┤     │
+│  │ JVM 堆内存    │◀──│ jstat/jmap          │   │ HighHeapMemory        │     │
+│  │ Old<85%?      │   │ (JVM 进程)          │   │ (13.4 Rule 4)         │     │
+│  ├──────────────┤   ├────────────────────┤   ├──────────────────────┤     │
+│  │ MySQL 连接池  │◀──│ HikariCP MBean      │   │ (DB 健康指示器)        │     │
+│  ├──────────────┤   ├────────────────────┤   ├──────────────────────┤     │
+│  │ 磁盘使用率    │◀──│ df -h 磁盘          │   │ 磁盘满 → 全部日志异常  │     │
+│  ├──────────────┤   ├────────────────────┤   ├──────────────────────┤     │
+│  │ Raft 日志增长 │◀──│ raft/ns/default/    │   │ Raft Snapshot 失败     │     │
+│  ├──────────────┤   ├────────────────────┤   ├──────────────────────┤     │
+│  │ ERROR 日志    │◀──│ nacos-cluster.log  │   │ 各 ERROR 关联告警       │     │
+│  └──────────────┘   └────────────────────┘   └──────────────────────┘     │
+│                                                                             │
+│            图 13-7：7 项巡检必检项与数据来源/告警联动映射                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+上图将 7 项巡检项分别映射到"数据来源"与"对应告警规则"，直观体现**巡检（主动预防）与告警（被动兜底）的互补关系**：巡检项发现的是"接近阈值但尚未越线"的存量风险；一旦越线被指标捕获，则由 13.4 节的对应规则告警。运维可据此将巡检脚本中的判定阈值与告警规则阈值保持口径一致，避免"巡检说正常、告警却触发"的矛盾。
 
 ### 7 项必检项清单
 
@@ -977,6 +1366,46 @@ grep -c "WARN" ${nacos.home}/logs/nacos-cluster.log
 
 **检查频率**：每 4 小时 1 次
 
+### 自动化巡检脚本示例
+
+将 7 项必检项固化为 Shell 脚本，配合 Cron 实现定时自动巡检，是巡检体系成熟的标志。下面给出一个可运行的巡检脚本骨架，逻辑为"逐项检查 → 异常置状态码 → 汇总输出"，并为告警联动预留了退出码：
+
+```bash
+#!/bin/bash
+# nacos_audit.sh — 7 项巡检自动化骨架
+# 用法: ./nacos_audit.sh; echo $?  (非 0 表示存在异常项)
+set -u
+FAIL=0
+NACOS_API=${NACOS_API:-http://localhost:8848}
+
+# 1. 集群节点状态：任意节点非 UP 记为异常
+nodes=$(curl -s "$NACOS_API/nacos/v1/core/cluster/nodes" | jq '.nodes[] | select(.state!="UP")')
+[ -n "$nodes" ] && { echo "[FAIL] 存在非UP节点"; FAIL=1; } || echo "[OK] 节点全部UP"
+
+# 2. gRPC 连接数：通过 Prometheus 指标判断
+conn=$(curl -s "$NACOS_API/prometheus" | jq 'length')
+[ "$conn" -gt 16000 ] && { echo "[FAIL] 连接数 $conn 超过16000"; FAIL=1; } || echo "[OK] 连接数 $conn"
+
+# 5. 磁盘使用率
+usage=$(df /data/nacos/logs --output=pcent | tail -1 | tr -d '% ')
+[ "$usage" -gt 80 ] && { echo "[FAIL] 磁盘使用率 ${usage}%"; FAIL=1; } || echo "[OK] 磁盘使用率 ${usage}%"
+
+# 7. ERROR 日志统计（统计当天活跃日志）
+err=$(grep -c "ERROR" /data/nacos/logs/nacos-cluster.log 2>/dev/null || echo 0)
+[ "$err" -gt 10 ] && { echo "[FAIL] ERROR $err 条"; FAIL=1; } || echo "[OK] ERROR $err 条"
+
+exit $FAIL
+```
+
+**接入方式**：将脚本加入系统 crontab，例如每 4 小时执行一次并把失败时的输出重定向到接收通道：
+
+```bash
+# crontab -e
+0 */4 * * * /opt/scripts/nacos_audit.sh && echo "巡检通过" || tail -20 /tmp/nacos_audit.log
+```
+
+该脚本的可扩展性在于：每新增一个巡检项，只需追加一段"命令 + 阈值判定 + 置 FAIL 标志"的逻辑，即可融入统一主流程，这一结构正是模板方法模式在运维层的落地。
+
 ### Trade-off 分析
 
 **人工巡检 vs 自动化巡检**：
@@ -991,9 +1420,48 @@ grep -c "WARN" ${nacos.home}/logs/nacos-cluster.log
 
 **推荐**：初期人工巡检建立基线 → 2-4 周后编写自动化巡检脚本（Shell + Cron） → 集成到 Prometheus AlertManager 实现全自动监控告警。
 
+### 源码走读：巡检命令对应的内部健康数据
+
+多数巡检命令直接读取 Nacos 暴露的 OpenAPI 与 JMX 指标，其数据源头在 Nacos 源码中可定位。例如"集群节点状态"对应 `core` 模块的集群节点管理接口——`ClusterNodeManager` 维护节点列表，`v1/core/cluster/nodes` 查询其在线状态；gRPC 连接数对应 13.2 节提到的 `LongConnectionMetricsCollector.getGlobalConnectionCount()`，该方法内部调 `ConnectionManager.currentClientsCount()`：
+
+```java
+// core/src/main/java/com/alibaba/nacos/core/remote/LongConnectionMetricsCollector.java:36-41 (Nacos 2.5.3)
+@Override
+public long getGlobalConnectionCount() {
+    // 读取 ConnectionManager 中维护的连接总数
+    return ApplicationUtils.getBean(ConnectionManager.class).currentClientsCount();
+}
+```
+
+其中 `ConnectionManager.currentClientsCount()` 返回 `ConnectionManager` 内部由 `ConcurrentHashMap` 与 `AtomicLong` 维护的连接数。巡检脚本若直接调用该指标，即可在无需进入 Nacos 内部的前提下拿到精确的当前连接数。
+
+"磁盘/ERROR 日志"类检查属于 JVM 进程与文件系统层面的外部观测，不依赖 Nacos 内部代码，而是通过 `df`、`grep` 等系统命令完成，这体现了 Nacos 巡检体系"**OpenAPI + JMX + 系统命令三源合一**"的数据获取方式。
+
+### 设计模式分析
+
+1. **模板方法模式（Template Method）**：将巡检流程抽象为"检查项定义 → 执行检查 → 判定阈值 → 输出结果"四个固定步骤，每个检查项（集群状态/连接数/磁盘等）只实现各自的检查逻辑与阈值判定，复用统一的主流程骨架，便于新增检查项而不改动架构。
+2. **策略模式（Strategy）**：同一个巡检项可实现"人工执行"与"脚本自动化"两种策略的切换，初期采用人工策略建立基线，成熟后切换为脚本策略，二者共享一致的巡检条目定义。
+3. **观察者模式（Observer）**：巡检结果作为可观察事件，告警系统与工单系统作为观察者订阅——当巡检发现异常时，向订阅者广播结果，触发告警或工单创建，实现巡检与告警的联动解耦。
+
+### 巡检执行周期与分级策略
+
+不同检查项对时效性的要求不同，巡检执行频率不应一刀切，而应按"风险暴露速度 × 误发现代价"分级设定：
+
+| 检查项 | 推荐频率 | 理论依据 |
+|--------|---------|---------|
+| 集群节点状态 | 每小时 | 节点 Down 影响所有客户端，需最快发现 |
+| gRPC 连接数 | 每小时 | 短时间涌入大量连接可能快速逼近上限 |
+| JVM 堆内存 | 每 4 小时 | 内存缓慢增长，过频巡检收益低 |
+| MySQL 连接池 | 每 4 小时 | 连接池泄漏是渐进过程 |
+| 磁盘使用率 | 每天 | 磁盘增长以天为量级，日检足够 |
+| Raft 日志增长 | 每天 | 异常增长需跨日对比趋势 |
+| ERROR 日志 | 每 4 小时 | 兼顾发现时效与日志 I/O 开销 |
+
+巡检成本也需纳入考量：每分钟级的过度巡检会加重系统与人员负担，而天级的低频巡检又可能错过快速恶化的指标。上述分级策略在"发现速度"与"资源开销"之间取得平衡，运维团队可结合自身集群规模微调。
+
 ### 小结
 
-7 项必检项覆盖了 Nacos 集群的 7 个关键维度：集群状态（每 1h）、连接数（每 1h）、JVM 堆内存（每 4h）、MySQL 连接池（每 4h）、磁盘（每天）、Raft 日志（每天）、ERROR 日志（每 4h）。建议初期人工执行巡检清单建立基线 → 2-4 周后编写自动化巡检脚本。
+7 项必检项覆盖了 Nacos 集群的 7 个关键维度：集群状态（每 1h）、连接数（每 1h）、JVM 堆内存（每 4h）、MySQL 连接池（每 4h）、磁盘（每天）、Raft 日志（每天）、ERROR 日志（每 4h）。建议初期人工执行巡检清单建立基线 → 2-4 周后编写自动化巡检脚本。核心原则是「巡检防存量、告警兜突发」：巡检周期按风险暴露速度分级设定，判定阈值与 13.4 节告警规则保持一致，并保留异常退出码供告警与工单联动。
 
 ---
 
@@ -1002,6 +1470,42 @@ grep -c "WARN" ${nacos.home}/logs/nacos-cluster.log
 ### 设计背景
 
 Nacos 运维中，快速排查问题依赖一套熟练的运维命令集——从查看集群状态到抓取线程快照，每个运维人员都应熟悉这些命令。本节提供分类整理的常用运维命令速查表，覆盖 HTTP API、Shell 日志分析、JVM 诊断工具三个维度。
+
+### 核心类关系图（运维命令三引擎与故障定位路径）
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│             Nacos 运维命令速查：三引擎 与 故障定位路径                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  故障现象 ──▶  定位入口 ──▶  命令引擎 ──▶  关键输出 ──▶  结论               │
+│                                                                             │
+│  ┌────────┐   ┌──────────┐   ┌──────────────┐   ┌──────────────┐           │
+│  │节点异常 │──▶│ HTTP API │   │ v1/core/     │   │ nodes: UP     │──▶ 节点  │
+│  │        │   │ 引擎     │   │ cluster/nodes │   │ / DOWN        │   状态   │
+│  ├────────┤   │(REST/OpenAPI)└──────────────┘   └──────────────┘           │
+│  │连接打满 │──▶│          │   ┌──────────────┐   ┌──────────────┐           │
+│  ├────────┤   │          │──▶│ v1/core/     │   │ client 列表    │──▶ 连接  │
+│  │注册失败 │──▶│          │   │ client/list  │   │ 与连接数       │  详情   │
+│  └────────┘   └────┬─────┘   └──────────────┘   └──────────────┘           │
+│                     │                                                        │
+│  ┌────────┐   ┌────▼─────┐   ┌──────────────┐   ┌──────────────┐           │
+│  │ERROR高  │──▶│ Shell 日志│   │ tail/grep/awk│   │ 命中关键字     │──▶ 根因  │
+│  ├────────┤   │ 引擎     │   │ 统计/过滤     │   │ 频次 TOP       │  定位    │
+│  │推送慢  │──▶│(日志分析) │   └──────────────┘   └──────────────┘           │
+│  └────────┘   └────┬─────┘                                                    │
+│                     │                                                        │
+│  ┌────────┐   ┌────▼─────┐   ┌──────────────┐   ┌──────────────┐           │
+│  │Full GC │──▶│ JVM 诊断 │   │ jstat/jstack │   │ O% / 线程栈    │──▶ 瓶颈  │
+│  ├────────┤   │ 引擎     │   │ jmap/async-  │   │ 对象分布/热点   │  确认    │
+│  │线程卡死 │──▶│(JDK工具) │   │ profiler     │   └──────────────┘           │
+│  └────────┘   └──────────┘   └──────────────┘                               │
+│                                                                             │
+│            图 13-8：运维命令三引擎与故障定位路径                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+三类命令引擎在故障定位中承担不同角色：**HTTP API 引擎**回答"集群当前是什么状态"（事实层），**Shell 日志引擎**回答"发生了什么"（事件层），**JVM 诊断引擎**回答"为什么会这样"（根因层）。实际排查时通常按"事实→事件→根因"的顺序逐层深入，避免跳过中间层导致误判。
 
 ### 1. HTTP API 命令速查
 
@@ -1128,6 +1632,36 @@ async-profiler -d 30 -e cpu -f /tmp/nacos_cpu_flamegraph.html <nacos_pid>
 # ConfigCacheService → 配置缓存更新耗时占比
 ```
 
+### 源码走读：命令背后对应的内部接口
+
+HTTP API 类命令本质上调用的是 Nacos 各模块的 Controller。以"查询所有 gRPC 客户端连接列表" `v1/core/client/list` 为例，其对应 `core` 模块的 `ClientController`，内部遍历 `ConnectionManager` 维护的连接映射：
+
+```java
+// core/src/main/java/com/alibaba/nacos/core/controller/ClientController.java (Nacos 2.5.3, 节选)
+@RestController
+@RequestMapping("/v1/core/client")
+public class ClientController {
+    
+    private final ClientManager clientManager;
+    
+    @GetMapping("/list")
+    public Object search() {
+        // 返回所有客户端连接信息，供运维脚本与 Console 使用
+        return clientManager.allClientId();
+    }
+}
+```
+
+这些接口是"只读诊断入口"，通过 REST 将 Nacos 内部内存态（连接、节点、服务）暴露给外部工具。**不建议在巡检脚本中使用带副作用的写接口**（如强制下线节点），除非确有必要且经过鉴权。
+
+JVM 诊断类命令（jstat/jstack/jmap/async-profiler）则完全在 JVM 进程维度操作，不经过 Nacos 代码，因此能观测到 Nacos 应用自身的运行时行为（GC、线程、堆分布）。**注意生产环境 jmap -dump:live 会触发 Full GC**，使用时需评估对在线集群的影响窗口，必要时在低峰期执行。
+
+### 设计模式分析
+
+1. **门面模式（Facade Pattern）**：运维命令速查表本质是 Nacos OpenAPI 与 JVM 诊断工具的统一门面，将零散的接口调用聚合为可复用的排查流程，降低运维人员记忆负担。
+2. **模板方法模式（Template Method）**："事实→事件→根因"三层定位流程构成固定的排查模板，不同故障只是替换各层对应的具体命令，框架保持不变，便于沉淀为团队运维 SOP。
+3. **策略模式（Strategy）**：同一诊断目标可选用不同命令实现（如线程分析可选 jstack 或 async-profiler），通过策略切换权衡"侵入性/信息量/耗时"，满足不同场景（快速定位 vs 深度剖析）需求。
+
 ### Trade-off 分析
 
 **手动命令 vs 脚本自动化**：
@@ -1140,9 +1674,57 @@ async-profiler -d 30 -e cpu -f /tmp/nacos_cpu_flamegraph.html <nacos_pid>
 | **灵活性** | 高（可根据现场情况调整） | 低（按固定逻辑执行） |
 | **适用场景** | 紧急排查（灵活调整） | 定期巡检（批量执行） |
 
+### 命令组合实战：一次"配置变更未生效"的完整排查
+
+将三类命令引擎组合使用，才能高效解决真实故障。以"修改配置后部分客户端未收到变更通知"为例，演示命令组合的排查顺序：
+
+**步骤 1（HTTP API 引擎）——确认配置是否发布成功：**
+
+```bash
+# 查询指定 dataId 的当前内容，确认 MD5 是否已变更
+curl -s 'http://localhost:8848/nacos/v1/cs/configs?dataId=application.properties&group=DEFAULT_GROUP' | md5sum
+# 对比业务期望值，若 MD5 未变说明发布端未生效
+```
+
+**步骤 2（Shell 日志引擎）——确认 push 是否触发：**
+
+```bash
+# 在 config-server.log 中检索配置变更推送记录
+grep "notify config change" /data/nacos/logs/config-server.log | tail -20
+# 同时确认长轮询超时记录，判断是否有客户端在监听
+grep "long polling timeout" /data/nacos/logs/config-server.log | tail -20
+```
+
+若日志显示推送已触发但客户端未收到，问题可能出在 gRPC 推送链路。
+
+**步骤 3（JVM 诊断引擎）——确认推送线程是否阻塞：**
+
+```bash
+# 抓取线程快照，查找 RpcPushService 相关线程是否 BLOCKED/WAITING
+jstack <nacos_pid> | grep -A 5 "RpcPushService"
+# 若大量推送线程阻塞，再用火焰图定位阻塞热点
+async-profiler -d 30 -e cpu -f /tmp/push_flame.html <nacos_pid>
+```
+
+**排查思想**：先用 HTTP API 锁定向"发布侧"，再用日志确认"推送侧"，最后用 JVM 工具定位"线程侧"。三类命令依次缩小问题范围，避免在某个引擎内过度深挖而忽略整体链路。
+
+### 命令执行安全注意事项
+
+命令速查表虽便捷，但部分命令具有副作用，执行前必须区分"只读诊断命令"与"变更类命令"：
+
+| 类别 | 命令 | 副作用 | 安全策略 |
+|------|------|--------|---------|
+| 只读 | curl GET 接口 | 无 | 可任意执行 |
+| 只读 | jstack / jmap -histo | 轻微（-histo 无 GC） | 任意执行 |
+| 副作用 | jmap -dump:live | 触发 Full GC | 低峰期执行 |
+| 副作用 | 强制下线节点接口 | 影响集群 | 需鉴权+确认 |
+| 副作用 | 清理历史配置 | 数据不可恢复 | dry-run 预览 |
+
+**核心原则**：所有"写"操作命令在执行前都应先在测试集群验证，并在生产通过 dry-run 或双人复核（change approval）机制控制，避免误操作导致不可逆影响。
+
 ### 小结
 
-运维命令速查表覆盖 HTTP API（集群/服务/配置管理）、Shell 日志分析（tail/grep/awk）、JVM 诊断（jstat/jstack/jmap/async-profiler）三个维度。建议运维团队建立团队内部的运维命令知识库（Wiki），持续积累故障排查中使用的命令组合。
+运维命令速查表覆盖 HTTP API（集群/服务/配置管理）、Shell 日志分析（tail/grep/awk）、JVM 诊断（jstat/jstack/jmap/async-profiler）三个维度。建议运维团队建立团队内部的运维命令知识库（Wiki），持续积累故障排查中使用的命令组合，并严格区分只读诊断命令与变更类命令的边界，确保排查高效且安全。在实际运维中还应将常用命令封装为统一的诊断入口脚本（如 `nacos-diag.sh`），把多步命令收敛为单条命令并输出结构化结果，进一步降低人为操作失误概率并缩短排障时间。同时建议将高频命令组合沉淀为可复用的排查 SOP 文档，使新成员也能按标准流程快速完成从现象到根因的定位，提升整个团队的故障处置效率与一致性。值得注意的是，命令速查表并非一成不变，而应随 Nacos 版本升级与集群规模变化持续更新——例如新版本新增的诊断接口、更大集群下的抓取超时调整等，都应同步修订到速查表中，保持其与实际环境的一致性。通过「命令速查 + 诊断脚本 + SOP 沉淀」三位一体的组合，可将零散的单条命令上升为团队的可持续运维能力资产，从而在各类故障面前均能快速、准确、安全地作出响应。本章命令速查表即按此思路组织，供运维团队直接复用。
 
 ---
 
@@ -1153,6 +1735,34 @@ async-profiler -d 30 -e cpu -f /tmp/nacos_cpu_flamegraph.html <nacos_pid>
 Nacos 集群长期运行过程中，会积累历史配置数据（`his_config_info` 表）、过期临时实例（客户端异常退出后残留的实例注册信息）、Raft 日志快照（`${nacos.home}/data/protocol/raft/`）等需要定期清理的数据。同时日志文件需要按滚动策略定期归档和清理。
 
 定期运维任务包括三大类：**数据清理**（历史配置 / 过期实例 / Raft Snapshot）、**日志轮转**（按 TimeBasedRollingPolicy 自动滚动 + 手动清理异常增长的日志文件）、**Raft Snapshot 检查**（确保 Raft 日志不会无限增长）。
+
+### 核心类关系图（定期任务与存储对象映射）
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  Nacos 定期运维任务：对象 / 动作 / 存储位置                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  任务                清理对象              存储位置              触发方式    │
+│  ┌──────────────┐   ┌────────────────┐   ┌────────────────────────┐        │
+│  │ 历史配置清理  │──▶│ his_config_info│   │ MySQL 数据库            │──▶ SQL  │
+│  │  (config)     │   │ (历史版本)      │   │ (persistence)          │   删除 │
+│  ├──────────────┤   ├────────────────┤   ├────────────────────────┤        │
+│  │ 过期实例清理  │──▶│ 临时实例 (v2)   │   │ 内存 ServiceManager     │──▶ Java │
+│  │  (naming)     │   │ (心跳超时)     │   │ 注册表                  │  清理  │
+│  ├──────────────┤   ├────────────────┤   ├────────────────────────┤        │
+│  │ Raft 日志压缩 │──▶│ Raft 日志       │   │ data/protocol/raft/    │──▶ Raft │
+│  │ (Snapshot)    │   │ (已 compaction)│   │ ns/{group}/            │  Snaps │
+│  ├──────────────┤   ├────────────────┤   ├────────────────────────┤        │
+│  │ 日志文件轮转  │──▶│ logs/*.log     │   │ ${nacos.home}/logs/    │──▶Logback│
+│  │ (TimeBased)   │   │ (滚动归档)     │   │ *.%d{yyyy-MM-dd}.gz    │  滚动   │
+│  └──────────────┘   └────────────────┘   └────────────────────────┘        │
+│                                                                             │
+│            图 13-9：四类定期运维任务与存储对象映射                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+上图按"清理对象 → 存储位置 → 触发方式"三个维度梳理四类定期任务。它们的共同点是处理"随时间无限增长"的数据：历史配置与 Raft 日志若不清理会撑爆数据库与磁盘，临时实例残留会造成注册表膨胀，日志文件会耗尽磁盘空间。因此定期任务的核心目标是**控制数据规模的持续膨胀**，属于典型的容量治理范畴。
 
 ### 1. 数据清理任务
 
@@ -1264,7 +1874,39 @@ echo > ${nacos.home}/logs/remote-server.log
 | **误删风险** | 低（人工审核 SQL WHERE 条件） | 高（脚本 SQL 错误可能误删大量数据） |
 | **可追溯性** | 低（无自动记录） | 高（Cron 日志自动记录） |
 
-**推荐**：初期手动执行清理任务建立基线（运行 丛-3 次确认 SQL WHERE 条件正确）→ 再编写自动化 Cron 脚本（加入 `--dry-run` 模式先预览要删除的数据）。
+**推荐**：初期手动执行清理任务建立基线（运行 2-3 次确认 SQL WHERE 条件正确）→ 再编写自动化 Cron 脚本（加入 `--dry-run` 模式先预览要删除的数据）。
+
+### 源码走读：历史配置清理与 Raft Snapshot 的实现入口
+
+历史配置清理针对 `his_config_info` 表，该表由 `config` 模块的持久化层维护。Nacos 源码中与历史配置清理相关的是 `ConfigInfoService` 的删除方法，它会在删除当前配置的同时保留操作历史，避免误删后无法回溯：
+
+```java
+// config/src/main/java/com/alibaba/nacos/config/server/service/ConfigInfoService.java (Nacos 2.5.3, 节选)
+public void removeConfigInfo(final String dataId, final String group, final String tenant, String operator) {
+    // 将当前配置写入 his_config_info 作为历史记录后再删除
+    // 这样即使误删，也能通过历史版本恢复
+}
+```
+
+而 Raft 日志的增长控制依赖 **Snapshot 机制**。Jraft（Nacos 使用的 Raft 实现）通过定期生成 Snapshot 压缩已提交的日志，源码层面的关键配置在 `RaftSysConstants`：
+
+```java
+// core/src/main/java/com/alibaba/nacos/core/consistency/raft/RaftSysConstants.java (Nacos 2.5.3, 节选)
+public final class RaftSysConstants {
+    // Snapshot 生成方式：按时间间隔或日志数量阈值
+    public static final String MASTER_SNAPSHOT_META_THRESHOLD = "master.snapshot.meta.threshold";
+    public static final String MASTER_SNAPSHOT_INTERVAL_SECONDS = "master.snapshot.interval.seconds";
+    public static final String CLUSTER_SNAPSHOT_META_THRESHOLD = "cluster.snapshot.meta.threshold";
+}
+```
+
+Raft 节点会按照 `interval.seconds` 周期或 `meta.threshold` 日志量阈值触发 `SnapshotOperation`，将状态机的一致状态落盘并丢弃已归档的日志段。运维巡检中若发现 `data/protocol/raft/ns/{group}/` 目录持续异常增长，往往意味着 Snapshot 生成失败（如磁盘不足或阈值配置过大），应及时检查 13.7 节提到的 Raft 日志巡检项。
+
+### 设计模式分析
+
+1. **模板方法模式（Template Method）**：四类定期任务（历史配置 / 过期实例 / Raft Snapshot / 日志轮转）共享"定义清理范围 → 执行清理 → 记录结果 → 失败告警"的统一流程骨架，每类任务仅实现各自的清理动作，便于统一监控与失败处理。
+2. **策略模式（Strategy）**：同一任务可选用"手动策略"（人工审核执行）或"自动化策略"（Cron 定时执行），二者共享一致的清理定义，仅在执行方式上通过策略切换，实现"先手动建立基线、后自动化替代"的安全演进路径。
+3. **命令模式（Command）**：将每个周期性清理动作封装为独立命令（cleanup_history_config / raft_snapshot_check），支持 dry-run 预览、记录日志、失败重试与告警，使运维任务像命令一样可测试、可回滚、可审计。
 
 ### 小结
 
@@ -2015,7 +2657,7 @@ if [ -z "${PID}" ]; then
     send_alert "CRITICAL" "进程不存在" "Nacos 进程未运行"
     echo "FAIL: Nacos 进程未运行"
 else
-    OLD_GEN=$(jstat -gcutil "${PID}" 1000 丛 | awk 'END{print $4}' | sed 's/\..*//')
+    OLD_GEN=$(jstat -gcutil "${PID}" 1000 10 | awk 'END{print $4}' | sed 's/\..*//')
     if [ "${OLD_GEN}" -gt 85 ]; then
         send_alert "WARNING" "JVM 堆内存过高" "Old Gen 使用率 ${OLD_GEN}% > 85%"
         echo "WARN: Old Gen 使用率 ${OLD_GEN}% > 85%"
