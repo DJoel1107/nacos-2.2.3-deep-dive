@@ -42,6 +42,8 @@ Nacos Server 启动失败是运维中最先遇到、也最频繁的一类故障�
 
 ### 6 种常见启动失败原因
 
+表 14-1：6 种常见启动失败原因速查（Nacos 2.5.3）
+
 | # | 失败原因 | 典型错误日志 | 判定依据 | 解决方向 |
 |---|---------|-------------|---------|---------|
 | 1 | **JVM 参数不合法** | `Invalid maximum heap size: -Xmx`、`Error occurred during initialization of VM` | 启动脚本与 Docker 内存不匹配 | 校验 `startup.sh` 的 `-Xms/-Xmx` 与容器/主机可用内存 |
@@ -131,6 +133,8 @@ touch /path/to/nacos/data/.write_test
 
 **快速失败（fail-fast） vs 容错启动**：
 
+表 14-2：启动失败处理策略对比：严格校验 vs 容错启动
+
 | 维度 | 严格校验（快速失败） | 宽松容忍（延迟暴露） |
 |------|--------------------|--------------------|
 | 问题发现时机 | 启动即抛错，立即暴露 | 启动看似成功，运行期才出问题 |
@@ -185,7 +189,7 @@ public class NacosApplicationListener implements SpringApplicationRunListener {
 1. **模板方法模式（Template Method）**：Spring Boot 的 `SpringApplication.run()` 封装了环境准备、Bean 定义、容器刷新、发布事件等固定启动流程，各模块只需实现各自的条件装配回调，复用了统一启动骨架。
 2. **观察者模式（Observer）**：`NacosApplicationListener` 监听 Spring 启动事件（如 `ApplicationEnvironmentPreparedEvent`），在不同生命周期阶段执行 Nacos 特有初始化，实现了框架启动流程与业务初始化的解耦。
 
-此外，Nacos 启动失败排查还应形成「症状-原因-验证」闭环记录：每次成功定位一个启动问题后，将错误日志关键字、根因与解决动作沉淀到团队知识库。随着问题样本不断积累，可将 6 步诊断逐步收敛为更短的判据，例如仅凭首个堆栈类名即可命中常见根因表，从而显著缩短下一次同类故障的解决时间。
+此外，Nacos 启动失败排查还应形成「症状-原因-验证」闭环记录：每次成功定位一个启动问题后，将错误日志关键字、根因与解决动作沉淀到团队知识库。随着问题样本不断积累，可将 6 步诊断逐步收敛为更短的判据，例如仅凭首个堆栈类名即可命中常见根因表，从而缩短下一次同类故障的解决时间。
 
 ### 小结
 
@@ -296,6 +300,8 @@ spring:
 ### Trade-off 分析
 
 **DNS 统一解析 vs `/etc/hosts` 静态映射**：
+
+表 14-3：地址解析方案对比：DNS 统一解析 vs /etc/hosts 静态映射
 
 | 维度 | DNS 统一解析 | /etc/hosts 静态映射 |
 |------|-------------|--------------------|
@@ -474,6 +480,8 @@ public void addLongPollingClient(HttpServletRequest req, HttpServletResponse rsp
 
 **服务端主动推送 vs 客户端长轮询拉取**：
 
+表 14-4：配置变更通知方式对比：服务端主动推送 vs 客户端长轮询
+
 | 维度 | 服务端主动推送 | 客户端长轮询（Nacos 采用） |
 |------|--------------|--------------------------|
 | 实时性 | 即时 | 受轮询周期限制（约秒级） |
@@ -563,6 +571,8 @@ public void executeConfigListen() throws NacosException {
 ### 完整排障流程对照表
 
 将 4 步排查的每一步对应到可执行命令、判定标准与根因结论，形成可直接落地的排查清单：
+
+表 14-5：配置不生效 4 步排查清单
 
 | 步骤 | 检查内容 | 命令/操作 | 判定标准 | 对应根因 |
 |------|---------|----------|---------|---------|
@@ -703,6 +713,8 @@ curl -s 'http://localhost:8848/nacos/v1/console/health/liveness' | jq
 
 **长轮询超时调大 vs 调小**：
 
+表 14-6：长轮询超时配置权衡：调大 vs 调小
+
 | 维度 | 超时调大（如 60s） | 超时调小（如 10s） |
 |------|------------------|------------------|
 | 变更感知实时性 | 中（变更依赖服务端提前响应） | 高（短周期重新拉取） |
@@ -786,6 +798,8 @@ grep -c "ClientLongPolling" /tmp/ts1.txt /tmp/ts2.txt
 ### 注册与健康检查类型基础
 
 理解 Nacos 的健康检查机制是排查注册异常的前提。Nacos 2.5.3 将实例分为两类，健康管理方式完全不同：
+
+表 14-7：实例类型与健康检查机制（ephemeral vs persistent）
 
 | 实例类型 | 健康检查方式 | 主动探测 | 保活机制 |
 |---------|-------------|---------|---------|
@@ -877,6 +891,8 @@ public void run() {
 ### Trade-off 分析
 
 **临时实例心跳（ephemeral） vs 持久实例（persistent）**：
+
+表 14-8：临时实例与持久实例的健康管理对比
 
 | 维度 | 临时实例（ephemeral） | 持久实例（persistent） |
 |------|---------------------|----------------------|
@@ -1035,6 +1051,8 @@ naming.deregisterInstance("manual-heartbeat-test", "192.168.1.200", 18080);
 
 在持续观测心跳健康度时，可结合 Prometheus 指标与日志频率综合判断（相关指标定义见第 13 章）：
 
+表 14-9：心跳健康度监控观测维度
+
 | 观察维度 | 指标/日志 | 正常表现 | 异常表现 |
 |---------|----------|---------|---------|
 | 心跳接收速率 | `naming-server.log` 的 beat 记录频率 | 各实例 beat 稳定 | 某实例 beat 消失 |
@@ -1047,6 +1065,8 @@ naming.deregisterInstance("manual-heartbeat-test", "192.168.1.200", 18080);
 ### Trade-off 分析
 
 **心跳间隔大小权衡**：
+
+表 14-10：心跳间隔大小权衡
 
 | 维度 | 心跳间隔小（如 2s） | 心跳间隔大（如 15s） |
 |------|-------------------|--------------------|
@@ -1076,6 +1096,8 @@ grep -iE "reconnect|retry" ${nacos.home}/logs/remote-server.log | tail -20
 ### 心跳异常的日志与排查要点整理
 
 综合来看，心跳异常排查可按以下清单逐项核对，避免遗漏：
+
+表 14-11：心跳异常完整排查清单
 
 | 排查维度 | 检查内容 | 检查日志/命令 | 典型结论 |
 |---------|---------|--------------|---------|
@@ -1141,7 +1163,7 @@ gRPC 长连接心跳链路体现了**生产者-消费者模式**：客户端作�
 # 在集群中每个节点上分别执行，对比各自的节点列表视图
 curl -s 'http://localhost:8848/nacos/v1/core/cluster/nodes' | jq '.nodes'
 ```
-判定：脑裂的显著特征是**不同节点返回的节点列表不一致**——分区 A 的节点看不到分区 B 的节点，或看到对方状态为 DOWN。若各节点视图一致且全 UP，则基础连通性正常。
+判定：脑裂的典型特征是**不同节点返回的节点列表不一致**——分区 A 的节点看不到分区 B 的节点，或看到对方状态为 DOWN。若各节点视图一致且全 UP，则基础连通性正常。
 
 **步骤 2：`raft/leader` 检查 Leader 一致性。**
 ```bash
@@ -1233,6 +1255,8 @@ protected PeerId getLeader(final String raftGroupId) {
 
 **Raft 严格选主 vs 网络分区容忍**：
 
+表 14-12：Raft 选主策略权衡：严格选主 vs 分区容忍
+
 | 维度 | 强一致（严格单 Leader） | 分区容忍（网络抖动可重选） |
 |------|----------------------|--------------------------|
 | 脑裂风险 | 低（Pre-Vote 防多主） | 中（频繁重选易误判） |
@@ -1245,6 +1269,8 @@ Nacos Raft 采用 CP 语义，以"多数派选举"保证单 Leader，从机制�
 ### 脑裂对业务的实际影响
 
 理解脑裂的破坏性，才能重视排查与预防。脑裂期间 Nacos 各模块受影响的严重程度不同：
+
+表 14-13：脑裂对 Nacos 各模块的业务影响
 
 | 数据/功能 | 影响 | 严重程度 |
 |----------|------|---------|
@@ -1282,6 +1308,8 @@ nodeOptions.setElectionTimeoutMs(electionTimeout);
 ### 脑裂的预防与监控维度
 
 排查之后更重要的是预防。生产环境应从以下维度降低脑裂发生概率：
+
+表 14-14：脑裂预防维度与措施
 
 | 预防维度 | 具体措施 | 作用 |
 |---------|---------|------|
@@ -1364,6 +1392,8 @@ Nacos 的 Raft 模块采用**抽象工厂模式 + 策略模式**组织：`JRaftS
 
 下面以一张对照表进一步明确 3 种情况的处理要点与恢复途径：
 
+表 14-15：脑裂 3 种情况的处理要点对照
+
 | 情况 | 核心判断 | 处理要点 | 恢复途径 | 耗时预估 |
 |------|---------|---------|---------|---------|
 | 1. 少数派隔离 | 多数派仍有唯一 Leader | 保留多数派权威，隔离节点降级 | 网络恢复自动重同步 | 分钟级 |
@@ -1432,6 +1462,8 @@ JRaft 的成员变更采用**单节点变更（single-server change）**方式�
 ### Trade-off 分析
 
 **自动恢复 vs 人工干预**：
+
+表 14-16：脑裂恢复方式对比：自动恢复 vs 人工干预
 
 | 维度 | 自动恢复（依赖 Raft 自愈） | 人工干预（双 Leader 场景） |
 |------|--------------------------|--------------------------|
@@ -1588,6 +1620,8 @@ grep "Full GC" ${nacos.home}/logs/gc.log | tail -20
 
 结合 Nacos 的运行机制，生产中最常出现的泄漏可归为以下几类，排查时可优先对号入座：
 
+表 14-17：Nacos 常见内存泄漏类型
+
 | 泄漏类型 | 典型持有对象 | 症状 | 常见诱因 |
 |---------|-------------|------|---------|
 | **连接对象泄漏** | `Connection`/`ConnectionManager.connections` Map | Old Gen 缓慢增长 | 客户端非优雅退出，连接关闭回调未触发 |
@@ -1602,14 +1636,16 @@ grep "Full GC" ${nacos.home}/logs/gc.log | tail -20
 
 定位到"内存高"后，还需区分是**泄漏**还是**容量不足**，二者处理方向完全不同：
 
+表 14-18：内存泄漏 vs 内存不足判定
+
 | 判定维度 | 内存泄漏 | 内存不足 |
 |---------|---------|---------|
-| Full GC 后 Old 区 | 不回落或回落不明显 | 通常能回落到基线附近 |
+| Full GC 后 Old 区 | 不回落或回落有限 | 通常能回落到基线附近 |
 | 对象数量 | 某类对象持续单调增长 | 整体对象规模随流量正常波动 |
 | 与业务关系 | 与流量不成比例 | 与流量成正相关 |
 | 处理方向 | 修复引用链、释放对象 | 调大堆、优化 GC、扩容 |
 
-**判断方法**：连续观测多次 Full GC 后的 Old 区占用。若每次 Full GC 后占用都持续攀升（如 50%→65%→78%），倾向泄漏；若 Full GC 后能明显回落、只是很快又填满，更可能是堆设偏小。二者也可能并存——先解决泄漏，再评估是否需要调堆。
+**判断方法**：连续观测多次 Full GC 后的 Old 区占用。若每次 Full GC 后占用都持续攀升（如 50%→65%→78%），倾向泄漏；若 Full GC 后能回落、只是很快又填满，更可能是堆设偏小。二者也可能并存——先解决泄漏，再评估是否需要调堆。
 
 ### 步骤 3：Eclipse MAT 分析定位泄漏
 
@@ -1636,6 +1672,8 @@ grep "Full GC" ${nacos.home}/logs/gc.log | tail -20
 
 **HeapDump 抓取时机：在线 dump vs OOM 自动 dump**：
 
+表 14-19：HeapDump 抓取时机对比：在线 dump vs OOM dump
+
 | 维度 | 在线 jmap dump | OOM 自动 dump |
 |------|---------------|--------------|
 | 时机精准度 | 可自主选择高位时刻 | OOM 瞬间（可能延迟） |
@@ -1647,7 +1685,7 @@ grep "Full GC" ${nacos.home}/logs/gc.log | tail -20
 
 ### JVM 内存参数与 GC 策略建议
 
-排查内存问题后，合理配置 JVM 参数能显著降低内存风险。Nacos 生产环境常用参数建议：
+排查内存问题后，合理配置 JVM 参数能有效降低内存风险并减少泄漏概率。Nacos 生产环境常用参数建议：
 
 ```bash
 # 启动参数示例（nacos/bin/startup.sh 调整或 JVM_OPT 注入）
@@ -1766,6 +1804,8 @@ Nacos Server 的内存泄漏有若干典型场景，了解这些场景有助于�
 
 ### 四类泄漏场景速查表
 
+表 14-20：Nacos 四类典型内存泄漏场景速查表
+
 | # | 场景 | 涉及核心类 | 泄漏机理 | MAT/观察判定 | 处理方向 |
 |---|------|-----------|---------|-------------|---------|
 | 1 | **gRPC 连接泄漏** | `ConnectionManager`（`core/.../remote/ConnectionManager.java`） | 客户端异常退出但服务端连接未关闭，`connections` Map 中的连接对象持续堆积 | `connections` Map 的 clientId 数量持续增长且不释放 | 排查连接超时配置、客户端断线重连是否规范关闭 |
@@ -1805,6 +1845,8 @@ public static void registerToPublisher(Class<? extends Event> eventType,
 
 四类泄漏场景的防控重点可归纳为一张清单：
 
+表 14-21：内存泄漏场景预防与监控指标
+
 | 场景 | 核心预防手段 | 关键监控指标 |
 |------|-------------|-------------|
 | gRPC 连接泄漏 | 开启连接健康检测、规范断连清理 | 在线连接数、`connections` Map 规模 |
@@ -1821,6 +1863,8 @@ public static void registerToPublisher(Class<? extends Event> eventType,
 ### Trade-off 分析
 
 **队列有界 vs 无界**（针对上述任务/连接缓存）**：
+
+表 14-22：任务/缓存队列策略权衡：有界 vs 无界
 
 | 维度 | 有界队列（限流） | 无界队列（无限积压） |
 |------|----------------|--------------------|
@@ -1844,7 +1888,7 @@ jmap -dump:format=b,file=/tmp/nacos_heap_t2.hprof <pid>
 
 然后对两份快照分别用 MAT 打开 Histogram，对比**同一类对象**的 Retained Heap 与实例数：
 
-- 若 `Connection`、`ClientLongPolling`、`PushExecuteTask` 等对象的实例数在 T1→T2 间**明显增加**，即确证对应场景存在泄漏；
+- 若 `Connection`、`ClientLongPolling`、`PushExecuteTask` 等对象的实例数在 T1→T2 间**持续增加**，即确证对应场景存在泄漏；
 - 若各对象实例数基本持平、仅总量随流量波动，则更可能是容量/配置问题而非泄漏。
 
 对比法能有效避免"误把正常缓存当泄漏"的误判，是 14.9 单快照分析的重要补充，应作为排查流程的标准动作固化。
@@ -1926,7 +1970,7 @@ async-profiler -d 30 -e cpu -f /tmp/nacos_cpu_flame.html <nacos_pid>
 ```
 火焰图纵轴为调用栈，横向宽度表示 CPU 采样占比。**顶部最宽的函数即 CPU 热点**。常见 Nacos 热点函数：
 - `DistroClientDataProcessor` / `ClientBeatProcessorV2` → 大量实例心跳/注册处理。
-- `RpcPushService.push` → 推送风暴（服务频繁变更）。
+- `PushExecutorRpcImpl`→`RpcPushService.pushWithoutAck` → 推送风暴（服务频繁变更）。
 - `ConfigCacheService` / `LongPollingService` → 配置高并发读写/长轮询。
 - GC 相关（`GC` 标签占大比例）→ 内存回收压力。
 
@@ -1956,6 +2000,8 @@ for i in 1 2 3; do jstack <pid> > /tmp/thread_$i.txt; sleep 3; done
 
 结合 Nacos 运行特征，CPU 飙高通常可归为以下几类，排查时可对号入座：
 
+表 14-23：CPU 飙高常见根因归类
+
 | 根因类别 | 典型表现 | 定位方向 |
 |---------|---------|---------|
 | **GC 压力** | GC 线程高 CPU、频繁 Full GC | 转 14.9/14.10 内存排查 |
@@ -1969,6 +2015,8 @@ for i in 1 2 3; do jstack <pid> > /tmp/thread_$i.txt; sleep 3; done
 ### Trade-off 分析
 
 **jstack 快照 vs async-profiler 采样**：
+
+表 14-24：CPU 定位工具对比：jstack vs async-profiler
 
 | 维度 | jstack（瞬时快照） | async-profiler（周期采样） |
 |------|------------------|--------------------------|
@@ -1984,18 +2032,26 @@ for i in 1 2 3; do jstack <pid> > /tmp/thread_$i.txt; sleep 3; done
 CPU 热点往往集中在推送链路，理解其处理逻辑有助于定位。`RpcPushService` 是 Nacos 推送的核心入口：
 
 ```java
-// naming/src/main/java/com/alibaba/nacos/naming/push/v2/RpcPushService.java (Nacos 2.5.3, 节选)
-public void pushToClient(Service service, String clientId, PushDataWrapper dataWrapper) {
-    // 将推送任务按 clientId 路由到对应 Client, 通过 gRPC 单向流推送
-    Connection connection = ConnectionManager.getInstance().getConnection(clientId);
-    if (connection == null) { return; }
-    // ...
+// core/src/main/java/com/alibaba/nacos/core/remote/RpcPushService.java:96 (Nacos 2.5.3, 节选)
+public void pushWithoutAck(String connectionId, ServerRequest request) {
+    Connection connection = connectionManager.getConnection(connectionId);
+    if (connection != null) {
+        try {
+            connection.request(request, 3000L);
+        } catch (Exception e) {
+            // 推送异常处理
+        }
+    }
 }
+
+// naming/.../push/v2/executor/PushExecutorRpcImpl.java:45 (Nacos 2.5.3, 节选)
+// Naming 侧通过 PushExecutorDelegate 选择 PushExecutorRpcImpl,
+// 其内部调用 RpcPushService.pushWithoutAck/pushWithCallback 完成推送
 ```
 
-**热点成因**：当服务实例频繁变更（注册/注销/心跳）时，`pushToClient` 会被大量调用，按客户端逐一推送。若订阅该服务的客户端数量巨大，单次服务变更即触发大规模推送，形成 CPU 热点。此时火焰图顶部会出现 `RpcPushService.pushToClient` 的宽大柱状。
+**热点成因**：当服务实例频繁变更（注册/注销/心跳）时，Naming 侧的 `PushExecutorRpcImpl` 会大量调用 `RpcPushService` 将变更按客户端逐一推送。若订阅该服务的客户端数量巨大，单次服务变更即触发大规模推送，形成 CPU 热点。此时火焰图顶部会出现 `RpcPushService.pushWithoutAck`/`pushWithCallback` 的宽大柱状。
 
-**优化思路**：从"按客户端逐个推送"转向**批量推送 / 合并推送**，或对推送频率做节流（同服务短时间多次变更合并为一次推送），可显著降低推送链路的 CPU 开销。这也解释了为何高变更频率场景下 CPU 会与内存泄漏（14.10 场景 4 推送积压）同时出现。
+**优化思路**：从"按客户端逐个推送"转向**批量推送 / 合并推送**，或对推送频率做节流（同服务短时间多次变更合并为一次推送），可降低推送链路 CPU 开销并抑制热点集中。这也解释了为何高变更频率场景下 CPU 会与内存泄漏（14.10 场景 4 推送积压）同时出现。
 
 ### 锁竞争检测与定位
 
@@ -2045,6 +2101,8 @@ grep -B1 -A5 "parking to wait for" /tmp/t.txt | head -50
 
 排查解决之后，需通过监控提前发现 CPU 异常。建议配置以下指标及告警：
 
+表 14-25：CPU 性能监控指标与告警配置
+
 | 指标 | 告警阈值参考 | 用途 |
 |------|-------------|------|
 | 节点 CPU 使用率 | 持续 > 85% 数分钟 | 识别持续高占用 |
@@ -2056,7 +2114,7 @@ grep -B1 -A5 "parking to wait for" /tmp/t.txt | head -50
 
 ### 设计模式分析
 
-CPU 飙高排查本身并不涉及 Nacos 源码设计模式，但通过热点函数可反推 Nacos 的性能设计取舍。例如 `ClientBeatProcessorV2` 的逐实例心跳处理、`RpcPushService` 的逐个推送，本质是**分而治之**的处理模型；当热点集中在这些处理器时，往往提示"单实例处理成本 × 实例数量"超过节点处理能力，可通过批处理、线程池扩容或水平扩展缓解。这也呼应了第 12 章性能调优中"从单实例优化转向横向扩展"的思路。
+CPU 飙高排查本身并不涉及 Nacos 源码设计模式，但通过热点函数可反推 Nacos 的性能设计取舍。例如 `ClientBeatProcessorV2` 的逐实例心跳处理、`PushExecutorRpcImpl` 经 `RpcPushService` 的逐个推送，本质是**分而治之**的处理模型；当热点集中在这些处理器时，往往提示"单实例处理成本 × 实例数量"超过节点处理能力，可通过批处理、线程池扩容或水平扩展缓解。这也呼应了第 12 章性能调优中"从单实例优化转向横向扩展"的思路。
 
 ### 完整案例：一次推送风暴引发的 CPU 飙高
 
@@ -2066,9 +2124,9 @@ CPU 飙高排查本身并不涉及 Nacos 源码设计模式，但通过热点函
 
 **步骤 1 - top -H**：`top -H -p <pid>` 显示多个线程 CPU 占用偏高，其中两个线程 %CPU 达 60% 和 40%。
 
-**步骤 2 - jstack**：将两个 TID 转十六进制，在 `jstack` 中定位到线程栈，发现二者都停在高频调用 `RpcPushService.pushToClient` 与 `DistroClientDataProcessor` 的栈帧上，线程类型属于推送/同步相关。
+**步骤 2 - jstack**：将两个 TID 转十六进制，在 `jstack` 中定位到线程栈，发现二者都停在高频调用 `PushExecutorRpcImpl`→`RpcPushService.pushWithoutAck` 与 `DistroClientDataProcessor` 的栈帧上，线程类型属于推送/同步相关。
 
-**步骤 3 - async-profiler**：生成火焰图（`-d 30 -e cpu`），顶部最宽的函数确认为 `RpcPushService.pushToClient`，其次为 `ClientBeatProcessorV2.process`（心跳处理）。
+**步骤 3 - async-profiler**：生成火焰图（`-d 30 -e cpu`），顶部最宽的函数确认为 `PushExecutorRpcImpl` 调用链路，实际指向 `RpcPushService.pushWithoutAck`，其次为 `ClientBeatProcessorV2.process`（心跳处理）。
 
 **综合判定**：网络抖动导致一批服务反复注册/注销，触发**推送风暴**与**心跳处理风暴**——大量客户端重连与实例变更，推送链路成为 CPU 热点。
 
@@ -2080,11 +2138,13 @@ CPU 飙高排查本身并不涉及 Nacos 源码设计模式，但通过热点函
 
 定位到根因后，需从操作层面给出决策。按影响范围从小到大排列：
 
+表 14-26：CPU 调优与扩容措施对比
+
 | 措施 | 适用情形 | 成本 |
 |------|---------|------|
 | **代码/配置级优化**（合并推送、节流） | 推送/心跳风暴 | 低 |
 | **调优线程池/队列**（扩处理线程、有界队列） | 处理能力不足但规模可预见 | 中 |
-| **锁粒度优化**（缩小临界区） | 锁竞争明显 | 中 |
+| **锁粒度优化**（缩小临界区） | 持续锁竞争 | 中 |
 | **水平扩容**（增加节点分散负载） | 业务规模持续增长、单节点饱和 | 高 |
 
 **决策要点**：优先用低成本措施消除"不合理的负载来源"（如反复重连、变更风暴），再评估是否调优线程与锁，最后才考虑扩容。盲目扩容可能在负载根源未除时仍有隐患，也增加了集群维护成本。同时，将 CPU 使用率、GC 频率、上下文切换率等指标接入监控并设置趋势告警，避免 CPU 飙高长期未被发现。
