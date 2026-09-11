@@ -1272,7 +1272,7 @@ echo > ${nacos.home}/logs/remote-server.log
 
 ---
 
-## 13.1 补充：Prometheus Metrics 导出配置的深入实战
+## 13.10 补充：Prometheus Metrics 导出配置的深入实战
 
 ### PrometheusUtils 源码走读
 
@@ -1343,7 +1343,7 @@ public class PrometheusAuthFilter implements Filter {
 
 ---
 
-## 13.2 补充：Prometheus 指标采集实战配置
+## 13.11 补充：Prometheus 指标采集实战配置
 
 ### JMX Exporter 集成配置
 
@@ -1431,7 +1431,7 @@ scrape_configs:
 
 ---
 
-## 13.5 补充：日志分析实战案例
+## 13.12 补充：日志分析实战案例
 
 ### 生产案例 1：通过 nacos-cluster.log 排查集群脑裂
 
@@ -1479,7 +1479,7 @@ grep "connection closed" ${nacos.home}/logs/remote-server.log | wc -l
 
 ---
 
-## 13.8 补充：生产环境故障排查实战命令组合
+## 13.13 补充：生产环境故障排查实战命令组合
 
 ### 实战案例：CPU 飙高排查完整流程
 
@@ -1545,7 +1545,7 @@ jmap -dump:live,format=b,file=/tmp/nacos_heap_$(date +%Y%m%d_%H%M%S).hprof <naco
 
 ---
 
-## 13.2 深入：Prometheus 核心指标源码映射
+## 13.14 深入：Prometheus 核心指标源码映射
 
 ### 指标数据来源的源码走读
 
@@ -1762,7 +1762,7 @@ public void push(Connection connection, PushAckId pushAckId, Object request) {
 
 ---
 
-## 13.6 深入：日志体系源码走读
+## 13.15 深入：日志体系源码走读
 
 ### Nacos 2.5.3 日志适配器架构
 
@@ -1940,7 +1940,7 @@ Nacos 2.5.3 通过 `logger-adapter-impl/` 模块提供 Log4j2 和 Logback 两种
 
 ---
 
-## 13.7 深入：自动化运维巡检脚本
+## 13.16 深入：自动化运维巡检脚本
 
 ### 完整的 Shell 巡检脚本
 
@@ -2091,7 +2091,7 @@ echo "========================================="
 
 ---
 
-## 13.3 深入：Grafana Dashboard 完整 PromQL 查询库
+## 13.17 深入：Grafana Dashboard 完整 PromQL 查询库
 
 ### 额外的监控面板 PromQL 查询
 
@@ -2209,7 +2209,7 @@ rate(hikaricp_connection_timeout_total{job="nacos"}[5m]) * 60
 
 ---
 
-## 13.4 深入：AlertManager 告警路由配置与静默规则
+## 13.18 深入：AlertManager 告警路由配置与静默规则
 
 ### AlertManager 完整配置示例
 
@@ -2332,7 +2332,7 @@ curl -X POST 'http://alertmanager:9093/api/v2/silences' \
 
 ---
 
-## 13.9 补充：生产环境定期运维任务自动化
+## 13.19 补充：生产环境定期运维任务自动化
 
 ### MySQL 历史配置完整清理脚本
 
@@ -2489,7 +2489,7 @@ fi
 
 ---
 
-## 13.1 深入：Prometheus 采集模式 Trade-off 分析
+## 13.20 深入：Prometheus 采集模式 Trade-off 分析
 
 ### Pull vs Push 采集模式对比
 
@@ -2555,7 +2555,7 @@ scrape_configs:
 
 ---
 
-## 13.2 深入：核心指标的 JMX MBean 路径映射
+## 13.21 深入：核心指标的 JMX MBean 路径映射
 
 ### 11 个指标的 JMX MBean 精确路径
 
@@ -2640,7 +2640,7 @@ Critical 阈值 = 1230 + 3 × 45 = 1365
 
 ---
 
-## 13.5 深入：config-server.log 排查配置不生效案例
+## 13.22 深入：config-server.log 排查配置不生效案例
 
 ### 生产案例 3：通过 config-server.log 排查配置不生效
 
@@ -2685,7 +2685,7 @@ grep "long polling timeout" ${nacos.home}/logs/config-server.log | tail -20
 
 ---
 
-## 13.7 深入：巡检清单发现问题的生产案例
+## 13.23 深入：巡检清单发现问题的生产案例
 
 ### 生产案例：磁盘使用率巡检发现 Raft 日志异常增长
 
@@ -2723,7 +2723,7 @@ curl -X GET 'http://nacos-server:8848/nacos/v1/core/cluster/raft/snapshot'
 
 ---
 
-## 13.8 深入：async-profiler 火焰图解读生产案例
+## 13.24 深入：async-profiler 火焰图解读生产案例
 
 ### 生产案例：gRPC 线程池饱和导致推送延迟飙升
 
@@ -2781,7 +2781,7 @@ async-profiler -d 30 -e cpu -f /tmp/nacos_cpu_flamegraph.html <nacos_pid>
 
 ---
 
-## 13.9 深入：定期任务回滚策略与失败告警
+## 13.25 深入：定期任务回滚策略与失败告警
 
 ### 历史配置清理的回滚策略
 
