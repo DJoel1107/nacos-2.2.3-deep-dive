@@ -1,0 +1,1652 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Nacos 2.5.3 深度研究 — 第 16 章</title>
+  <style>
+/* === Swiss Style Typography System ===
+   Fonts: Inter + Noto Sans SC + JetBrains Mono
+   Colors: Paper White + Near Black + Klein Blue (IKB)
+   Grid: Carbon 8px baseline system */
+:root {
+    --sans: "Inter", "Helvetica Neue", "Helvetica", "Arial", system-ui, sans-serif;
+    --sans-zh: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Consolas", monospace;
+    --paper: #fafaf8;
+    --ink: #0a0a0a;
+    --text-secondary: #525252;
+    --text-helper: #737373;
+    --accent: #002FA7;
+    --accent-bright: #5B7BFF;
+    --border-subtle: #e0e0e0;
+    --grey-1: #f0f0ee;
+    --sp-5: 16px; --sp-7: 32px; --sp-8: 40px; --sp-10: 64px; --sp-12: 96px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: var(--sans-zh), var(--sans);
+    font-weight: 300; font-size: 17px; line-height: 1.75;
+    color: var(--ink); background: var(--paper);
+    max-width: 780px; margin: 0 auto;
+    padding: var(--sp-12) var(--sp-8) var(--sp-12);
+    -webkit-font-smoothing: antialiased;
+}
+h1 { font-family: var(--sans-zh), var(--sans); font-weight: 900; font-size: 2.5em; line-height: 1.15; letter-spacing: -0.02em; color: var(--ink); margin-bottom: var(--sp-5); padding-bottom: var(--sp-7); border-bottom: 1px solid var(--border-subtle); }
+h2 { font-weight: 700; font-size: 1.75em; line-height: 1.25; letter-spacing: -0.01em; color: var(--ink); margin-top: var(--sp-12); margin-bottom: var(--sp-7); padding-top: var(--sp-7); border-top: 1px solid var(--border-subtle); }
+h3 { font-weight: 600; font-size: 1.25em; line-height: 1.4; margin-top: var(--sp-8); margin-bottom: var(--sp-5); }
+h4 { font-weight: 600; font-size: 1.05em; line-height: 1.5; margin-top: var(--sp-7); margin-bottom: var(--sp-5); }
+p { margin-bottom: var(--sp-5); }
+strong { font-weight: 600; color: var(--ink); }
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bright); }
+code { font-family: var(--mono); font-size: 0.9em; font-weight: 500; background: var(--grey-1); padding: 1px 5px; border-radius: 3px; color: var(--accent); }
+pre { font-family: var(--mono); font-size: 0.85em; line-height: 1.6; background: #0a0a0a; color: #f0f0ee; padding: var(--sp-7); border-radius: 8px; overflow-x: auto; margin: var(--sp-7) 0; }
+pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+table { width: 100%; border-collapse: collapse; margin: var(--sp-7) 0; font-size: 0.9em; }
+th { font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-helper); text-align: left; padding: var(--sp-5); border-bottom: 2px solid var(--ink); }
+td { padding: var(--sp-5); border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+li { margin-bottom: var(--sp-5); margin-left: var(--sp-7); }
+hr { border: none; border-top: 1px solid var(--border-subtle); margin: var(--sp-10) 0; }
+blockquote { border-left: 3px solid var(--accent); padding-left: var(--sp-5); margin: var(--sp-7) 0; color: var(--text-secondary); }
+img { max-width: 100%; height: auto; display: block; margin: var(--sp-7) auto; border-radius: 4px; }
+figure { margin: var(--sp-7) 0; text-align: center; }
+figcaption { font-size: 0.85em; color: var(--text-helper); margin-top: var(--sp-5); }
+
+/* === Code Syntax Highlighting (Swiss palette) === */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: var(--sp-7) 0; }
+pre.sourceCode { margin: 0; }
+@media screen { div.sourceCode { overflow: auto; } }
+pre.numberSource code { counter-reset: source-line 0; }
+pre.numberSource code > span { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before { content: counter(source-line); position: relative; left: -1em; text-align: right; vertical-align: baseline; border: none; display: inline-block; -webkit-touch-callout: none; -webkit-user-select: none; -khtml-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; padding: 0 4px; width: 4em; color: #7a7a72; }
+pre.numberSource { margin-left: 3em; border-left: 1px solid #4a4a44; padding-left: 4px; }
+div.sourceCode { color: #f0f0ee; background-color: transparent; }
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+code span.al { color: #ff5f5f; font-weight: bold; } /* Alert */
+code span.an { color: #8a8a80; font-weight: bold; font-style: italic; } /* Annotation */
+code span.at { color: #5B7BFF; } /* Attribute */
+code span.bn { color: #d19a66; } /* BaseN */
+code span.bu { color: #c678dd; } /* BuiltIn */
+code span.cf { color: #c678dd; } /* ControlFlow */
+code span.ch { color: #98c379; } /* Char */
+code span.cn { color: #d19a66; } /* Constant */
+code span.co { color: #8a8a80; font-style: italic; } /* Comment */
+code span.cv { color: #8a8a80; font-weight: bold; font-style: italic; } /* CommentVar */
+code span.do { color: #8a8a80; font-style: italic; } /* Documentation */
+code span.dt { color: #e5c07b; } /* DataType */
+code span.dv { color: #d19a66; } /* DecVal */
+code span.er { color: #ff5f5f; font-weight: bold; } /* Error */
+code span.ex { } /* Extension */
+code span.fl { color: #d19a66; } /* Float */
+code span.fu { color: #61afef; } /* Function */
+code span.im { color: #c678dd; } /* Import */
+code span.in { color: #8a8a80; font-weight: bold; font-style: italic; } /* Information */
+code span.kw { color: #c678dd; } /* Keyword */
+code span.op { color: #56b6c2; } /* Operator */
+code span.ot { color: #e5c07b; } /* Other */
+code span.pp { color: #c678dd; } /* Preprocessor */
+code span.re { } /* RegionMarker */
+code span.sc { color: #98c379; } /* SpecialChar */
+code span.ss { color: #98c379; } /* SpecialString */
+code span.st { color: #98c379; } /* String */
+code span.va { color: #e06c75; } /* Variable */
+code span.vs { color: #98c379; } /* VerbatimString */
+code span.wa { color: #ff5f5f; font-weight: bold; font-style: italic; } /* Warning */
+
+@media (max-width: 840px) { body { padding: var(--sp-7) var(--sp-5); font-size: 16px; } h1 { font-size: 2em; } h2 { font-size: 1.35em; } }
+@media print { body { max-width: 100%; font-size: 12pt; } pre { background: #f5f5f5; color: #0a0a0a; } }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@200;300;400;500;700;900&display=swap" rel="stylesheet">
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Nacos 2.5.3 深度研究 — 第 16 章</h1>
+</header>
+<h1 id="第-16-章附录">第 16 章：附录</h1>
+<p>本章为 Nacos 2.5.3 的速查附录，汇总 OpenAPI 接口清单、SQL
+表结构、日常运维命令、性能基线参考值、版本迁移与灰度升级要点、适用场景与高频
+FAQ。内容面向生产运维与集成开发，作为前 15
+章的"查表式"索引，所有接口路径、表结构与命令均基于 2.5.3
+源码与控制台实际行为核验。</p>
+<blockquote>
+<p><strong>版本基准</strong>：Nacos
+2.5.3（<code>upstream/nacos-2.5.3/</code>）<br />
+<strong>接口前缀</strong>：客户端访问 OpenAPI
+时默认在服务端口（8848）后拼接 <code>/nacos</code> 上下文（当
+<code>server.servlet.context-path=/nacos</code>）。</p>
+</blockquote>
+<h2 id="章节导读">章节导读</h2>
+<ul>
+<li><strong>16.1 API 速查表</strong>：按"配置管理 / 服务管理 / 实例管理
+/ 集群管理 / 认证鉴权"五类列出常用接口路径、方法与参数。</li>
+<li><strong>16.2 SQL
+表结构速查</strong>：核心业务表与用户权限表结构，含字段说明与索引用途。</li>
+<li><strong>16.3 日常运维命令大全</strong>：curl 调 API + 日志分析 + JVM
+诊断（jstack/jmap/async-profiler）+ 集群操作。</li>
+<li><strong>16.4 性能基线参考值表</strong>：小/中/大型集群的 12
+项核心指标建议值。</li>
+<li><strong>16.5 Nacos 1.x → 2.x
+迁移要点</strong>：五大差异项与兼容策略。</li>
+<li><strong>16.6 灰度升级 4 阶段流程</strong>：准备→升级
+Server→升级客户端→下线双写。</li>
+<li><strong>16.7 适用场景总结表</strong>：六种场景的部署方式 /
+一致性模式 / 关键配置。</li>
+<li><strong>16.8 FAQ 20 问</strong>：高频问题速答。</li>
+<li><strong>16.9 未来演进方向</strong>：Nacos 3.x 的关键改进。</li>
+</ul>
+<hr />
+<h2 id="161-api-速查表">16.1 API 速查表</h2>
+<blockquote>
+<p>本节汇总五类 OpenAPI 的常用接口：<strong>配置管理 8+、服务管理
+7、实例管理 8、集群管理 3、认证鉴权 6</strong>。路径与方法取自 2.5.3
+源码控制器注解，参数省略次要项，完整契约以各控制器方法签名为准。</p>
+</blockquote>
+<h3 id="设计背景">设计背景</h3>
+<p>生产环境自动化（配置发布流水线、实例注册脚本、监控巡检）高度依赖
+OpenAPI。速查表的意义在于：让运维与集成方能"一次查到位"，避免频繁翻源码或抓接口。本节按"控制器
+→ 类路径 → 方法路径 → METHOD → 用途 → 关键参数"组织，便于直接复制到
+<code>curl</code> 或流水线。</p>
+<h3 id="1611-配置管理接口configcontroller基路径-v1csconfigs">16.1.1
+配置管理接口（<code>ConfigController</code>，基路径
+<code>/v1/cs/configs</code>）</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>路径</th>
+<th>说明</th>
+<th>关键参数</th>
+<th>源码位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/v1/cs/configs</code></td>
+<td>发布配置</td>
+<td><code>dataId,group,content,type</code></td>
+<td>ConfigController.java:158</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/cs/configs</code></td>
+<td>获取单个配置</td>
+<td><code>dataId,group</code></td>
+<td>ConfigController.java:228</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/cs/configs?show=all</code></td>
+<td>查询配置详情（含 MD5/加密等）</td>
+<td><code>dataId,group</code></td>
+<td>ConfigController.java:253</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/cs/configs</code></td>
+<td>删除配置</td>
+<td><code>dataId,group</code></td>
+<td>ConfigController.java:285</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/cs/configs?search=accurate</code></td>
+<td>精确查询配置列表</td>
+<td><code>dataId,pageNo,pageSize</code></td>
+<td>ConfigController.java:397</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/cs/configs?search=blur</code></td>
+<td>模糊查询配置列表</td>
+<td><code>search,dataId,pageNo,pageSize</code></td>
+<td>ConfigController.java:426</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/cs/configs/listener</code></td>
+<td>配置监听（长轮询探测变更）</td>
+<td><code>Listening-Configs</code> 头</td>
+<td>ConfigController.java:379</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/cs/configs?import=true</code></td>
+<td>批量导入配置</td>
+<td><code>file,policy</code></td>
+<td>ConfigController.java:634</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/cs/configs?export=true</code></td>
+<td>批量导出配置</td>
+<td><code>dataId/group/ids</code></td>
+<td>ConfigController.java:529</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/cs/configs?clone=true</code></td>
+<td>配置克隆到目标命名空间</td>
+<td><code>namespace</code></td>
+<td>ConfigController.java:863</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/cs/configs?delType=ids</code></td>
+<td>按 ID 批量删除</td>
+<td><code>ids</code></td>
+<td>ConfigController.java:305</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/cs/configs?beta=true</code></td>
+<td>发布灰度（Beta）配置</td>
+<td><code>betaIps</code></td>
+<td>ConfigController.java:464</td>
+</tr>
+</tbody>
+</table>
+<p><strong>调用示例（发布配置）</strong>：</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/cs/configs&#39;</span> <span class="dt">\</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;dataId=order-service.yaml&amp;group=DEFAULT_GROUP&amp;content=timeout: 3000&#39;</span></span></code></pre></div>
+<blockquote>
+<p><strong>说明</strong>：接口路径常量
+<code>Constants.CONFIG_CONTROLLER_PATH</code> 与
+<code>ConfigController</code>
+类注解同源（ConfigController.java:108），默认即
+<code>/v1/cs/configs</code>；<code>type</code> 支持
+<code>yaml</code>、<code>properties</code>、<code>json</code>、<code>text</code>、<code>xml</code>、<code>html</code>
+等（见 <code>ConfigType</code>）。</p>
+</blockquote>
+<h3 id="1612-服务管理接口servicecontroller基路径-v1nsservice">16.1.2
+服务管理接口（<code>ServiceController</code>，基路径
+<code>/v1/ns/service</code>）</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>路径</th>
+<th>说明</th>
+<th>关键参数</th>
+<th>源码位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/v1/ns/service</code></td>
+<td>创建服务</td>
+<td><code>serviceName,groupName,protectThreshold</code></td>
+<td>ServiceController.java:99</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/ns/service</code></td>
+<td>删除服务</td>
+<td><code>serviceName,groupName</code></td>
+<td>ServiceController.java:126</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/service</code></td>
+<td>查询服务详情</td>
+<td><code>serviceName,groupName</code></td>
+<td>ServiceController.java:147</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/service/list</code></td>
+<td>服务列表（分页）</td>
+<td><code>pageNo,pageSize,groupName</code></td>
+<td>ServiceController.java:162</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/service/names</code></td>
+<td>服务名列表</td>
+<td><code>groupName</code></td>
+<td>ServiceController.java:214</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/service/subscribers</code></td>
+<td>服务订阅者列表</td>
+<td><code>serviceName,groupName</code></td>
+<td>ServiceController.java:243</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/service/selector/types</code></td>
+<td>查询负载均衡策略类型</td>
+<td>—</td>
+<td>ServiceController.java:290</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1613-实例管理接口instancecontroller基路径-v1nsinstance">16.1.3
+实例管理接口（<code>InstanceController</code>，基路径
+<code>/v1/ns/instance</code>）</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>路径</th>
+<th>说明</th>
+<th>关键参数</th>
+<th>源码位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/v1/ns/instance</code></td>
+<td>注册实例（ephemeral）</td>
+<td><code>ip,port,serviceName,groupName,weight,ephemeral</code></td>
+<td>InstanceController.java:110</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/ns/instance</code></td>
+<td>注销实例</td>
+<td><code>ip,port,serviceName,groupName,ephemeral</code></td>
+<td>InstanceController.java:139</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/v1/ns/instance</code></td>
+<td>更新实例/心跳注册</td>
+<td><code>ip,port,serviceName,weight</code></td>
+<td>InstanceController.java:165</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/instance/list</code></td>
+<td>实例列表（含健康过滤）</td>
+<td><code>serviceName,groupName,healthyOnly</code></td>
+<td>InstanceController.java:322</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/instance</code></td>
+<td>查询单个实例</td>
+<td><code>ip,port,serviceName,groupName</code></td>
+<td>InstanceController.java:351</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/v1/ns/instance/beat</code></td>
+<td>实例心跳（临时实例保活）</td>
+<td><code>serviceName,beat</code></td>
+<td>InstanceController.java:385</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/instance/statuses</code></td>
+<td>实例状态批量查询</td>
+<td><code>serviceName,pageNo,pageSize</code></td>
+<td>InstanceController.java:436</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/v1/ns/instance/metadata/batch</code></td>
+<td>实例元数据批量更新</td>
+<td><code>metadata,instances</code></td>
+<td>InstanceController.java:191</td>
+</tr>
+</tbody>
+</table>
+<p><strong>调用示例（注册实例）</strong>：</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/ns/instance&#39;</span> <span class="dt">\</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;ip=10.0.0.11&amp;port=8080&amp;serviceName=order-service&amp;groupName=DEFAULT_GROUP&amp;ephemeral=true&#39;</span></span></code></pre></div>
+<h3 id="1614-集群管理接口clustercontroller--operatorcontroller">16.1.4
+集群管理接口（<code>ClusterController</code> /
+<code>OperatorController</code>）</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>路径</th>
+<th>说明</th>
+<th>关键参数</th>
+<th>源码位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/operator/metrics</code></td>
+<td>节点运行指标（连接数/服务数等）</td>
+<td>—</td>
+<td>OperatorController.java:149</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/operator/switches</code></td>
+<td>运行时开关状态</td>
+<td>—</td>
+<td>OperatorController.java:119</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/ns/operator/push/state</code></td>
+<td>推送执行状态（含失败重推）</td>
+<td><code>detail</code></td>
+<td>OperatorController.java:87</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/operator/distro/client</code></td>
+<td>Distro 客户端列表</td>
+<td>—</td>
+<td>OperatorController.java:194</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ns/cluster/health</code></td>
+<td>集群健康状态</td>
+<td>—</td>
+<td>ClusterController.java:47</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1615-认证鉴权接口usercontroller--permissioncontroller-等">16.1.5
+认证鉴权接口（<code>UserController</code> /
+<code>PermissionController</code> 等）</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>路径</th>
+<th>说明</th>
+<th>关键参数</th>
+<th>源码位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/login</code></td>
+<td>登录获取 accessToken</td>
+<td><code>username,password</code></td>
+<td>认证入口</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/users</code></td>
+<td>创建用户</td>
+<td><code>username,password</code></td>
+<td>UserController</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/auth/users</code></td>
+<td>删除用户</td>
+<td><code>username</code></td>
+<td>UserController</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/v1/auth/users</code></td>
+<td>更新用户密码</td>
+<td><code>username,newPassword</code></td>
+<td>UserController</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/permissions</code></td>
+<td>授予权限（Role+Resource+Action）</td>
+<td><code>role,resource,action</code></td>
+<td>PermissionController</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/auth/permissions</code></td>
+<td>移除权限</td>
+<td><code>role,resource,action</code></td>
+<td>PermissionController</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>签名说明</strong>：开启鉴权（<code>nacos.core.auth.enabled=true</code>）后，除登录外的接口需在请求头携带
+<code>accessToken</code>（<code>Authorization: Bearer &lt;token&gt;</code>），否则返回
+403（对应 <code>TokenManager</code>/<code>AuthFilter</code>
+校验链路，见第 7 章）。</p>
+</blockquote>
+<h3 id="1616-接口使用注意事项">16.1.6 接口使用注意事项</h3>
+<ul>
+<li><strong>上下文前缀</strong>：若服务端以默认方式部署，URL 为
+<code>http://ip:8848/nacos/v1/...</code>；当
+<code>server.servlet.context-path</code> 被修改时同步替换
+<code>/nacos</code> 前缀。</li>
+<li><strong>返回体</strong>：单个资源接口返回 <code>Code</code>（0
+成功）、<code>message</code>、<code>data</code>；列表接口返回
+<code>pageItems</code>/<code>page</code> 分页结构（<code>Page</code>
+对象）。</li>
+<li><strong>鉴权头</strong>：3.0 起支持 <code>accessToken</code> 头与
+<code>username/password</code> 参数两传法，生产建议用
+<code>accessToken</code> 头。</li>
+<li><strong>临时/持久实例</strong>：<code>ephemeral=true</code>
+走注册中心内存 + 心跳；持久实例需走 <code>PUT /v1/ns/instance</code>
+并配置持久化存储，二者接口参数不同，误用会互相覆盖。</li>
+</ul>
+<h3 id="trade-off-分析">Trade-off 分析</h3>
+<p>OpenAPI 的直接调用与
+SDK（<code>NacosNamingService</code>/<code>NacosConfigService</code>）调用是两条并存路径：SDK
+封装了订阅、缓存、重试与心跳，<strong>可靠性更高但依赖初始化与版本匹配</strong>；裸
+API
+灵活、适合一次性脚本与排障，<strong>但无订阅/重连能力</strong>。因此生产变更类操作推荐用
+SDK 或受控流水线，诊断类（查实例、查配置）可用裸 API 快捷验证。</p>
+<h3 id="设计模式分析">设计模式分析</h3>
+<p>从 16.1 的接口组织可看到 Nacos 服务端采用 <strong>Facade（门面）+
+Controller-Model</strong>
+模式：每类领域能力（Config/Naming/Operator）暴露单一 Controller 作为
+HTTP 门面，内部委托给对应 Service
+与存储实现。这隔离了"协议层（HTTP/CRUD）"与"业务/存储层"，使 2.5.3
+能平滑将配置落库解耦到独立 <code>persistence/</code> 模块而不影响 API
+面（见第 3 章）。</p>
+<h3 id="小结">小结</h3>
+<p>16.1 给出了五类 OpenAPI
+的完整速查，涵盖配置发布/查询、服务与实例生命周期、集群状态与认证鉴权。使用时优先以
+SDK 承载业务变更、以 API 承载排障脚本，并统一处理上下文与鉴权。</p>
+<hr />
+<h2 id="162-sql-表结构速查">16.2 SQL 表结构速查</h2>
+<blockquote>
+<p>本节列出 Nacos 核心业务表与用户权限表的结构，字段定义取自
+<code>distribution/conf/mysql-schema.sql</code>（2.5.3）。<strong>共 8
+张表</strong>：<code>config_info</code>、<code>config_info_gray</code>、<code>his_config_info</code>、<code>config_tags_relation</code>、<code>group_capacity</code>、<code>tenant_capacity</code>、<code>tenant_info</code>、<code>users</code>、<code>roles</code>、<code>permissions</code>（前四张为配置体系，后六张为管控体系）。</p>
+</blockquote>
+<h3 id="设计背景-1">设计背景</h3>
+<p>配置数据落库后的结构决定了查询性能与可维护性。理解表结构有助于：规划数据清理策略、调优长查询、排查"配置查不到/重复"等问题。本节重点拆解
+<strong>config_info（主表）、config_info_gray（2.5
+新增灰度表）</strong>、<strong>his_config_info（历史变更）</strong> 与
+<strong>users/roles/permissions（权限三表）</strong>。</p>
+<h3 id="1621-配置主表-config_info">16.2.1 配置主表
+<code>config_info</code></h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>bigint(20) 自增</td>
+<td>主键</td>
+</tr>
+<tr>
+<td><code>data_id</code></td>
+<td>varchar(255)</td>
+<td>配置 ID（必填）</td>
+</tr>
+<tr>
+<td><code>group_id</code></td>
+<td>varchar(128)</td>
+<td>配置分组</td>
+</tr>
+<tr>
+<td><code>content</code></td>
+<td>longtext</td>
+<td>配置内容</td>
+</tr>
+<tr>
+<td><code>md5</code></td>
+<td>varchar(32)</td>
+<td>内容 MD5（变更检测依据）</td>
+</tr>
+<tr>
+<td><code>gmt_create</code>/<code>gmt_modified</code></td>
+<td>datetime</td>
+<td>创建/修改时间</td>
+</tr>
+<tr>
+<td><code>src_user</code>/<code>src_ip</code></td>
+<td>text/varchar(50)</td>
+<td>变更来源用户与 IP</td>
+</tr>
+<tr>
+<td><code>app_name</code></td>
+<td>varchar(128)</td>
+<td>关联应用名</td>
+</tr>
+<tr>
+<td><code>tenant_id</code></td>
+<td>varchar(128)</td>
+<td>租户（命名空间 ID），默认空</td>
+</tr>
+<tr>
+<td><code>c_desc</code>/<code>c_use</code>/<code>effect</code></td>
+<td>varchar</td>
+<td>配置描述/用途/生效说明</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td>varchar(64)</td>
+<td>配置类型（yaml/properties/json…）</td>
+</tr>
+<tr>
+<td><code>c_schema</code></td>
+<td>text</td>
+<td>配置模式（2.5.x 新增）</td>
+</tr>
+<tr>
+<td><code>encrypted_data_key</code></td>
+<td>varchar(1024)</td>
+<td>加密数据密钥</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>唯一索引</strong>：<code>uk_configinfo_datagrouptenant (data_id, group_id, tenant_id)</code>
+—— 同一命名空间下 dataId+group 唯一。</li>
+<li><strong>来源文件</strong>：<code>distribution/conf/mysql-schema.sql:20-44</code>。</li>
+<li><strong>读写要点</strong>：<code>content</code>
+为长文本，查询走唯一索引；<code>md5</code> 供客户端长轮询比对（见第 3 章
+CacheData）；启用了加密插件时 <code>encrypted_data_key</code>
+非空。</li>
+</ul>
+<h3 id="1622-灰度配置表-config_info_gray25-新增">16.2.2 灰度配置表
+<code>config_info_gray</code>（2.5 新增）</h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>bigint unsigned 自增</td>
+<td>主键</td>
+</tr>
+<tr>
+<td><code>data_id</code>/<code>group_id</code></td>
+<td>varchar</td>
+<td>配置定位</td>
+</tr>
+<tr>
+<td><code>content</code>/<code>md5</code></td>
+<td>longtext/varchar(32)</td>
+<td>灰度版本内容与 MD5</td>
+</tr>
+<tr>
+<td><code>tenant_id</code></td>
+<td>varchar(128)</td>
+<td>命名空间 ID</td>
+</tr>
+<tr>
+<td><code>gray_name</code></td>
+<td>varchar(128)</td>
+<td>灰度批次名（必填）</td>
+</tr>
+<tr>
+<td><code>gray_rule</code></td>
+<td>text</td>
+<td>灰度规则（IP/参数匹配表达式）</td>
+</tr>
+<tr>
+<td><code>encrypted_data_key</code></td>
+<td>varchar(256)</td>
+<td>加密密钥</td>
+</tr>
+<tr>
+<td><code>gmt_create</code>/<code>gmt_modified</code></td>
+<td>datetime(3)</td>
+<td>时间戳</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>唯一索引</strong>：<code>uk_configinfogray_datagrouptenantgray (data_id, group_id, tenant_id, gray_name)</code>。</li>
+<li><strong>来源文件</strong>：<code>distribution/conf/mysql-schema.sql:45-68</code>。</li>
+<li><strong>读写要点</strong>：2.5.3
+的灰度发布将规则与内容独立存储，<code>gray_rule</code>
+描述命中条件；灰度配置与正式配置分离，便于回滚（对应
+15.8/灰度升级相关）。</li>
+</ul>
+<h3 id="1623-历史配置表-his_config_info">16.2.3 历史配置表
+<code>his_config_info</code></h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nid</code></td>
+<td>bigint unsigned 自增</td>
+<td>主键（自增）</td>
+</tr>
+<tr>
+<td><code>id</code></td>
+<td>bigint unsigned</td>
+<td>原配置 id</td>
+</tr>
+<tr>
+<td><code>data_id</code>/<code>group_id</code></td>
+<td>varchar</td>
+<td>配置定位</td>
+</tr>
+<tr>
+<td><code>content</code>/<code>md5</code></td>
+<td>longtext/varchar(32)</td>
+<td>历史版本内容与 MD5</td>
+</tr>
+<tr>
+<td><code>op_type</code></td>
+<td>char(10)</td>
+<td>操作类型（I/U/D）</td>
+</tr>
+<tr>
+<td><code>tenant_id</code></td>
+<td>varchar(128)</td>
+<td>命名空间</td>
+</tr>
+<tr>
+<td><code>publish_type</code></td>
+<td>varchar(50)</td>
+<td>formal/gray（灰度发布类型，2.5 新增）</td>
+</tr>
+<tr>
+<td><code>gray_name</code></td>
+<td>varchar(50)</td>
+<td>灰度批次名</td>
+</tr>
+<tr>
+<td><code>ext_info</code></td>
+<td>longtext</td>
+<td>扩展信息</td>
+</tr>
+<tr>
+<td><code>gmt_create</code>/<code>gmt_modified</code></td>
+<td>datetime</td>
+<td>时间戳</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>索引</strong>：<code>idx_gmt_create</code>、<code>idx_gmt_modified</code>、<code>idx_did (data_id)</code>。</li>
+<li><strong>来源文件</strong>：<code>distribution/conf/mysql-schema.sql:103-130</code>。</li>
+<li><strong>读写要点</strong>：每次发布/删除写一条历史，用于回滚与审计；<code>gmt_modified</code>
+索引支撑按时间范围清理过期历史（对应 13.9 数据清理）。</li>
+</ul>
+<h3 id="1624-名称空间与权限表">16.2.4 名称空间与权限表</h3>
+<p><strong><code>tenant_info</code></strong>：<code>kp</code>（分区键）+<code>tenant_id</code>+<code>tenant_name</code>+<code>tenant_desc</code>，唯一索引
+<code>(kp, tenant_id)</code>，按 namespace ID 查询用
+<code>idx_tenant_id</code>（<code>mysql-schema.sql:147-159</code>）。</p>
+<p><strong><code>users</code></strong>：<code>username</code>（主键）+<code>password</code>（BCrypt
+哈希）+<code>enabled</code>（是否启用）。</p>
+<p><strong><code>roles</code></strong>：<code>username</code>+<code>role</code>，联合唯一索引
+<code>idx_user_role</code>。</p>
+<p><strong><code>permissions</code></strong>：<code>role</code>+<code>resource</code>+<code>action</code>，联合唯一索引
+<code>uk_role_permission</code>；<code>resource</code> 形如
+<code>服务名:组名</code>、<code>action</code> 为读写操作标识。</p>
+<blockquote>
+<p><strong>权限模型</strong>：User → Role →
+Permission（RBAC），<code>AuthFilter</code>
+在请求入口按用户名/角色鉴权，<code>resource</code> 粒度为"服务/配置 +
+操作"（详见第 7 章鉴权链路）。</p>
+</blockquote>
+<h3 id="1625-表结构维护建议">16.2.5 表结构维护建议</h3>
+<ul>
+<li><strong>历史表易膨胀</strong>：<code>his_config_info</code>
+随发布次数线性增长，建议按 <code>gmt_modified</code>
+定期归档/清理（<code>DELETE FROM his_config_info WHERE gmt_modified &lt; ...</code>）。</li>
+<li><strong>容量表</strong>：<code>group_capacity</code>/<code>tenant_capacity</code>
+记录配额，扩容集群时关注配额阈值（对应 13.7 巡检 DBA
+连接池/磁盘）。</li>
+<li><strong>一致性</strong>：配置表采用单主多从 MySQL
+时，写走主库、读走从库，注意主从延迟对 <code>md5</code>
+变更检测的即时性影响。</li>
+<li><strong>加密/敏感字段</strong>：启用了配置加密插件后
+<code>encrypted_data_key</code>
+依赖密钥体系，备份/迁移数据时需同步密钥存储。</li>
+</ul>
+<h3 id="trade-off-分析-1">Trade-off 分析</h3>
+<p>配置按 <strong>data_id+group+tenant 唯一</strong>
+的规范化设计利于精确定位与权限控制，但
+<code>content</code>（longtext）与索引同表会放大行体积、拉低大配置场景的扫描性能。2.5
+将灰度规则与主配置分表（<code>config_info_gray</code>）正是为了隔离高频正式读写与低频灰度读写。若需极致读性能，可考虑将
+content 分表/外置存储，代价是牺牲事务一致性与回滚便利性。</p>
+<h3 id="设计模式分析-1">设计模式分析</h3>
+<p>权限三表（users/roles/permissions）采用标准的
+<strong>RBAC（Role-Based Access
+Control）中间层模式</strong>：用户不直接持权限，而是经角色间接获得
+<code>resource+action</code>，便于集中治理与批量授权。配置表的分表（主表/灰度/历史/容量）则体现
+<strong>多表职责分离</strong>，各表只服务一种写入/查询场景，配合唯一索引保证数据约束。</p>
+<h3 id="小结-1">小结</h3>
+<p>16.2
+拆解了配置体系（主表/灰度/历史）与权限体系（用户/角色/权限）的表结构，突出唯一索引与实际读写要点。维护重点是控制历史表膨胀、理解租户与灰度隔离，并按配额与加密要求规划存储。</p>
+<hr />
+<h2 id="163-日常运维命令大全">16.3 日常运维命令大全</h2>
+<blockquote>
+<p>本节汇总 Nacos 运维常用命令：<strong>curl 调 OpenAPI、日志分析、JVM
+诊断、集群健康检查与 K8s 部署操作</strong>。命令以 Linux
+环境为基准，路径按默认部署约定。</p>
+</blockquote>
+<h3 id="设计背景-2">设计背景</h3>
+<p>运维高频动作可归纳为四类：<strong>看状态、查配置、抓线程、看日志</strong>。把常用命令固化为速查，能有效缩短故障定位时长（对应
+13.6/13.7 巡检）。本节命令均针对 2.5.3
+运行机制设计，并标注对应源码/日志来源，避免"凭记忆瞎敲"。</p>
+<h3 id="1631-状态与指标查询curl">16.3.1 状态与指标查询（curl）</h3>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 集群健康状态</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/ns/operator/metrics&#39;</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/ns/cluster/health&#39;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 节点运行指标（连接数/服务数/推送状态等）</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-G</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/ns/operator/metrics&#39;</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="co"># 运行时开关</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/ns/operator/switches&#39;</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Prometheus 指标端点（需开启）</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/actuator/prometheus&#39;</span></span></code></pre></div>
+<p><strong>关键指标</strong>：<code>naming_count_cluster</code>（服务数）、<code>config_count_...</code>（配置数）、gRPC
+连接数、<code>http_server_requests</code>（QPS）——详见 13.2 指标表。</p>
+<h3 id="1632-配置查询与发布curl">16.3.2 配置查询与发布（curl）</h3>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 查询配置</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/cs/configs?dataId=order-service.yaml&amp;group=DEFAULT_GROUP&#39;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 发布配置（content 需 URL 编码或 --data-urlencode）</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-G</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/cs/configs&#39;</span> <span class="dt">\</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">--data-urlencode</span> <span class="st">&#39;dataId=order-service.yaml&#39;</span> <span class="dt">\</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">--data-urlencode</span> <span class="st">&#39;group=DEFAULT_GROUP&#39;</span> <span class="dt">\</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">--data-urlencode</span> <span class="st">&#39;content=timeout: 5000&#39;</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="co"># 删除配置</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> DELETE <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/cs/configs?dataId=x&amp;group=DEFAULT_GROUP&#39;</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="co"># 模糊搜索配置列表</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-G</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/cs/configs&#39;</span> <span class="dt">\</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>  <span class="at">--data-urlencode</span> <span class="st">&#39;search=blur&#39;</span> <span class="at">--data-urlencode</span> <span class="st">&#39;dataId=order&#39;</span> <span class="dt">\</span></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>  <span class="at">--data-urlencode</span> <span class="st">&#39;pageNo=1&#39;</span> <span class="at">--data-urlencode</span> <span class="st">&#39;pageSize=20&#39;</span></span></code></pre></div>
+<h3 id="1633-服务与实例查询curl">16.3.3 服务与实例查询（curl）</h3>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 服务列表</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-G</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/ns/service/list&#39;</span> <span class="dt">\</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">--data-urlencode</span> <span class="st">&#39;pageNo=1&#39;</span> <span class="at">--data-urlencode</span> <span class="st">&#39;pageSize=100&#39;</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 实例列表（含健康过滤）</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-G</span> <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/ns/instance/list&#39;</span> <span class="dt">\</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">--data-urlencode</span> <span class="st">&#39;serviceName=order-service&#39;</span> <span class="at">--data-urlencode</span> <span class="st">&#39;groupName=DEFAULT_GROUP&#39;</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="co"># 注册实例</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&#39;http://127.0.0.1:8848/nacos/v1/ns/instance&#39;</span> <span class="dt">\</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;ip=10.0.0.11&amp;port=8080&amp;serviceName=order-service&amp;groupName=DEFAULT_GROUP&amp;ephemeral=true&#39;</span></span></code></pre></div>
+<h3 id="1634-日志分析grep">16.3.4 日志分析（grep）</h3>
+<p>Nacos 客户端与服务端日志位置：</p>
+<ul>
+<li><strong>服务端</strong>：<code>&lt;nacos-home&gt;/logs/</code>：<code>nacos.log</code>（主日志）、<code>naming-server.log</code>、<code>config-server.log</code>、<code>remote.log</code>（gRPC/远程连接）、<code>access.log.2026-xx-xx</code>（访问日志）、<code>embedded-storage.log</code>。</li>
+<li><strong>客户端</strong>：<code>&lt;app&gt;/logs/</code>：<code>nacos-config.log</code>、<code>nacos-naming.log</code>、<code>nacos.log</code>（见
+15.10 排障）。</li>
+</ul>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 查看 gRPC 连接与错误</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-iE</span> <span class="st">&#39;grpc|connect|exception&#39;</span> logs/nacos.log <span class="kw">|</span> <span class="fu">tail</span> <span class="at">-50</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 查看配置变更推送</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-iE</span> <span class="st">&#39;publish|update|md5&#39;</span> logs/config-server.log <span class="kw">|</span> <span class="fu">tail</span> <span class="at">-50</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 查看服务注册与心跳</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-iE</span> <span class="st">&#39;register|beat|health&#39;</span> logs/naming-server.log <span class="kw">|</span> <span class="fu">tail</span> <span class="at">-50</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a><span class="co"># 按时间段过滤</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a><span class="fu">awk</span> <span class="st">&#39;/2026-09-21 10:[0-5][0-9]/&#39;</span> logs/access.log</span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a><span class="co"># 慢查询/长轮询定位</span></span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="st">&#39;long-polling&#39;</span> logs/config-server.log <span class="kw">|</span> <span class="fu">tail</span></span></code></pre></div>
+<blockquote>
+<p><strong>提示</strong>：2.5.3 客户端 gRPC 连接日志可开 debug 定位，见
+15.10「排障前置」；<code>logger-adapter-impl</code>
+让应用可统一接入日志框架（见 9.2）。</p>
+</blockquote>
+<h3 id="1635-jvm-诊断jstack--jmap--async-profiler">16.3.5 JVM
+诊断（jstack / jmap / async-profiler）</h3>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="va">PID</span><span class="op">=</span><span class="va">$(</span><span class="ex">pgrep</span> <span class="at">-f</span> <span class="st">&#39;nacos-server&#39;</span> <span class="kw">|</span> <span class="fu">head</span> <span class="at">-1</span><span class="va">)</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 线程快照：定位 CPU 高、LongPolling/推送线程卡顿</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="ex">jstack</span> <span class="va">$PID</span> <span class="op">&gt;</span> /tmp/nacos-thread-<span class="va">$(</span><span class="fu">date</span> +%s<span class="va">)</span>.txt</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 查看 LongPolling / 推送执行线程</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-iE</span> <span class="st">&#39;longpolling|push|client.*worker&#39;</span> /tmp/nacos-thread-<span class="pp">*</span>.txt</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="co"># 堆 Dump：定位内存泄漏（对应 14.9）</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a><span class="ex">jmap</span> <span class="at">-dump:format</span><span class="op">=</span>b,file=/tmp/nacos-heap.hprof <span class="va">$PID</span></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="co"># 堆占用概览</span></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a><span class="ex">jmap</span> <span class="at">-histo:live</span> <span class="va">$PID</span> <span class="kw">|</span> <span class="fu">head</span> <span class="at">-30</span></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a><span class="co"># CPU 火焰图（async-profiler，推荐 2.x）</span></span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a><span class="ex">./asprof</span> <span class="at">-d</span> 60 <span class="at">-f</span> /tmp/nacos-cpu.html <span class="va">$PID</span></span></code></pre></div>
+<blockquote>
+<p><strong>要点</strong>：CPU 飙高用 <code>top -Hp $PID</code>
+找线程号→<code>jstack</code> 定位；内存泄漏用 <code>-histo:live</code>
+先看类分布再 dump 分析（详见 14.9/14.11）。</p>
+</blockquote>
+<h3 id="1636-k8s-部署操作kubectl">16.3.6 K8s 部署操作（kubectl）</h3>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 查看命名空间与 Pod</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> <span class="at">-n</span> nacos get pods <span class="at">-o</span> wide</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 查看服务集群节点</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> <span class="at">-n</span> nacos exec deploy/nacos-server-0 <span class="at">--</span> <span class="dt">\</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>  curl <span class="at">-s</span> http://127.0.0.1:8848/nacos/v1/ns/operator/metrics</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a><span class="co"># 更新配置（ConfigMap 驱动 + 滚动重启）</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> <span class="at">-n</span> nacos set env deploy/nacos-server-0 <span class="dt">\</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>  MYSQL_SERVICE_PASSWORD=<span class="va">$(</span><span class="ex">kubectl</span> get secret nacos-db <span class="at">--template</span><span class="op">=</span>{{.data.password}}<span class="va">)</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> <span class="at">-n</span> nacos rollout status deploy/nacos-server-0</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a><span class="co"># 日志</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a><span class="ex">kubectl</span> <span class="at">-n</span> nacos logs deploy/nacos-server-0 <span class="at">--tail</span><span class="op">=</span>200</span></code></pre></div>
+<h3 id="1637-运维命令速查表汇总">16.3.7 运维命令速查表（汇总）</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>命令</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>集群健康</td>
+<td><code>curl .../v1/ns/operator/metrics</code></td>
+<td>节点与连接状态</td>
+</tr>
+<tr>
+<td>配置查询</td>
+<td><code>curl .../v1/cs/configs?dataId=...&amp;group=...</code></td>
+<td>校验配置是否发布</td>
+</tr>
+<tr>
+<td>实例查询</td>
+<td><code>curl .../v1/ns/instance/list?serviceName=...</code></td>
+<td>校验注册与健康</td>
+</tr>
+<tr>
+<td>线程快照</td>
+<td><code>jstack ${PID}</code></td>
+<td>CPU/卡顿定位</td>
+</tr>
+<tr>
+<td>堆分析</td>
+<td><code>jmap -histo:live ${PID}</code></td>
+<td>内存分布</td>
+</tr>
+<tr>
+<td>火焰图</td>
+<td><code>asprof -d 60 -f out.html ${PID}</code></td>
+<td>CPU 热点</td>
+</tr>
+<tr>
+<td>日志过滤</td>
+<td><code>grep -iE 'pattern' logs/*.log</code></td>
+<td>错误/变更定位</td>
+</tr>
+<tr>
+<td>K8s 日志</td>
+<td><code>kubectl logs deploy/x --tail=200</code></td>
+<td>容器日志</td>
+</tr>
+</tbody>
+</table>
+<h3 id="trade-off-分析-2">Trade-off 分析</h3>
+<p><strong>OpenAPI curl 与运维工具（jstack/火焰图）</strong>
+分别服务"应用状态"与"进程内部状态"两个层面：前者便捷、适合脚本化巡检；后者开销较高（dump/采样会暂停或影响性能），应仅在疑似
+JVM 问题时按需使用。<strong>日志全量打印 vs 采样</strong>
+也需权衡——<code>access.log</code>
+全量留痕便于审计但占盘，生产常开按天滚动并配合清理策略（见 13.6）。</p>
+<h3 id="设计模式分析-2">设计模式分析</h3>
+<p>运维命令体系体现 <strong>分层观测</strong>：应用层（OpenAPI）→
+框架层（日志/指标）→
+系统层（JVM/线程/CPU）逐级下沉，任何故障都能从入口到内核逐层定位。这与
+Nacos
+自身的告警分层（13.4）一致，形成"命令-日志-指标"三位一体的可观测底座。</p>
+<h3 id="小结-2">小结</h3>
+<p>16.3 汇总了 curl 调 API、日志分析、JVM 诊断与 K8s
+操作四类常用命令，覆盖状态查询、配置/实例操作与故障定位。建议将巡检类命令沉淀为脚本/流水线，按
+13.7 的巡检清单定时执行。</p>
+<hr />
+<h2 id="164-性能基线参考值表">16.4 性能基线参考值表</h2>
+<blockquote>
+<p>本节给出小/中/大型三种集群规模的 <strong>12
+项核心性能指标参考值</strong>，用于容量规划与健康阈值设定。数值为参考基线（非绝对上限），需结合第
+12 章性能调优与实际压测校准。</p>
+</blockquote>
+<h3 id="设计背景-3">设计背景</h3>
+<p>没有基线就无法判断"是否异常"。性能基线把资源（连接、内存、吞吐）映射到明确的告警边界，避免"凭感觉觉得还行"。本节按<strong>集群规模分级</strong>给出建议值，并联动
+13.2 的告警阈值。</p>
+<h3 id="1641-12-项核心指标参考值表">16.4.1 12 项核心指标参考值表</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>指标</th>
+<th>小型（3~5 节点）</th>
+<th>中型（5~9 节点）</th>
+<th>大型（≥9 节点）</th>
+<th>说明/告警建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>单节点 gRPC 连接数</td>
+<td>≤ 3,000</td>
+<td>≤ 5,000</td>
+<td>≤ 8,000</td>
+<td>超限告警（连接数高）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>单节点服务总数</td>
+<td>≤ 5,000</td>
+<td>≤ 20,000</td>
+<td>≤ 50,000</td>
+<td>服务数随规模线性增长</td>
+</tr>
+<tr>
+<td>3</td>
+<td>单节点实例总数</td>
+<td>≤ 50,000</td>
+<td>≤ 200,000</td>
+<td>≤ 500,000</td>
+<td>实例心跳是主要开销</td>
+</tr>
+<tr>
+<td>4</td>
+<td>配置总数（单节点）</td>
+<td>≤ 10,000</td>
+<td>≤ 50,000</td>
+<td>≤ 100,000</td>
+<td>长轮询监听数</td>
+</tr>
+<tr>
+<td>5</td>
+<td>配置变更 QPS（峰值）</td>
+<td>≤ 500</td>
+<td>≤ 2,000</td>
+<td>≤ 5,000</td>
+<td>推送放大效应</td>
+</tr>
+<tr>
+<td>6</td>
+<td>JVM 堆内存（-Xmx）</td>
+<td>2G</td>
+<td>4G</td>
+<td>8G</td>
+<td>按实例/服务量校准</td>
+</tr>
+<tr>
+<td>7</td>
+<td>GC：Full GC 频次</td>
+<td>罕见</td>
+<td>&lt; 1/小时</td>
+<td>&lt; 1/小时</td>
+<td>FullGC 是严重告警</td>
+</tr>
+<tr>
+<td>8</td>
+<td>GC：单次 STW</td>
+<td>&lt; 200ms</td>
+<td>&lt; 300ms</td>
+<td>&lt; 500ms</td>
+<td>超过则查内存/订阅量</td>
+</tr>
+<tr>
+<td>9</td>
+<td>磁盘 IO 占用</td>
+<td>&lt; 60%</td>
+<td>&lt; 60%</td>
+<td>&lt; 70%</td>
+<td>日志/快照写入</td>
+</tr>
+<tr>
+<td>10</td>
+<td>网络带宽（单节点）</td>
+<td>&lt; 40%</td>
+<td>&lt; 40%</td>
+<td>&lt; 50%</td>
+<td>推送与心跳</td>
+</tr>
+<tr>
+<td>11</td>
+<td>控制台响应延迟 P99</td>
+<td>&lt; 500ms</td>
+<td>&lt; 800ms</td>
+<td>&lt; 1s</td>
+<td>异常则查 DB/线程</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Derby→MySQL 切换时延</td>
+<td>—</td>
+<td>&lt; 5s</td>
+<td>&lt; 5s</td>
+<td>存储切换恢复时长</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1642-连接与实例规模评估要点">16.4.2 连接与实例规模评估要点</h3>
+<ul>
+<li><strong>连接数是首要约束</strong>：gRPC 长连接是 2.x 的核心（1
+连接承载注册+订阅+心跳），单节点连接数直接决定可支撑的客户端规模；连接打满时新客户端握手失败（见
+15.10）。</li>
+<li><strong>实例量决定内存</strong>：每个临时实例在内存中有注册信息与心跳槽位，实例数翻倍通常带动内存近线性增长（第
+12 章已用 JOL 建立堆内存计算模型）。</li>
+<li><strong>配置量的核心是监听</strong>：配置总数本身轻，但每个客户端对每个
+dataId 建立长轮询监听，监听总数是更真实的瓶颈。</li>
+</ul>
+<h3 id="1643-阈值联动告警">16.4.3 阈值联动告警</h3>
+<p>在 13.2/13.4 的告警体系下，建议把上表阈值落入 Prometheus
+规则：连接数、服务数、FullGC、磁盘 IO 对应 5
+条核心告警；内存/实例量作为趋势类指标按周评估，避免阈值抖动误报。</p>
+<h3 id="trade-off-分析-3">Trade-off 分析</h3>
+<p><strong>基线越"激进"（阈值越低）越早暴露风险，但误报率上升</strong>；越"宽松"越稳定但可能滞后于故障。合理做法是：初始采用上表中等值，运行
+2~4 周后根据真实故障模式收敛（这也是 QUALITY 建议的"先立 11
+个核心指标基线，再渐进细化"）。小集群不必按大集群阈值告警，否则常态触发、告警疲劳。</p>
+<h3 id="设计模式分析-3">设计模式分析</h3>
+<p>性能基线本质是一套 <strong>预定义阈值（Policy as
+Code）</strong>：把容量经验沉淀为可执行规则，与 Prometheus
+告警规则（13.4）解耦又联动——基线是"目标值"，告警规则是"偏差触发"，两者分离便于单独调参而不改判定逻辑。</p>
+<h3 id="小结-3">小结</h3>
+<p>16.4 给出小/中/大型集群的 12
+项性能基线，覆盖连接、实例、配置、JVM、GC 与
+IO。核心是连接数与实例量两大内存/吞吐约束，建议按规模分级设阈值并渐进校准。</p>
+<hr />
+<h2 id="165-nacos-1x--2x-迁移要点">16.5 Nacos 1.x → 2.x 迁移要点</h2>
+<blockquote>
+<p>本节梳理从 Nacos 1.x 迁移到 2.x 的 <strong>5
+大差异项</strong>：通信协议、端口、客户端
+SDK、配置兼容、双写兼容，并给出可落地的迁移顺序与验证点。</p>
+</blockquote>
+<h3 id="设计背景-4">设计背景</h3>
+<p>1.x 与 2.x 最大的结构性变化是<strong>引入 gRPC 长连接</strong>替代
+HTTP 轮询/UDP
+推送，这带来协议、端口与连接模型的全面差异。迁移前明确差异，才能规划端口、升级客户端、规避兼容断层。</p>
+<h3 id="1651-五大差异项">16.5.1 五大差异项</h3>
+<p><strong>① 通信协议：HTTP/UDP → gRPC 长连接</strong></p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>1.x</th>
+<th>2.x</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>配置推送</td>
+<td>服务端 HTTP 主动推送 + 客户端长轮询</td>
+<td>gRPC 长连接推送</td>
+</tr>
+<tr>
+<td>服务发现</td>
+<td>客户端 HTTP 轮询</td>
+<td>gRPC 订阅、长连接增量更新</td>
+</tr>
+<tr>
+<td>连接模型</td>
+<td>每次请求一个连接（短连接）</td>
+<td>每客户端一条长连接复用</td>
+</tr>
+</tbody>
+</table>
+<p><strong>② 端口：新增 9848/9849 等</strong></p>
+<table>
+<thead>
+<tr>
+<th>端口</th>
+<th>用途</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8848</td>
+<td>主 HTTP 端口</td>
+<td>1.x/2.x 相同</td>
+</tr>
+<tr>
+<td>9848</td>
+<td>客户端 gRPC 端口</td>
+<td><code>主端口+1000</code>，2.x 新增必需</td>
+</tr>
+<tr>
+<td>9849</td>
+<td>服务端 gRPC 端口</td>
+<td><code>主端口+1001</code>，集群内部通信</td>
+</tr>
+<tr>
+<td>7848</td>
+<td>Jraft 协议端口</td>
+<td>集群一致性</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>关键</strong>：客户端 2.x 默认连接 gRPC
+端口（9848），若防火墙只开放 8848 会导致注册/订阅失败——这是 1.x
+平滑运行但 2.x 客户端连不上的常见原因（对应 15.10）。</p>
+</blockquote>
+<p><strong>③ 客户端 SDK：升级 2.x</strong></p>
+<ul>
+<li>需升级至 <code>nacos-client</code> 2.x（Java），旧 1.x 客户端连 2.x
+服务端仅部分兼容。</li>
+<li>生产建议：先升级服务端 2.x（服务端兼容 1.x
+客户端短期运行），再分批升级客户端，最后清理旧客户端（见 16.6）。</li>
+</ul>
+<p><strong>④ 配置兼容：格式与模型</strong></p>
+<ul>
+<li><code>dataId/group/tenant</code> 模型不变，配置文件可平滑迁移。</li>
+<li>2.x 加密配置、灰度配置（config_info_gray）为新增能力，1.x
+无对应，迁移后按需启用。</li>
+</ul>
+<p><strong>⑤ 双写兼容：滚动迁移期的落库一致性</strong></p>
+<ul>
+<li>2.x 临时实例走内存（Distro），持久实例走持久化存储；迁移期若与 1.x
+集群共享数据需评估双写（通常 1.x→2.x
+直接更换集群，不做跨版本双写）。</li>
+<li>灰度/平滑升级见 16.6：升级 Server → 保留旧数据 → 升级客户端 →
+下线旧集群。</li>
+</ul>
+<h3 id="1652-迁移顺序与验证">16.5.2 迁移顺序与验证</h3>
+<ol type="1">
+<li><strong>备份</strong>：导出全部配置（16.1
+<code>export=true</code>）+ 备份数据库（config_info/his 等）。</li>
+<li><strong>部署 2.x 服务端</strong>：新集群独立部署，开放 8848 + 9848 +
+9849 + 7848 端口。</li>
+<li><strong>数据迁移</strong>：将配置库导入新集群；服务/实例由客户端重新注册，无需迁移。</li>
+<li><strong>客户端灰度切换</strong>：分批把客户端指到新集群，验证注册、订阅、配置加载。</li>
+<li><strong>验证清单</strong>：配置可拉取（<code>curl .../v1/cs/configs</code>）、服务可注册（<code>.../v1/ns/instance/list</code>）、gRPC
+连接建立（日志无 connect 异常）。</li>
+<li><strong>下线
+1.x</strong>：全部客户端切换后下线旧集群，清理残留。</li>
+</ol>
+<h3 id="1653-常见迁移陷阱">16.5.3 常见迁移陷阱</h3>
+<ul>
+<li><strong>只开了 8848</strong>：gRPC 9848 不通 →
+客户端注册失败但控制台正常（排障见 15.10）。</li>
+<li><strong>客户端版本过旧</strong>：1.4.x 客户端连 2.x
+存在协议兼容限制，优先升到 2.x。</li>
+<li><strong>鉴权/加密配置未同步</strong>：2.x
+若开启鉴权（<code>nacos.core.auth.enabled</code>），原有裸 API 需带
+token。</li>
+<li><strong>namespace 一致性</strong>：迁移时确保
+<code>tenant_id</code>/namespace ID
+与旧集群一致，否则配置/服务跨租户不可见。</li>
+</ul>
+<h3 id="trade-off-分析-4">Trade-off 分析</h3>
+<p>1.x→2.x 迁移本质是用<strong>长连接资源换低延迟推送</strong>：gRPC
+长连接有效降低注册/订阅时延与推送消息量，但引入连接数管理、端口开放与客户端版本强相关的新约束。因此迁移必须"端口先行、客户端跟进、服务端兜底"的顺序推进，避免直接切换引发大面积注册失败。</p>
+<h3 id="设计模式分析-4">设计模式分析</h3>
+<p>迁移策略体现
+<strong>Strangler（绞杀者）模式</strong>：新集群（2.x）与旧集群（1.x）在窗口期并存，流量按客户端逐批绞杀迁移，最后移除旧系统。这与
+16.6
+灰度升级的"双集群并存、渐进切换"一致，把一次性大迁移降级为可控的小批次变更。</p>
+<h3 id="小结-4">小结</h3>
+<p>16.5 明确 1.x→2.x 的协议、端口、SDK、配置与双写五大差异，核心是 gRPC
+端口 9848
+与客户端升级。迁移按"备份→部署新集群→迁数据→客户端灰度→下线旧集群"顺序推进，并避开端口/版本/鉴权三大陷阱。</p>
+<hr />
+<h2 id="166-灰度升级-4-阶段流程">16.6 灰度升级 4 阶段流程</h2>
+<blockquote>
+<p>本节给出 Nacos 集群升级的 <strong>4 阶段流程</strong>：准备 → 升级
+Server → 升级客户端 →
+下线旧版本。核心原则是"客户端与服务端版本窗口期并存"，先服务端后客户端，避免一次性切换造成大面积不可用。</p>
+</blockquote>
+<h3 id="设计背景-5">设计背景</h3>
+<p>升级 Nacos
+最大的风险不是新版本本身，而是"客户端升级与服务端升级不同步"导致的协议/兼容断层。灰度升级把变更拆成小批次，每个阶段可验证、可回滚，确保任意时刻系统可用。</p>
+<h3 id="1661-阶段一准备">16.6.1 阶段一：准备</h3>
+<ul>
+<li><strong>评估影响面</strong>：梳理全部客户端版本、依赖的
+<code>nacos-client</code> 版本、使用的 API（配置/服务/订阅/鉴权）。</li>
+<li><strong>备份</strong>：导出配置（<code>export=true</code>）、备份数据库（config_info/his_config_info/users
+等）、备份当前版本配置与启动脚本。</li>
+<li><strong>规划端口与资源</strong>：确认集群能开放 8848 + 9848 + 9849 +
+7848；评估是否需要扩节点（灰度期双集群并存占用更多资源）。</li>
+<li><strong>选定目标版本</strong>：建议小版本内升级（如 2.4.x →
+2.5.3）而非跨大版本，降低兼容风险。</li>
+</ul>
+<h3 id="1662-阶段二升级-server">16.6.2 阶段二：升级 Server</h3>
+<ul>
+<li><strong>方式 A（新增节点替换）</strong>：新起 2.5.3
+节点加入集群，逐台剔除旧节点，滚动替换——数据经 Jraft/Distro
+同步，客户端无需感知。</li>
+<li><strong>方式 B（同节点替换）</strong>：停一台→替换为
+2.5.3→拉起→验证，逐台滚动；停机窗口内该节点服务漂移。</li>
+<li><strong>每台验证</strong>：<code>curl /v1/ns/operator/metrics</code>
+正常、节点加入集群（<code>/v1/ns/cluster/health</code>）、日志无错误、配置/服务可正常读写。</li>
+<li><strong>保持旧客户端可用</strong>：2.x 服务端兼容 1.x/2.x
+旧客户端短期运行，为客户端升级留窗口。</li>
+</ul>
+<h3 id="1663-阶段三升级客户端">16.6.3 阶段三：升级客户端</h3>
+<ul>
+<li><strong>分批灰度</strong>：先升级测试/低流量应用的
+<code>nacos-client</code>
+到目标版本，验证注册、订阅、配置加载、鉴权通过后，再扩大到生产核心。</li>
+<li><strong>验证项</strong>：服务注册成功、实例可见、配置能拉取与热更新、gRPC
+连接建立（日志无 <code>connect</code> 异常）、无版本兼容告警。</li>
+<li><strong>回滚预案</strong>：若某批出现异常，该批回退客户端版本即可，服务端已升级不受影响。</li>
+</ul>
+<h3 id="1664-阶段四下线旧版本">16.6.4 阶段四：下线旧版本</h3>
+<ul>
+<li><strong>确认全部客户端已升级</strong>：通过服务端接入日志/版本上报反查各连接客户端版本（16.1
+的 <code>VersionUtils</code>，见 15.9）。</li>
+<li><strong>下线旧集群</strong>：确认无旧客户端连接后，下线
+1.x/旧版本节点，清理数据与脚本。</li>
+<li><strong>收尾</strong>：更新监控/告警阈值（13.4）、巡检（13.7）、配置备份策略，记录升级时间线。</li>
+</ul>
+<h3 id="1665-灰度升级速查">16.6.5 灰度升级速查</h3>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>关键动作</th>
+<th>验证点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>准备</td>
+<td>备份+端口规划+影响面</td>
+<td>备份完整、端口开放</td>
+</tr>
+<tr>
+<td>升级 Server</td>
+<td>逐台替换/新节点替换</td>
+<td>metrics 正常、加入集群、旧客户端可用</td>
+</tr>
+<tr>
+<td>升级客户端</td>
+<td>分批升级 nacos-client</td>
+<td>注册/配置/订阅/鉴权通过</td>
+</tr>
+<tr>
+<td>下线旧版本</td>
+<td>确认无旧连接后下线</td>
+<td>版本上报全为目标版、旧节点已清</td>
+</tr>
+</tbody>
+</table>
+<h3 id="trade-off-分析-5">Trade-off 分析</h3>
+<p>灰度升级投入了"双集群/滚动窗口"的额外资源，换来的是<strong>可控性与可回滚性</strong>：任一阶段失败只影响对应批次。相对一次性升级省时但风险集中，灰度更契合生产
+SLA 要求。<strong>升级 Server
+与客户端必须分阶段</strong>——同时升级两者会同时放大协议与配置风险，难以定位责任面。</p>
+<h3 id="设计模式分析-5">设计模式分析</h3>
+<p>灰度升级采用 <strong>Rolling Update（滚动升级）</strong> 与
+<strong>Canary（金丝雀）</strong>
+的结合：服务端逐节点滚动（保持集群整体可用），客户端按批次金丝雀放量（先小流量验证再全量）。这与
+16.6 的 4 阶段相互印证，是分布式系统变更管理的最稳路径。</p>
+<h3 id="小结-5">小结</h3>
+<p>16.6 给出"准备→升级 Server→升级客户端→下线旧版本"4
+阶段灰度升级。核心是服务端先行、客户端分批、全程可回滚，规避版本兼容断层带来的大面积不可用。</p>
+<hr />
+<h2 id="167-适用场景总结表">16.7 适用场景总结表</h2>
+<blockquote>
+<p>本节给出 <strong>6 种典型场景</strong>下 Nacos
+的推荐部署方式、一致性模式与关键配置，帮助根据自身业务形态选型。</p>
+</blockquote>
+<h3 id="设计背景-6">设计背景</h3>
+<p>Nacos 同一套系统在不同规模/一致性要求下的配置方案差异很大。把"场景 →
+部署 → 一致性 →
+关键配置"固化为决策表，可直接对照业务现状选择最贴合的组合，避免过度设计或欠配。</p>
+<h3 id="1671-六种场景决策表">16.7.1 六种场景决策表</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>推荐部署</th>
+<th>一致性模式</th>
+<th>关键配置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>单机快速验证/开发</strong></td>
+<td>单节点（内置 Derby）</td>
+<td>单点</td>
+<td><code>nacos.core.auth.enabled=false</code>，默认端口</td>
+</tr>
+<tr>
+<td><strong>生产小集群（≤5 节点）</strong></td>
+<td>3~5 节点 + MySQL</td>
+<td>CP（Raft）+ 持久化</td>
+<td>开放 8848+9848+9849+7848；<code>config</code> 用 MySQL</td>
+</tr>
+<tr>
+<td><strong>生产中大规模</strong></td>
+<td>≥5 节点 + MySQL</td>
+<td>CP（配置）+ AP（临时实例 Distro）</td>
+<td>JVM 按实例量校准；开启监控/告警</td>
+</tr>
+<tr>
+<td><strong>多环境/多租户隔离</strong></td>
+<td>每环境独立集群或 namespace 隔离</td>
+<td>租户隔离</td>
+<td>用 namespace（tenant_id）隔离 dev/test/prod</td>
+</tr>
+<tr>
+<td><strong>高写入并发配置</strong></td>
+<td>大集群 + 读写分离</td>
+<td>CP + 优化推送</td>
+<td>调大连接数/推送线程；配置变更走流水线</td>
+</tr>
+<tr>
+<td><strong>云原生/K8s</strong></td>
+<td>Helm/K8s 部署、PVC 存储</td>
+<td>与部署模式一致</td>
+<td>端口注入、<code>MYSQL_SERVICE_PASSWORD</code>、滚动策略</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1672-关键差异说明">16.7.2 关键差异说明</h3>
+<ul>
+<li><strong>一致性模式</strong>：配置中心（config）采用
+<strong>CP（Raft/Jraft）</strong> 保证强一致；服务发现对临时实例采用
+<strong>AP（Distro
+最终一致）</strong>，两者按数据性质选型而非一刀切（见第 4 章）。</li>
+<li><strong>持久实例 vs
+临时实例</strong>：需强一致/持久化的服务用持久实例（写存储），默认开发用临时实例（内存+心跳，成本更低）。</li>
+<li><strong>多环境</strong>：优先用
+<code>namespace</code>（tenant_id）隔离而非整集群隔离，减少资源冗余、便于统一版本。</li>
+</ul>
+<h3 id="1673-选型建议">16.7.3 选型建议</h3>
+<ul>
+<li><strong>规模小、SLA 要求低</strong>：单机或 3 节点 + MySQL
+即可，不必引入过多节点。</li>
+<li><strong>规模增长</strong>：优先扩节点与校准
+JVM，再考虑读写分离与缓存。</li>
+<li><strong>多团队共享</strong>：用 namespace +
+RBAC（users/roles/permissions）做租户隔离与权限管控（见第 7 章）。</li>
+<li><strong>云原生</strong>：用 Helm
+部署并配置持久化存储与健康探针，滚动升级策略参考 16.6。</li>
+</ul>
+<h3 id="trade-off-分析-6">Trade-off 分析</h3>
+<p><strong>CP（Raft 强一致）vs AP（Distro 最终一致）</strong>
+是本决策的核心权衡：配置必须强一致（错配代价高），因此走
+CP；临时实例允许短暂不一致以换取高可用与低延时，因此走
+AP。<strong>整集群隔离 vs namespace 隔离</strong>
+也要权衡——整集群隔离更彻底但成本高，namespace
+隔离共享资源但依赖权限管控到位。</p>
+<h3 id="设计模式分析-6">设计模式分析</h3>
+<p>场景决策本质是 <strong>Strategy（策略）模式</strong>：Nacos
+把"一致性策略、存储策略、租户策略"做成可插拔选项，部署方按场景选择——CP/AP、ephemeral/persistent、单机/集群、namespace/RBAC
+都是策略的组合。这让同一内核适配多种业务形态，是 Nacos
+架构弹性的体现。</p>
+<h3 id="小结-6">小结</h3>
+<p>16.7 用决策表覆盖 6 种典型场景，核心权衡在 CP（配置强一致）与
+AP（服务发现高可用）的并存，并用 namespace+RBAC
+解决多租户。选型时先定一致性需求，再定部署规模与隔离方式。</p>
+<hr />
+<h2 id="168-faq-20-问">16.8 FAQ 20 问</h2>
+<blockquote>
+<p>汇总 Nacos 使用与排障中最高频的 <strong>20
+个问题</strong>，给出简短解答并指向详细章节。</p>
+</blockquote>
+<h3 id="设计背景-7">设计背景</h3>
+<p>FAQ
+是速查的收口：把散落在各章的常见疑问聚合成"一问一答"，便于快速检索。每个答案附上对应章节，深挖时跳转。</p>
+<ol type="1">
+<li><strong>为什么客户端连不上，但 8848 控制台能开？</strong> 客户端走
+gRPC 端口 9848（主端口+1000），只开放 8848 会导致 gRPC 失败。见
+16.5/15.10。</li>
+<li><strong><code>config.getConfig</code> 返回 null？</strong>
+dataId/group/tenant 不匹配，或配置尚未发布；用
+<code>curl .../v1/cs/configs</code> 校验。见 15.10。</li>
+<li><strong>配置修改了客户端不刷新？</strong> 未加
+<code>@RefreshScope</code>、或通过长轮询超时未推送。见 15.3/14.3。</li>
+<li><strong>服务注册成功但消费端发现不了？</strong> 实例
+<code>healthy=false</code>（心跳未过）或
+<code>enabled=false</code>，<code>selectInstances</code> 会过滤。见
+15.10/16.1。</li>
+<li><strong>实例显示"控制台有、客户端空"？</strong>
+<code>getInstances</code> 默认过滤不健康/禁用/权重≤0 实例；对比
+<code>getAllInstances</code> 定位。见 15.10。</li>
+<li><strong><code>UnknownHostException</code>？</strong>
+服务名拼写不一致或地址服务器不可达。见 14.2/15.10。</li>
+<li><strong>版本不匹配导致序列化/协议问题？</strong> nacos-client
+与服务端版本差太大；用 <code>dependency:tree</code> 核对实际生效版本。见
+15.9。</li>
+<li><strong>如何确认客户端实际生效的 nacos-client 版本？</strong>
+<code>mvn dependency:tree -Dincludes=com.alibaba.nacos:nacos-client</code>。见
+15.9/16.1。</li>
+<li><strong>配置加密如何开启？</strong> 配置加密插件 +
+<code>encrypted_data_key</code> 字段支持；见第 7 章/16.2。</li>
+<li><strong>鉴权开启后调用 API 返回 403？</strong> 未携带
+<code>accessToken</code>
+或权限不足；<code>nacos.core.auth.enabled=true</code> 需登录获取
+token。见 16.1/第 7 章。</li>
+<li><strong>集群脑裂怎么判断？</strong> 查
+<code>cluster/nodes</code>、Raft <code>leader</code>、DistroVerify
+状态；见 14.7。</li>
+<li><strong>FullGC 频繁？</strong>
+实例/订阅量过大或堆过小，<code>jmap -histo:live</code> 定位大对象；见
+12/14.9。</li>
+<li><strong>CPU 飙高怎么办？</strong> <code>top -H</code> +
+<code>jstack</code> + async-profiler 火焰图；见 14.11。</li>
+<li><strong>长轮询超时导致配置不生效？</strong> 增大
+<code>configLongPollTimeout</code> + 查 <code>ClientWorker</code>
+线程堆栈；见 14.4。</li>
+<li><strong>gRPC 连接断开后实例不更新？</strong> 重订阅未恢复，查
+<code>NamingGrpcRedoService</code> 重连接；见 15.10/16.1。</li>
+<li><strong>Derby 与 MySQL 如何切换？</strong> 生产建议
+MySQL；切换需导出导入并改存储配置；见 13.9/16.2。</li>
+<li><strong>多环境如何隔离最好？</strong> 用 namespace（tenant_id）隔离
+dev/test/prod + RBAC；见 16.7。</li>
+<li><strong>配置历史被清空了？</strong>
+检查清理任务（13.9）或过期归档策略；<code>his_config_info</code> 按
+<code>gmt_modified</code> 清理。</li>
+<li><strong>升级后旧客户端还能用吗？</strong> 2.x 服务端短期兼容
+1.x，但建议尽快升级客户端；见 16.5/16.6。</li>
+<li><strong>如何做性能基线？</strong> 参照 16.4 的 12
+项指标分规模设阈值，运行后渐进校准；见 16.4/13.2。</li>
+</ol>
+<h3 id="trade-off-分析-7">Trade-off 分析</h3>
+<p><strong>FAQ
+追求"短平快"必然牺牲深度</strong>：一问一答只能给结论与指向，无法展开推理。因此
+FAQ 定位为"速查入口"而非"排障教程"，深层定位仍需跳到对应章节（14/15
+章）。这避免了 FAQ 无限膨胀导致的检索成本上升。</p>
+<h3 id="设计模式分析-7">设计模式分析</h3>
+<p>FAQ 采用
+<strong>Index（索引）模式</strong>：每个问题作为键，指向文档中真正承载内容的章节。这样
+FAQ 自身保持轻量，却能将高频问题高效路由到权威解答，形成"快速命中 +
+深度追溯"的双层知识结构。</p>
+<h3 id="小结-7">小结</h3>
+<p>16.8 用 20
+问速答覆盖连接、配置、服务发现、版本、鉴权、脑裂、性能与升级等高频问题，每题附详细章节索引，是整本手册的检索门户。</p>
+<hr />
+<h2 id="169-未来演进方向">16.9 未来演进方向</h2>
+<blockquote>
+<p>本节展望 Nacos 未来的演进方向，聚焦 <strong>Nacos 3.x 的 5
+大改进领域</strong>：多协议、插件热加载、增强
+RBAC、多云抽象、性能提升。</p>
+</blockquote>
+<h3 id="设计背景-8">设计背景</h3>
+<p>理解演进方向有助于：评估存量系统的长期选型、规划技术债偿还、以及预判未来升级路径。本节基于
+Nacos 官方路线与 2.x 现状的架构趋势，梳理 5 大方向。</p>
+<h3 id="1691-五大演进方向">16.9.1 五大演进方向</h3>
+<p><strong>① 多协议支持</strong></p>
+<ul>
+<li>现状：2.x 以 gRPC 长连接为主，兼容 HTTP。</li>
+<li>趋势：扩展对更多协议（如 HTTP/3、更高性能
+RPC）的适配，进一步降低通信时延与资源占用。</li>
+</ul>
+<p><strong>② 插件热加载</strong></p>
+<ul>
+<li>现状：插件体系（Auth/DataSource/Encryption 等）通过 SPI 加载，2.x
+已模块化。</li>
+<li>趋势：支持插件运行时热加载、热卸载，使扩展能力在不停机情况下更新（见第
+8 章）。</li>
+</ul>
+<p><strong>③ 增强 RBAC</strong></p>
+<ul>
+<li>现状：users/roles/permissions 基础 RBAC。</li>
+<li>趋势：更细粒度的资源授权、租户级策略、与外部 IAM/权限体系整合。</li>
+</ul>
+<p><strong>④ 多云抽象</strong></p>
+<ul>
+<li>趋势：淡化具体存储/依赖与云厂商绑定，提供统一抽象，便于在公有云、私有云、混合云之间迁移与多活。</li>
+</ul>
+<p><strong>⑤ 性能提升</strong></p>
+<ul>
+<li>趋势：在连接管理、推送批量、内存模型上持续优化，支撑更大规模实例与更高配置变更吞吐。</li>
+</ul>
+<h3 id="1692-对存量系统的影响">16.9.2 对存量系统的影响</h3>
+<ul>
+<li><strong>升级路径</strong>：2.5.3
+作为当前稳定分支，后续新能力多在兼容 API（config_info 模型、OpenAPI
+面）基础上增量演进，存量配置/服务模型预期保持兼容。</li>
+<li><strong>选型启示</strong>：若长期规划依赖多协议或多云，可关注 3.x
+进展；当前业务则以 2.5.3 稳定运行为主，并按 16.5/16.6
+保持可升级能力。</li>
+</ul>
+<h3 id="trade-off-分析-8">Trade-off 分析</h3>
+<p>架构演进始终在<strong>兼容性与创新</strong>间权衡：多协议、插件热加载、增强
+RBAC 带来能力扩展，但会增大内核复杂度和迁移成本。Nacos
+通过"API/数据模型稳定 +
+插件化扩展"尽量把变更收敛到扩展点，减少对使用方的破坏——这也是"演进而非重写"的务实路线。</p>
+<h3 id="设计模式分析-8">设计模式分析</h3>
+<p>演进方向整体体现
+<strong>Open-Closed（开闭原则）</strong>：对扩展开放（插件热加载、多协议适配、多云抽象），对修改关闭（保持
+OpenAPI 与核心数据模型稳定）。这与 Nacos 2.x 已采用的 SPI
+插件机制一脉相承，是新特性得以渐进落地而不打乱现有体系的结构保障。</p>
+<h3 id="小结-8">小结</h3>
+<p>16.9 梳理了 Nacos 3.x 在多协议、插件热加载、增强
+RBAC、多云抽象与性能提升五大方向的演进。对存量用户，核心是保持"基于稳定的
+OpenAPI/数据模型 +
+插件化扩展"的兼容策略，按需跟踪新能力并规划渐进升级。</p>
+<hr />
+<h1 id="第-16-章总结">第 16 章总结</h1>
+<p>第 16 章作为全书的速查附录，从 <strong>API 接口（16.1）、SQL
+表结构（16.2）、运维命令（16.3）、性能基线（16.4）</strong>
+四张"活页"入手，接着给出
+<strong>版本迁移（16.5）、灰度升级（16.6）、适用场景（16.7）</strong>
+三条运维决策路径，最后以 <strong>FAQ 20
+问（16.8）与演进方向（16.9）</strong>
+收口。整章强调"查得快、用得准、可验证"：接口与表结构均溯源到 2.5.3
+源码，基线阈值与流程可执行、可回滚，FAQ
+指向深度章节形成双层检索。至此，Nacos 2.5.3 深度研究手册的第 16
+章（附录）全部完成。</p>
+</body>
+</html>

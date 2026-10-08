@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>$title$</title>
+  <style>
+/* === Swiss Style Typography System ===
+   Fonts: Inter + Noto Sans SC + JetBrains Mono
+   Colors: Paper White + Near Black + Klein Blue (IKB)
+   Grid: Carbon 8px baseline system */
+:root {
+    --sans: "Inter", "Helvetica Neue", "Helvetica", "Arial", system-ui, sans-serif;
+    --sans-zh: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Consolas", monospace;
+    --paper: #fafaf8;
+    --ink: #0a0a0a;
+    --text-secondary: #525252;
+    --text-helper: #737373;
+    --accent: #002FA7;
+    --accent-bright: #5B7BFF;
+    --border-subtle: #e0e0e0;
+    --grey-1: #f0f0ee;
+    --sp-5: 16px; --sp-7: 32px; --sp-8: 40px; --sp-10: 64px; --sp-12: 96px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: var(--sans-zh), var(--sans);
+    font-weight: 300; font-size: 17px; line-height: 1.75;
+    color: var(--ink); background: var(--paper);
+    max-width: 780px; margin: 0 auto;
+    padding: var(--sp-12) var(--sp-8) var(--sp-12);
+    -webkit-font-smoothing: antialiased;
+}
+h1 { font-family: var(--sans-zh), var(--sans); font-weight: 900; font-size: 2.5em; line-height: 1.15; letter-spacing: -0.02em; color: var(--ink); margin-bottom: var(--sp-5); padding-bottom: var(--sp-7); border-bottom: 1px solid var(--border-subtle); }
+h2 { font-weight: 700; font-size: 1.75em; line-height: 1.25; letter-spacing: -0.01em; color: var(--ink); margin-top: var(--sp-12); margin-bottom: var(--sp-7); padding-top: var(--sp-7); border-top: 1px solid var(--border-subtle); }
+h3 { font-weight: 600; font-size: 1.25em; line-height: 1.4; margin-top: var(--sp-8); margin-bottom: var(--sp-5); }
+h4 { font-weight: 600; font-size: 1.05em; line-height: 1.5; margin-top: var(--sp-7); margin-bottom: var(--sp-5); }
+p { margin-bottom: var(--sp-5); }
+strong { font-weight: 600; color: var(--ink); }
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bright); }
+code { font-family: var(--mono); font-size: 0.9em; font-weight: 500; background: var(--grey-1); padding: 1px 5px; border-radius: 3px; color: var(--accent); }
+pre { font-family: var(--mono); font-size: 0.85em; line-height: 1.6; background: #0a0a0a; color: #f0f0ee; padding: var(--sp-7); border-radius: 8px; overflow-x: auto; margin: var(--sp-7) 0; }
+pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+table { width: 100%; border-collapse: collapse; margin: var(--sp-7) 0; font-size: 0.9em; }
+th { font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-helper); text-align: left; padding: var(--sp-5); border-bottom: 2px solid var(--ink); }
+td { padding: var(--sp-5); border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+li { margin-bottom: var(--sp-5); margin-left: var(--sp-7); }
+hr { border: none; border-top: 1px solid var(--border-subtle); margin: var(--sp-10) 0; }
+blockquote { border-left: 3px solid var(--accent); padding-left: var(--sp-5); margin: var(--sp-7) 0; color: var(--text-secondary); }
+img { max-width: 100%; height: auto; display: block; margin: var(--sp-7) auto; border-radius: 4px; }
+figure { margin: var(--sp-7) 0; text-align: center; }
+figcaption { font-size: 0.85em; color: var(--text-helper); margin-top: var(--sp-5); }
+
+/* === Code Syntax Highlighting (Swiss palette) === */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: var(--sp-7) 0; }
+pre.sourceCode { margin: 0; }
+@media screen { div.sourceCode { overflow: auto; } }
+pre.numberSource code { counter-reset: source-line 0; }
+pre.numberSource code > span { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before { content: counter(source-line); position: relative; left: -1em; text-align: right; vertical-align: baseline; border: none; display: inline-block; -webkit-touch-callout: none; -webkit-user-select: none; -khtml-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; padding: 0 4px; width: 4em; color: #7a7a72; }
+pre.numberSource { margin-left: 3em; border-left: 1px solid #4a4a44; padding-left: 4px; }
+div.sourceCode { color: #f0f0ee; background-color: transparent; }
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+code span.al { color: #ff5f5f; font-weight: bold; } /* Alert */
+code span.an { color: #8a8a80; font-weight: bold; font-style: italic; } /* Annotation */
+code span.at { color: #5B7BFF; } /* Attribute */
+code span.bn { color: #d19a66; } /* BaseN */
+code span.bu { color: #c678dd; } /* BuiltIn */
+code span.cf { color: #c678dd; } /* ControlFlow */
+code span.ch { color: #98c379; } /* Char */
+code span.cn { color: #d19a66; } /* Constant */
+code span.co { color: #8a8a80; font-style: italic; } /* Comment */
+code span.cv { color: #8a8a80; font-weight: bold; font-style: italic; } /* CommentVar */
+code span.do { color: #8a8a80; font-style: italic; } /* Documentation */
+code span.dt { color: #e5c07b; } /* DataType */
+code span.dv { color: #d19a66; } /* DecVal */
+code span.er { color: #ff5f5f; font-weight: bold; } /* Error */
+code span.ex { } /* Extension */
+code span.fl { color: #d19a66; } /* Float */
+code span.fu { color: #61afef; } /* Function */
+code span.im { color: #c678dd; } /* Import */
+code span.in { color: #8a8a80; font-weight: bold; font-style: italic; } /* Information */
+code span.kw { color: #c678dd; } /* Keyword */
+code span.op { color: #56b6c2; } /* Operator */
+code span.ot { color: #e5c07b; } /* Other */
+code span.pp { color: #c678dd; } /* Preprocessor */
+code span.re { } /* RegionMarker */
+code span.sc { color: #98c379; } /* SpecialChar */
+code span.ss { color: #98c379; } /* SpecialString */
+code span.st { color: #98c379; } /* String */
+code span.va { color: #e06c75; } /* Variable */
+code span.vs { color: #98c379; } /* VerbatimString */
+code span.wa { color: #ff5f5f; font-weight: bold; font-style: italic; } /* Warning */
+
+@media (max-width: 840px) { body { padding: var(--sp-7) var(--sp-5); font-size: 16px; } h1 { font-size: 2em; } h2 { font-size: 1.35em; } }
+@media print { body { max-width: 100%; font-size: 12pt; } pre { background: #f5f5f5; color: #0a0a0a; } }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@200;300;400;500;700;900&display=swap" rel="stylesheet">
+</head>
+<body>
+$if(title)$
+<header id="title-block-header">
+<h1 class="title">$title$</h1>
+</header>
+$endif$
+$body$
+</body>
+</html>

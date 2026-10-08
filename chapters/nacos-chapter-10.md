@@ -935,7 +935,7 @@ curl -X GET 'http://192.168.1.101:8848/nacos/v1/core/cluster/nodes?withLeader=tr
     │                  │                  │
 ```
 
-                        图 10-6：JRaft Leader 选举时序图（3 节点）
+图 10-6：JRaft Leader 选举时序图（3 节点）
 
 ### 故障转移场景验证
 

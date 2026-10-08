@@ -87,18 +87,42 @@
 │   ├── nacos-chapter-10.md      ✅ 第10章 生产部署架构
 │   ├── nacos-chapter-11.md      ✅ 第11章 高可用架构设计
 │   └── nacos-chapter-12.md      ✅ 第12章 性能调优
-├── chapter-html/                 # HTML 格式输出
+├── chapter-html/                 # HTML 格式输出（16 章全量）
+│   ├── index.html                ✅ 总目录页（含章节导航与字数统计）
 │   ├── nacos-chapter-01.html     ✅ Swiss Style 排版
-│   └── .gitkeep
+│   └── nacos-chapter-01~16.html  ✅ 全 16 章
 ├── analysis/                     # 分析报告
 │   └── nacos-2.2.3-to-2.5.3-diff.md
 ├── upstream/                    # 上游源码
 │   └── nacos-2.5.3/             # Nacos 2.5.3 源码（2,460 Java 文件）
+├── build/                       # 构建 / 导出脚本
+│   ├── build-html.sh            ✅ MD → HTML 批量转换（pandoc + Swiss Style 模板）
+│   ├── pandoc-swiss-template.html  ✅ pandoc HTML 模板（Swiss Style CSS）
+│   └── gen-index.py             ✅ 生成 chapter-html/index.html 总目录页
 ├── src/                         # 自定义代码 / 脚本
 ├── assets/                      # 图片 / 图表 / 截图
 ├── refs/                        # 外部参考资料 / 论文
-└── build/                       # 构建 / 导出 / 合并脚本
 ```
+
+## 🖥️ HTML 输出
+
+`chapter-html/` 下为全量 16 章 HTML，采用 **Swiss Style**（瑞士国际主义）排版：Inter + Noto Sans SC + JetBrains Mono 字体，纸白底 + 近黑字 + 克莱因蓝（IKB #002FA7）强调色，直角无圆角、无阴影、无渐变。
+
+- 打开 `chapter-html/index.html` 可查看总目录并跳转各章
+- 第 9 章的 5 张时序图由 mermaid.js 在浏览器端实时渲染（需联网加载 CDN）
+- 字体从 Google Fonts 加载，离线环境会回退到系统字体
+
+### 重新生成
+
+```bash
+# 1. 批量转换 16 章 MD → HTML
+bash build/build-html.sh
+
+# 2. 生成总目录页
+python3 build/gen-index.py
+```
+
+依赖：`pandoc`（3.6.2 已验证）。
 
 ## 📝 文档特点
 

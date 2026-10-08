@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nacos 2.5.3 深度技术研究 · 目录</title>
+<style>
+/* === Swiss Style Typography System === */
+:root {
+  --sans: "Inter", "Helvetica Neue", "Helvetica", "Arial", system-ui, sans-serif;
+  --sans-zh: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Consolas", monospace;
+  --paper: #fafaf8; --ink: #0a0a0a;
+  --text-secondary: #525252; --text-helper: #737373;
+  --accent: #002FA7; --accent-bright: #5B7BFF;
+  --border-subtle: #e0e0e0; --grey-1: #f0f0ee;
+  --sp-3:8px; --sp-5:16px; --sp-7:32px; --sp-8:40px; --sp-10:64px; --sp-12:96px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--sans-zh), var(--sans);
+  font-weight: 300; font-size: 17px; line-height: 1.75;
+  color: var(--ink); background: var(--paper);
+  max-width: 1080px; margin: 0 auto;
+  padding: var(--sp-12) var(--sp-8);
+  -webkit-font-smoothing: antialiased;
+}
+header { border-bottom: 2px solid var(--ink); padding-bottom: var(--sp-7); margin-bottom: var(--sp-10); }
+.kicker { font-family: var(--mono); font-size: 13px; font-weight: 500; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--accent); display: block; margin-bottom: var(--sp-5); }
+h1 { font-weight: 900; font-size: 2.6em; line-height: 1.1; letter-spacing: -.02em; }
+.sub { color: var(--text-secondary); margin-top: var(--sp-5); font-size: 1.05em; }
+.stats { display: flex; gap: var(--sp-10); margin-top: var(--sp-7); flex-wrap: wrap; }
+.stat b { display: block; font-size: 2.2em; font-weight: 200; line-height: 1; letter-spacing: -.02em; color: var(--accent); }
+.stat span { font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-helper); }
+.grp { margin-bottom: var(--sp-10); }
+h2 { font-weight: 700; font-size: 1.15em; letter-spacing: .02em; color: var(--text-helper);
+  text-transform: uppercase; padding-bottom: var(--sp-5); margin-bottom: var(--sp-7);
+  border-bottom: 1px solid var(--border-subtle); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1px; background: var(--border-subtle); border: 1px solid var(--border-subtle); }
+.card { display: flex; gap: var(--sp-5); align-items: flex-start; background: var(--paper);
+  padding: var(--sp-7); text-decoration: none; color: inherit; transition: background .15s; }
+.card:hover { background: var(--grey-1); }
+.card:hover .ct { color: var(--accent); }
+.num { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--accent);
+  border: 1px solid var(--accent); padding: 1px 7px; flex-shrink: 0; margin-top: 3px; }
+.body { display: block; min-width: 0; }
+.ct { display: block; font-weight: 600; font-size: 1.02em; line-height: 1.45; margin-bottom: 4px; }
+.meta { display: block; font-family: var(--mono); font-size: 12px; color: var(--text-helper); }
+footer { margin-top: var(--sp-10); padding-top: var(--sp-7); border-top: 1px solid var(--border-subtle);
+  font-size: .88em; color: var(--text-helper); }
+footer code { font-family: var(--mono); background: var(--grey-1); padding: 1px 5px; color: var(--accent); }
+@media (max-width: 840px) { body { padding: var(--sp-8) var(--sp-5); } h1 { font-size: 1.9em; } .stats { gap: var(--sp-7); } }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500;600;700;900&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@200;300;400;500;700;900&display=swap" rel="stylesheet">
+</head>
+<body>
+<header>
+  <span class="kicker">Nacos 2.5.3 · Source Code Deep Dive</span>
+  <h1>Nacos 2.5.3 深度技术研究</h1>
+  <p class="sub">基于 Nacos 2.5.3 源码的逐模块分析文档 · 共 16 章 · Swiss Style 排版</p>
+  <div class="stats">
+    <div class="stat"><b>16</b><span>章节</span></div>
+    <div class="stat"><b>976,659</b><span>正文字数</span></div>
+    <div class="stat"><b>5,837 KB</b><span>HTML 体积</span></div>
+  </div>
+</header>
+    <section class="grp">
+      <h2>第一部分 · 架构与设计</h2>
+      <div class="grid">
+      <a class="card" href="nacos-chapter-01.html">
+        <span class="num">01</span>
+        <span class="body">
+          <span class="ct">Nacos 2.5.3 整体架构概述</span>
+          <span class="meta">第 1 章 · 52,884 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-02.html">
+        <span class="num">02</span>
+        <span class="body">
+          <span class="ct">注册中心（Naming）源码深度分析</span>
+          <span class="meta">第 2 章 · 68,362 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-03.html">
+        <span class="num">03</span>
+        <span class="body">
+          <span class="ct">配置中心（Config）源码深度分析</span>
+          <span class="meta">第 3 章 · 94,511 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-04.html">
+        <span class="num">04</span>
+        <span class="body">
+          <span class="ct">一致性协议（JRaft &amp; Distro）深度分析</span>
+          <span class="meta">第 4 章 · 109,042 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-05.html">
+        <span class="num">05</span>
+        <span class="body">
+          <span class="ct">集群管理（Core）+ 客户端 SDK 深度分析</span>
+          <span class="meta">第 5 章 · 99,354 字</span>
+        </span>
+      </a>
+      </div>
+    </section>
+    <section class="grp">
+      <h2>第二部分 · 持久化与扩展</h2>
+      <div class="grid">
+      <a class="card" href="nacos-chapter-06.html">
+        <span class="num">06</span>
+        <span class="body">
+          <span class="ct">持久化层（persistence）深度分析</span>
+          <span class="meta">第 6 章 · 53,110 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-07.html">
+        <span class="num">07</span>
+        <span class="body">
+          <span class="ct">认证安全、控制台与周边模块</span>
+          <span class="meta">第 7 章 · 61,253 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-08.html">
+        <span class="num">08</span>
+        <span class="body">
+          <span class="ct">插件体系与 SPI 扩展机制</span>
+          <span class="meta">第 8 章 · 31,347 字</span>
+        </span>
+      </a>
+      </div>
+    </section>
+    <section class="grp">
+      <h2>第三部分 · 配置与部署</h2>
+      <div class="grid">
+      <a class="card" href="nacos-chapter-09.html">
+        <span class="num">09</span>
+        <span class="body">
+          <span class="ct">全量配置项详解</span>
+          <span class="meta">第 9 章 · 106,737 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-10.html">
+        <span class="num">10</span>
+        <span class="body">
+          <span class="ct">生产环境部署架构</span>
+          <span class="meta">第 10 章 · 32,376 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-11.html">
+        <span class="num">11</span>
+        <span class="body">
+          <span class="ct">高可用架构设计</span>
+          <span class="meta">第 11 章 · 29,991 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-12.html">
+        <span class="num">12</span>
+        <span class="body">
+          <span class="ct">性能调优深度分析</span>
+          <span class="meta">第 12 章 · 80,750 字</span>
+        </span>
+      </a>
+      </div>
+    </section>
+    <section class="grp">
+      <h2>第四部分 · 运维与实践</h2>
+      <div class="grid">
+      <a class="card" href="nacos-chapter-13.html">
+        <span class="num">13</span>
+        <span class="body">
+          <span class="ct">监控运维</span>
+          <span class="meta">第 13 章 · 38,238 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-14.html">
+        <span class="num">14</span>
+        <span class="body">
+          <span class="ct">故障排查指南</span>
+          <span class="meta">第 14 章 · 40,671 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-15.html">
+        <span class="num">15</span>
+        <span class="body">
+          <span class="ct">Spring Cloud Alibaba 集成最佳实践</span>
+          <span class="meta">第 15 章 · 58,800 字</span>
+        </span>
+      </a>
+      <a class="card" href="nacos-chapter-16.html">
+        <span class="num">16</span>
+        <span class="body">
+          <span class="ct">附录</span>
+          <span class="meta">第 16 章 · 19,233 字</span>
+        </span>
+      </a>
+      </div>
+    </section>
+<footer>
+  <p>本文档基于 Nacos 2.5.3 开源版本源码分析编写，内容仅代表作者的个人理解和研究成果，不代表阿里巴巴或 Nacos 官方立场。</p>
+  <p style="margin-top:8px">排版：guizang-ppt-skill Swiss Style 规范 · 转换工具链：<code>pandoc 3.6.2</code></p>
+</footer>
+</body>
+</html>

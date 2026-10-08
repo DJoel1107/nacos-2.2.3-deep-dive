@@ -6,3 +6,7 @@
 *~
 # Upstream source code (tracked in its own repo)
 upstream/
+
+# 构建中间产物
+.tmp-build/
+__pycache__/

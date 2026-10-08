@@ -4682,6 +4682,7 @@ grep "adapter.type" ${nacos.home}/conf/application.properties
 ### 9.21.7 小结
 
 logger-adapter-impl 模块共 3 个配置项。`dynamic.enabled=true` 是运维利器——排查问题时无需重启即可在 30 秒内动态调整任意 Logger 的日志级别。关键配置：(1) `adapter.type=logback`（大多数环境保持默认）；(2) `dynamic.enabled=true`（必须开启，运维友好）；(3) `dynamic.interval=30000`（30 秒检测间隔，平衡实时性与配置读取开销）。动态日志级别配置格式：`loggerName=LEVEL`（每行一个，通过 Nacos 配置中心 `dataId=dynamic-logging` + `group=DEFAULT_GROUP` 发布）。排查完成后务必恢复为 INFO——避免 DEBUG 日志洪水导致磁盘 I/O 飙升。
+
 ---
 
 > **前置任务 1-3 完成状态**：

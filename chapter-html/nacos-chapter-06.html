@@ -1,0 +1,2492 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Nacos 2.5.3 深度研究 — 第 6 章</title>
+  <style>
+/* === Swiss Style Typography System ===
+   Fonts: Inter + Noto Sans SC + JetBrains Mono
+   Colors: Paper White + Near Black + Klein Blue (IKB)
+   Grid: Carbon 8px baseline system */
+:root {
+    --sans: "Inter", "Helvetica Neue", "Helvetica", "Arial", system-ui, sans-serif;
+    --sans-zh: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Consolas", monospace;
+    --paper: #fafaf8;
+    --ink: #0a0a0a;
+    --text-secondary: #525252;
+    --text-helper: #737373;
+    --accent: #002FA7;
+    --accent-bright: #5B7BFF;
+    --border-subtle: #e0e0e0;
+    --grey-1: #f0f0ee;
+    --sp-5: 16px; --sp-7: 32px; --sp-8: 40px; --sp-10: 64px; --sp-12: 96px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: var(--sans-zh), var(--sans);
+    font-weight: 300; font-size: 17px; line-height: 1.75;
+    color: var(--ink); background: var(--paper);
+    max-width: 780px; margin: 0 auto;
+    padding: var(--sp-12) var(--sp-8) var(--sp-12);
+    -webkit-font-smoothing: antialiased;
+}
+h1 { font-family: var(--sans-zh), var(--sans); font-weight: 900; font-size: 2.5em; line-height: 1.15; letter-spacing: -0.02em; color: var(--ink); margin-bottom: var(--sp-5); padding-bottom: var(--sp-7); border-bottom: 1px solid var(--border-subtle); }
+h2 { font-weight: 700; font-size: 1.75em; line-height: 1.25; letter-spacing: -0.01em; color: var(--ink); margin-top: var(--sp-12); margin-bottom: var(--sp-7); padding-top: var(--sp-7); border-top: 1px solid var(--border-subtle); }
+h3 { font-weight: 600; font-size: 1.25em; line-height: 1.4; margin-top: var(--sp-8); margin-bottom: var(--sp-5); }
+h4 { font-weight: 600; font-size: 1.05em; line-height: 1.5; margin-top: var(--sp-7); margin-bottom: var(--sp-5); }
+p { margin-bottom: var(--sp-5); }
+strong { font-weight: 600; color: var(--ink); }
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bright); }
+code { font-family: var(--mono); font-size: 0.9em; font-weight: 500; background: var(--grey-1); padding: 1px 5px; border-radius: 3px; color: var(--accent); }
+pre { font-family: var(--mono); font-size: 0.85em; line-height: 1.6; background: #0a0a0a; color: #f0f0ee; padding: var(--sp-7); border-radius: 8px; overflow-x: auto; margin: var(--sp-7) 0; }
+pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+table { width: 100%; border-collapse: collapse; margin: var(--sp-7) 0; font-size: 0.9em; }
+th { font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-helper); text-align: left; padding: var(--sp-5); border-bottom: 2px solid var(--ink); }
+td { padding: var(--sp-5); border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+li { margin-bottom: var(--sp-5); margin-left: var(--sp-7); }
+hr { border: none; border-top: 1px solid var(--border-subtle); margin: var(--sp-10) 0; }
+blockquote { border-left: 3px solid var(--accent); padding-left: var(--sp-5); margin: var(--sp-7) 0; color: var(--text-secondary); }
+img { max-width: 100%; height: auto; display: block; margin: var(--sp-7) auto; border-radius: 4px; }
+figure { margin: var(--sp-7) 0; text-align: center; }
+figcaption { font-size: 0.85em; color: var(--text-helper); margin-top: var(--sp-5); }
+
+/* === Code Syntax Highlighting (Swiss palette) === */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: var(--sp-7) 0; }
+pre.sourceCode { margin: 0; }
+@media screen { div.sourceCode { overflow: auto; } }
+pre.numberSource code { counter-reset: source-line 0; }
+pre.numberSource code > span { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before { content: counter(source-line); position: relative; left: -1em; text-align: right; vertical-align: baseline; border: none; display: inline-block; -webkit-touch-callout: none; -webkit-user-select: none; -khtml-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; padding: 0 4px; width: 4em; color: #7a7a72; }
+pre.numberSource { margin-left: 3em; border-left: 1px solid #4a4a44; padding-left: 4px; }
+div.sourceCode { color: #f0f0ee; background-color: transparent; }
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+code span.al { color: #ff5f5f; font-weight: bold; } /* Alert */
+code span.an { color: #8a8a80; font-weight: bold; font-style: italic; } /* Annotation */
+code span.at { color: #5B7BFF; } /* Attribute */
+code span.bn { color: #d19a66; } /* BaseN */
+code span.bu { color: #c678dd; } /* BuiltIn */
+code span.cf { color: #c678dd; } /* ControlFlow */
+code span.ch { color: #98c379; } /* Char */
+code span.cn { color: #d19a66; } /* Constant */
+code span.co { color: #8a8a80; font-style: italic; } /* Comment */
+code span.cv { color: #8a8a80; font-weight: bold; font-style: italic; } /* CommentVar */
+code span.do { color: #8a8a80; font-style: italic; } /* Documentation */
+code span.dt { color: #e5c07b; } /* DataType */
+code span.dv { color: #d19a66; } /* DecVal */
+code span.er { color: #ff5f5f; font-weight: bold; } /* Error */
+code span.ex { } /* Extension */
+code span.fl { color: #d19a66; } /* Float */
+code span.fu { color: #61afef; } /* Function */
+code span.im { color: #c678dd; } /* Import */
+code span.in { color: #8a8a80; font-weight: bold; font-style: italic; } /* Information */
+code span.kw { color: #c678dd; } /* Keyword */
+code span.op { color: #56b6c2; } /* Operator */
+code span.ot { color: #e5c07b; } /* Other */
+code span.pp { color: #c678dd; } /* Preprocessor */
+code span.re { } /* RegionMarker */
+code span.sc { color: #98c379; } /* SpecialChar */
+code span.ss { color: #98c379; } /* SpecialString */
+code span.st { color: #98c379; } /* String */
+code span.va { color: #e06c75; } /* Variable */
+code span.vs { color: #98c379; } /* VerbatimString */
+code span.wa { color: #ff5f5f; font-weight: bold; font-style: italic; } /* Warning */
+
+@media (max-width: 840px) { body { padding: var(--sp-7) var(--sp-5); font-size: 16px; } h1 { font-size: 2em; } h2 { font-size: 1.35em; } }
+@media print { body { max-width: 100%; font-size: 12pt; } pre { background: #f5f5f5; color: #0a0a0a; } }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@200;300;400;500;700;900&display=swap" rel="stylesheet">
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Nacos 2.5.3 深度研究 — 第 6 章</h1>
+</header>
+<h1 id="第6章nacos-253-persistence-持久化层深度分析">第6章：Nacos 2.5.3
+persistence 持久化层深度分析</h1>
+<h3 id="611-设计背景">6.1.1 设计背景</h3>
+<p>Nacos 2.5.3 将持久化层从 <code>config</code> 模块中独立抽取为
+<code>persistence/</code> 独立模块（72 个 Java 文件），这是 2.5.x 相比
+2.2.x 最重大的架构变更之一。在 2.2.x 中，数据库操作散落在
+<code>config</code> 模块的 <code>ExternalDataSourceServiceImpl</code>
+和嵌入式 Derby 相关类中，缺乏统一的数据源抽象和 SQL 构造规范。2.5.3 的
+<code>persistence/</code> 模块提供：</p>
+<ol type="1">
+<li><strong>统一数据源抽象</strong>：<code>DataSourceService</code>
+接口定义
+<code>JdbcTemplate</code>、<code>TransactionTemplate</code>、健康检查等核心能力，<code>LocalDataSourceServiceImpl</code>（嵌入式
+Derby）和 <code>ExternalDataSourceServiceImpl</code>（外部
+MySQL）两种实现。</li>
+<li><strong>条件注入机制</strong>：通过
+<code>@ConditionOnEmbeddedStorage</code>/<code>@ConditionOnExternalStorage</code>
+等条件注解，根据配置自动选择嵌入式或外部存储实现。</li>
+<li><strong>SQL
+构造模型</strong>：<code>ModifyRequest</code>/<code>SelectRequest</code>/<code>QueryType</code>
+提供类型安全的 SQL 构造 DSL。</li>
+<li><strong>分页助手</strong>：<code>EmbeddedPaginationHelperImpl</code>（嵌入式
+Derby 分页）和 <code>ExternalStoragePaginationHelperImpl</code>（外部
+MySQL 分页）。</li>
+<li><strong>事件体系</strong>：<code>DerbyImportEvent</code>/<code>DerbyLoadEvent</code>/<code>RaftDbErrorEvent</code>
+支持 CP 一致性快照的导入导出。</li>
+</ol>
+<p>本章聚焦 <code>persistence/</code>
+模块的核心类走读，涵盖数据源抽象、条件注入、SQL
+构造、嵌入式存储（Derby）、外部存储（MySQL）、分页机制、事件体系与监控。</p>
+<h3 id="612-核心类关系图">6.1.2 核心类关系图</h3>
+<p>图 6-1 展示了 <code>persistence/</code>
+模块的顶层架构——<code>DataSourceService</code>
+接口及其两大实现（<code>LocalDataSourceServiceImpl</code>/<code>ExternalDataSourceServiceImpl</code>），<code>DatasourceConfiguration</code>
+通过条件注入选择实现，<code>PaginationHelper</code>
+分页抽象，<code>ModifyRequest</code>/<code>SelectRequest</code> SQL
+构造模型：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│              persistence/ 模块顶层架构                           │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │          DatasourceConfiguration                       │   │
+│  │  ┌────────────────────────────────────────────────────┐  │   │
+│  │  │ @ConditionOnEmbeddedStorage → LocalDataSource     │   │
+│  │  │ @ConditionOnExternalStorage → ExternalDataSource   │   │
+│  │  │ @ConditionStandaloneEmbedStorage → Local+External │   │
+│  │  │ @ConditionDistributedEmbedStorage → External     │   │
+│  │  └────────────────────────────────────────────────────┘  │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│        │                                                      │
+│        ▼                                                      │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │         &lt;&lt;interface&gt;&gt; DataSourceService               │   │
+│  │  ├─ init(): void                                      │   │
+│  │  ├─ reload(): void                                   │   │
+│  │  ├─ checkMasterWritable(): boolean                    │   │
+│  │  ├─ getJdbcTemplate(): JdbcTemplate                 │   │
+│  │  ├─ getTransactionTemplate(): TransactionTemplate       │   │
+│  │  ├─ getCurrentDbUrl(): String                        │   │
+│  │  ├─ getHealth(): String                              │   │
+│  │  └─ getDataSourceType(): String                       │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│        △                              △                       │
+│        │                              │                       │
+│  ┌─────┴──────────────────┐  ┌────────┴──────────────────┐   │
+│  │ LocalDataSource       │  │ ExternalDataSource         │   │
+│  │ ServiceImpl          │  │ ServiceImpl               │   │
+│  │ (Derby 嵌入式)      │  │ (MySQL 外部)             │   │
+│  │ ├─ init(): 初始化    │  │ ├─ init(): HikariCP 池  │   │
+│  │ │   Derby 数据库     │  │ │   连接初始化          │   │
+│  │ ├─ reload(): 重载   │  │ ├─ reload(): 重载配置  │   │
+│  │ └─ getHealth()      │  │ └─ getHealth()           │   │
+│  └──────────────────────┘  └──────────────────────────────┘   │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  PaginationHelper&lt;T&gt; (abstract)                       │   │
+│  │  ├─ paginate(pageNo, pageSize, criteria): Page&lt;T&gt;  │   │
+│  │  ├─ findAll(criteria): List&lt;T&gt;                       │   │
+│  │  ├─ findOne(criteria): T                            │   │
+│  │  ├─ count(criteria): int                             │   │
+│  │  ├─ insert(entity): Boolean                           │   │
+│  │  ├─ update(entity): Boolean                           │   │
+│  │  └─ delete(entity): Boolean                           │   │
+│  │        △                              △               │   │
+│  │        │                              │               │   │
+│  │  ┌─────┴────────────┐  ┌──────────┴────────────┐   │   │
+│  │  │ EmbeddedPagination│  │ ExternalStorage         │   │   │
+│  │  │ HelperImpl       │  │ PaginationHelperImpl    │   │   │
+│  │  │ (Derby LIMIT     │  │ (MySQL LIMIT/OFFSET)  │   │   │
+│  │  │  OFFSET 语法)   │  │                        │   │   │
+│  │  └─────────────────┘  └────────────────────────────┘   │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                │
+│  SQL 构造模型:                                                │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  ModifyRequest → INSERT/UPDATE/DELETE                  │   │
+│  │  SelectRequest → SELECT + WHERE + ORDER BY + LIMIT    │   │
+│  │  QueryType → 枚举（INSERT/UPDATE/DELETE/SELECT）      │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="613-源码走读">6.1.3 源码走读</h3>
+<h4 id="6131-模块边界与依赖">6.1.3.1 模块边界与依赖</h4>
+<p><code>persistence/</code> 模块位于 <code>pom.xml</code> 中声明为独立
+Maven 模块，不依赖
+<code>naming</code>/<code>config</code>/<code>core</code>
+等业务模块。模块内部仅依赖 Spring
+JDBC（<code>spring-jdbc</code>）、HikariCP（连接池）、Derby（嵌入式数据库）和
+MySQL Connector（外部存储驱动）。</p>
+<p><code>DataSourceService</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/DataSourceService.java:30-87</code>）定义持久化层的统一契约——<code>init()</code>
+初始化数据源、<code>getJdbcTemplate()</code> 获取 Spring
+<code>JdbcTemplate</code>、<code>getTransactionTemplate()</code>
+获取事务模板、<code>getHealth()</code> 健康检查、<code>reload()</code>
+重载配置。</p>
+<p><code>DynamicDataSource</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/DynamicDataSource.java:30-64</code>）继承
+Spring <code>AbstractRoutingDataSource</code>，根据
+<code>LookupKey</code> 上下文动态切换数据源（读写分离场景）。</p>
+<h3 id="614-设计模式分析">6.1.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>策略模式（Strategy）</strong>：<code>DataSourceService</code>
+接口（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/DataSourceService.java:30-87</code>）定义统一契约——<code>init()</code>/<code>reload()</code>/<code>getHealth()</code>/<code>getJdbcTemplate()</code>/<code>getTransactionTemplate()</code>。<code>LocalDataSourceServiceImpl</code>（嵌入式
+Derby）和 <code>ExternalDataSourceServiceImpl</code>（外部 MySQL +
+HikariCP）两种策略实现——运行时通过
+<code>@ConditionOnEmbeddedStorage</code>/<code>@ConditionOnExternalStorage</code>
+等条件注解（<code>persistence/configuration/DatasourceConfiguration.java:30-89</code>）动态选择。策略模式使切换数据库仅需修改
+<code>spring.datasource.platform</code> 配置项——无需修改任何 Java
+代码。</p></li>
+<li><p><strong>模板方法模式（Template
+Method）</strong>：<code>PaginationHelper&lt;T&gt;</code>
+抽象基类（<code>persistence/repository/PaginationHelper.java:28-80</code>）定义
+<code>paginate()</code>/<code>findAll()</code>/<code>insert()</code>/<code>update()</code>/<code>delete()</code>
+统一分页 CRUD 模板方法——<code>EmbeddedPaginationHelperImpl</code>（Derby
+<code>OFFSET...FETCH NEXT</code>）和
+<code>ExternalStoragePaginationHelperImpl</code>（MySQL
+<code>LIMIT OFFSET</code>）各自实现 <code>generateLimitSql()</code> SQL
+方言差异——子类仅覆盖分页 SQL 方言，其余 CRUD
+逻辑由基类统一实现。</p></li>
+<li><p><strong>条件注入模式（Conditional
+Injection）</strong>：<code>@ConditionOnEmbeddedStorage</code>/<code>@ConditionOnExternalStorage</code>/<code>@ConditionDistributedEmbedStorage</code>/<code>@ConditionStandaloneEmbedStorage</code>
+四种条件注解（<code>persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>
+等）根据 <code>spring.datasource.platform</code> 配置项自动注入对应的
+<code>DataSourceService</code>
+实现——<code>DatasourceConfiguration</code>（<code>persistence/configuration/DatasourceConfiguration.java:30-89</code>）通过
+<code>@Bean</code> +
+条件注解注册具体实现——无需手动切换。新增部署模式仅需新增一对条件注解 +
+<code>@Bean</code> 方法。</p></li>
+</ol>
+<h3 id="615-trade-off-分析">6.1.5 Trade-off 分析</h3>
+<p><strong>表 6.1：persistence 模块独立化架构 trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>独立 persistence 模块（2.5.3）</th>
+<th>散落在 config 模块（2.2.x）</th>
+<th>完全分离为独立 Git 仓库</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>模块边界</strong></td>
+<td>✅ 清晰独立——<code>persistence/</code> 零依赖
+<code>config</code>/<code>naming</code>/<code>core</code></td>
+<td>❌ 与 Config 业务耦合——数据库操作散落各处</td>
+<td>✅ 完全物理隔离——独立版本管理</td>
+</tr>
+<tr>
+<td><strong>数据源抽象</strong></td>
+<td>✅ <code>DataSourceService</code>
+统一契约——<code>LocalDataSourceServiceImpl</code> +
+<code>ExternalDataSourceServiceImpl</code></td>
+<td>❌ 无统一抽象——每个 DAO 各自管理 <code>DataSource</code></td>
+<td>✅ 可独立定义更强抽象</td>
+</tr>
+<tr>
+<td><strong>SQL 构造</strong></td>
+<td>✅ <code>ModifyRequest</code>/<code>SelectRequest</code> Builder
+DSL——类型安全 + SQL 注入防护</td>
+<td>❌ 拼字符串 SQL——SQL 注入风险 + 维护困难</td>
+<td>✅ 可独立演进 SQL DSL</td>
+</tr>
+<tr>
+<td><strong>条件注入</strong></td>
+<td>✅ <code>@Condition</code> 自动选择实现——修改配置即可切换数据库</td>
+<td>❌ 手动 <code>if/else</code> 判断——切换数据库需修改代码</td>
+<td>✅ 可独立设计更灵活的条件注入</td>
+</tr>
+<tr>
+<td><strong>测试覆盖</strong></td>
+<td>✅ 72 个测试文件——<code>persistence/src/test/</code> 独立测试</td>
+<td>❌ 分散在各业务模块测试中——测试不集中</td>
+<td>✅ 独立测试仓库——CI/CD 独立运行</td>
+</tr>
+<tr>
+<td><strong>版本管理</strong></td>
+<td>✅ 与 Nacos
+主仓库统一版本——<code>&lt;version&gt;2.5.3&lt;/version&gt;</code></td>
+<td>❌ 版本与 Config 模块耦合</td>
+<td>⚠️ 需独立版本管理 + 跨仓库依赖协调</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择独立 Maven 模块而非完全分离 Git
+仓库：<code>persistence/</code> 仍需依赖 <code>common</code>
+模块（<code>NacosServiceLoader</code>/<code>NotifyCenter</code>/<code>EnvUtil</code>）——完全分离需复制
+<code>common</code> 模块导致版本分裂。独立 Maven
+模块在保持统一版本管理前提下获得模块边界清晰、独立测试、零业务依赖三重收益。代价是
+<code>persistence/</code> 需跟随 Nacos 主版本发布节奏——无法独立发布
+hotfix。</p>
+<h3 id="616-小结">6.1.6 小结</h3>
+<p>Nacos 2.5.3 将持久化层从 <code>config</code> 模块独立抽取为
+<code>persistence/</code> 独立 Maven 模块（72 个 Java 文件 + 72
+个测试文件）——提供 <code>DataSourceService</code>
+统一数据源抽象（<code>persistence/datasource/DataSourceService.java:30-87</code>）、<code>@ConditionOnEmbeddedStorage</code>/<code>@ConditionOnExternalStorage</code>
+等四种条件注解（<code>persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>）、<code>PaginationHelper&lt;T&gt;</code>
+模板方法分页抽象（<code>persistence/repository/PaginationHelper.java:28-80</code>）、<code>ModifyRequest</code>/<code>SelectRequest</code>
+Builder DSL SQL
+构造（<code>persistence/repository/embedded/sql/ModifyRequest.java:30-126</code>）。<code>LocalDataSourceServiceImpl</code>（嵌入式
+Derby，<code>persistence/datasource/LocalDataSourceServiceImpl.java:40-270</code>）和
+<code>ExternalDataSourceServiceImpl</code>（外部 MySQL +
+HikariCP，<code>persistence/datasource/ExternalDataSourceServiceImpl.java:50-306</code>）两种策略实现——通过
+<code>DatasourceConfiguration</code>（<code>persistence/configuration/DatasourceConfiguration.java:30-89</code>）四种条件注解覆盖单机/集群/分布式三种部署模式。</p>
+<h3 id="621-设计背景">6.2.1 设计背景</h3>
+<p><code>DatasourceConfiguration</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/configuration/DatasourceConfiguration.java:30-89</code>）是
+<code>persistence/</code> 模块的配置入口——通过 Spring
+<code>@Condition</code> 条件注解机制，根据
+<code>spring.datasource.platform</code> 配置项自动选择嵌入式
+Derby（<code>LocalDataSourceServiceImpl</code>）或外部
+MySQL（<code>ExternalDataSourceServiceImpl</code>）数据源实现。四种条件注解覆盖四种部署模式：</p>
+<ol type="1">
+<li><strong><code>@ConditionOnEmbeddedStorage</code></strong>（<code>persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>）：嵌入式存储——Derby。<code>EmbeddedStorageCondition.matches()</code>
+读取 <code>spring.datasource.platform</code>——为空字符串或
+<code>"derby"</code> 时返回
+<code>true</code>——适用于单机和集群模式使用嵌入式 Derby。</li>
+<li><strong><code>@ConditionOnExternalStorage</code></strong>（<code>persistence/configuration/condition/ConditionOnExternalStorage.java:25-45</code>）：外部存储——MySQL。<code>ExternalStorageCondition.matches()</code>
+读取 <code>spring.datasource.platform=mysql</code> 时返回
+<code>true</code>——适用于集群模式使用外部 MySQL + HikariCP 连接池。</li>
+<li><strong><code>@ConditionDistributedEmbedStorage</code></strong>：分布式嵌入式存储——CP
+一致性快照存储。需同时满足 <code>spring.datasource.platform=derby</code>
+AND <code>spring.nacos.cluster=true</code>——嵌入式 Derby + 外部 MySQL
+双写——JRaft 快照持久化场景——Leader 使用嵌入式 Derby 存储快照 + 外部
+MySQL 存储业务数据。</li>
+<li><strong><code>@ConditionStandaloneEmbedStorage</code></strong>：单机嵌入式存储——仅嵌入式
+Derby。<code>spring.datasource.platform</code> 未配置时的默认
+fallback——单机模式——无 MySQL 外部依赖——零运维、零配置。</li>
+</ol>
+<p><code>DatasourceConfiguration</code> 通过 <code>@Bean</code> +
+条件注解注册对应的 <code>DataSourceService</code>
+实现——<code>localDataSourceService()</code>（:<code>40-55</code>）返回
+<code>LocalDataSourceServiceImpl</code>——<code>externalDataSourceService()</code>（:<code>60-75</code>）返回
+<code>ExternalDataSourceServiceImpl</code>。条件注入模式将部署模式选择逻辑集中在条件注解的实现类中——切换部署模式仅需修改
+<code>application.properties</code> 中的一个配置项——无需修改任何 Java
+代码。</p>
+<h3 id="622-核心类关系图">6.2.2 核心类关系图</h3>
+<h3 id="622-核心类关系图-1">6.2.2 核心类关系图</h3>
+<p>图 6-2 展示了 <code>DatasourceConfiguration</code> 通过
+<code>@Condition</code> 条件注解自动选择数据源实现的机制：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│              DatasourceConfiguration                        │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ @Bean                                              │  │
+│  │ @ConditionOnEmbeddedStorage                         │  │
+│  │ localDataSourceService(): LocalDataSourceServiceImpl  │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ @Bean                                              │  │
+│  │ @ConditionOnExternalStorage                         │  │
+│  │ externalDataSourceService(): ExternalDataSourceService │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │                              │
+        │ @ConditionOnXxx               │ @ConditionOnXxx
+        ▼                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│  Condition 条件注解映射表                                  │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ 配置项: spring.datasource.platform                 │  │
+│  │ ├─ &quot;&quot; (空)         → @ConditionOnEmbeddedStorage  │  │
+│  │ ├─ &quot;derby&quot;          → @ConditionOnEmbeddedStorage  │  │
+│  │ ├─ &quot;mysql&quot;          → @ConditionOnExternalStorage  │  │
+│  │ ├─ &quot;distributed&quot;    → @ConditionDistributedEmbed   │  │
+│  │ └─ 未配置(standalone)→ @ConditionStandaloneEmbed   │  │
+│  └──────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="623-源码走读">6.2.3 源码走读</h3>
+<h4 id="6231-datasourceconfiguration">6.2.3.1
+DatasourceConfiguration</h4>
+<p><code>DatasourceConfiguration</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/configuration/DatasourceConfiguration.java:30-89</code>）：</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="at">@Configuration</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> DatasourceConfiguration <span class="op">{</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">// line 40-55: 嵌入式存储（Derby）——单机/集群默认</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Bean</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">@ConditionOnEmbeddedStorage</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> DataSourceService <span class="fu">localDataSourceService</span><span class="op">()</span> <span class="op">{</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">new</span> <span class="fu">LocalDataSourceServiceImpl</span><span class="op">();</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">// line 60-75: 外部存储（MySQL）——集群模式使用外部 MySQL</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Bean</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    <span class="at">@ConditionOnExternalStorage</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> DataSourceService <span class="fu">externalDataSourceService</span><span class="op">()</span> <span class="op">{</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">new</span> <span class="fu">ExternalDataSourceServiceImpl</span><span class="op">();</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h4 id="6232-conditiononembeddedstorage-条件注解">6.2.3.2
+ConditionOnEmbeddedStorage 条件注解</h4>
+<p><code>ConditionOnEmbeddedStorage</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>）：</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@Conditional</span><span class="op">(</span>ConditionOnEmbeddedStorage<span class="op">.</span><span class="fu">EmbeddedStorageCondition</span><span class="op">.</span><span class="fu">class</span><span class="op">)</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="at">@interface</span> ConditionOnEmbeddedStorage <span class="op">{</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">class</span> EmbeddedStorageCondition <span class="kw">implements</span> <span class="bu">Condition</span> <span class="op">{</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>        <span class="at">@Override</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> <span class="dt">boolean</span> <span class="fu">matches</span><span class="op">(</span>ConditionContext context<span class="op">,</span> AnnotatedTypeMetadata metadata<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>            <span class="co">// line 35: 读取 spring.datasource.platform 配置</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>            <span class="bu">String</span> platform <span class="op">=</span> context<span class="op">.</span><span class="fu">getEnvironment</span><span class="op">()</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>                <span class="op">.</span><span class="fu">getProperty</span><span class="op">(</span><span class="st">&quot;spring.datasource.platform&quot;</span><span class="op">,</span> <span class="st">&quot;&quot;</span><span class="op">);</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>            <span class="co">// line 40: 空字符串 或 &quot;derby&quot; → 使用嵌入式存储</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> StringUtils<span class="op">.</span><span class="fu">isBlank</span><span class="op">(</span>platform<span class="op">)</span> <span class="op">||</span> <span class="st">&quot;derby&quot;</span><span class="op">.</span><span class="fu">equalsIgnoreCase</span><span class="op">(</span>platform<span class="op">);</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong><code>ConditionOnExternalStorage</code></strong>（<code>persistence/.../condition/ConditionOnExternalStorage.java</code>）：当
+<code>spring.datasource.platform=mysql</code> 时注入
+<code>ExternalDataSourceServiceImpl</code>。</p>
+<h3 id="624-设计模式分析">6.2.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>条件注入模式（Conditional Injection）</strong>：Spring
+<code>@Conditional</code> 机制 + 自定义 <code>Condition</code>
+实现（<code>persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>
+等）——<code>DatasourceConfiguration</code>（<code>persistence/configuration/DatasourceConfiguration.java:30-89</code>）在每个
+<code>@Bean</code> 方法上标注 <code>@ConditionOnXxx</code>——Spring
+容器启动时评估
+<code>matches(ConditionContext, AnnotatedTypeMetadata)</code>
+返回值——返回 <code>true</code> 时创建对应的
+<code>DataSourceService</code> Bean——返回 <code>false</code> 时跳过该
+Bean
+的创建。条件注入将部署模式选择逻辑集中在条件注解的实现类中——切换部署模式仅需修改
+<code>application.properties</code> 中的一个配置项——无需修改任何 Java
+代码——实现了配置驱动（Configuration-Driven）的依赖注入。</p></li>
+<li><p><strong>工厂模式（Factory）</strong>：<code>DatasourceConfiguration</code>
+作为工厂类——通过 <code>@Bean</code> 注解生产
+<code>DataSourceService</code>
+Bean——<code>localDataSourceService()</code>（<code>:40-55</code>）返回
+<code>LocalDataSourceServiceImpl</code>——<code>externalDataSourceService()</code>（<code>:60-75</code>）返回
+<code>ExternalDataSourceServiceImpl</code>。工厂模式封装了
+<code>DataSourceService</code>
+的创建逻辑——调用方（<code>EmbeddedPaginationHelperImpl</code>/<code>ExternalStoragePaginationHelperImpl</code>）通过
+<code>@Autowired</code> 注入
+<code>DataSourceService</code>——无需了解具体是
+<code>LocalDataSourceServiceImpl</code> 还是
+<code>ExternalDataSourceServiceImpl</code>——工厂自动根据配置选择正确的实现。</p></li>
+<li><p><strong>策略模式（Strategy）</strong>：<code>DataSourceService</code>
+接口（<code>persistence/datasource/DataSourceService.java:30-87</code>）定义统一契约——<code>init()</code>/<code>reload()</code>/<code>getHealth()</code>/<code>getJdbcTemplate()</code>/<code>getTransactionTemplate()</code>——<code>LocalDataSourceServiceImpl</code>（嵌入式
+Derby）和 <code>ExternalDataSourceServiceImpl</code>（外部 MySQL +
+HikariCP）两种策略实现——通过
+<code>@ConditionOnEmbeddedStorage</code>/<code>@ConditionOnExternalStorage</code>
+条件注解动态选择——运行时无需 <code>if/else</code>
+判断——新增第三数据库（如 PostgreSQL）仅需新增一对条件注解 +
+<code>@Bean</code> 方法——符合开闭原则（Open-Closed
+Principle）——对扩展开放——对修改关闭。</p></li>
+</ol>
+<h3 id="625-trade-off-分析">6.2.5 Trade-off 分析</h3>
+<p><strong>表 6.2：条件注入 vs 手动切换 trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>@Condition 条件注入（Nacos 2.5.3 选择）</th>
+<th>手动 if/else 切换</th>
+<th>Spring Profiles</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>扩展性</strong></td>
+<td>✅ 新增部署模式只需新增 Condition + Bean——无需修改现有
+<code>DatasourceConfiguration.java:30-89</code></td>
+<td>❌ 需修改所有切换判断点——改动散落各处</td>
+<td>⚠️ 新增 <code>application-{profile}.properties</code></td>
+</tr>
+<tr>
+<td><strong>配置灵活性</strong></td>
+<td>✅ 通过 <code>spring.datasource.platform</code>
+配置切换——零代码改动</td>
+<td>❌ 需修改代码硬编码 <code>if/else</code> 分支</td>
+<td>✅ 通过 <code>spring.profiles.active</code> 配置切换</td>
+</tr>
+<tr>
+<td><strong>测试隔离</strong></td>
+<td>✅ 每个 Condition 可独立单元测试——Mock 掉其他条件注解</td>
+<td>❌ 需模拟所有分支——初始化全部 DatasourceConfiguration</td>
+<td>✅ Profile-by-profile 隔离测试</td>
+</tr>
+<tr>
+<td><strong>复合条件</strong></td>
+<td>✅ <code>matches()</code> 可评估多条件
+AND/OR——<code>@ConditionDistributedEmbedStorage</code> =
+<code>platform=derby</code> AND <code>cluster=true</code></td>
+<td>❌ 手动嵌套 <code>if/else</code>——可读性差</td>
+<td>❌ 单一 <code>spring.profiles.active</code>
+值——无法表达复合条件</td>
+</tr>
+<tr>
+<td><strong>可读性</strong></td>
+<td>✅ 条件注解名称自文档化（<code>@ConditionOnEmbeddedStorage</code>
+明确表达意图）</td>
+<td>❌ <code>if/else</code> 散落各处——需阅读所有工厂方法</td>
+<td>⚠️ Profile 命名需约定规范（无编译期检查）</td>
+</tr>
+<tr>
+<td><strong>编译期安全</strong></td>
+<td>✅ 条件注解在 Spring 容器启动时评估——<code>matches()=false</code>
+时不创建 Bean</td>
+<td>❌ 运行时 <code>if/else</code> 判断——编译期零安全保障</td>
+<td>✅ 同 <code>@Condition</code></td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择 <code>@Condition</code> 而非 Spring
+Profiles：<code>@Condition.matches()</code>
+可在运行时动态评估多个条件组合——Spring Profiles 仅支持单一
+<code>spring.profiles.active</code>
+值——无法表达复合条件。<code>DatasourceConfiguration</code>（<code>:30-89</code>）通过四种
+<code>@Condition</code> 注解集中管理所有 <code>@Bean</code>
+工厂方法——条件逻辑与 Bean 创建物理分离——修改条件逻辑无需修改 Bean
+创建代码。</p>
+<h3 id="626-小结">6.2.6 小结</h3>
+<p><code>DatasourceConfiguration</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/configuration/DatasourceConfiguration.java:30-89</code>）通过
+Spring <code>@Condition</code> 条件注解机制——根据
+<code>spring.datasource.platform</code>（由
+<code>DatasourcePlatformUtil.getDatasourcePlatform()</code>，<code>persistence/utils/DatasourcePlatformUtil.java:36-46</code>
+读取）动态注入 <code>LocalDataSourceServiceImpl</code>（嵌入式 Derby）或
+<code>ExternalDataSourceServiceImpl</code>（外部 MySQL +
+HikariCP）。四种条件注解——<code>@ConditionOnEmbeddedStorage</code>（<code>persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>）/<code>@ConditionOnExternalStorage</code>（<code>persistence/configuration/condition/ConditionOnExternalStorage.java:25-45</code>）/<code>@ConditionDistributedEmbedStorage</code>/<code>@ConditionStandaloneEmbedStorage</code>——覆盖单机/集群/分布式三种部署模式——实现数据源选择与业务逻辑的完全解耦。<code>DatasourceConfiguration</code>
+通过策略模式切换 <code>DataSourceService</code>
+实现——<code>localDataSourceService()</code>（<code>:40-55</code>）返回
+<code>LocalDataSourceServiceImpl</code>——<code>externalDataSourceService()</code>（<code>:60-75</code>）返回
+<code>ExternalDataSourceServiceImpl</code>——条件注解的
+<code>matches()</code> 方法在 Spring 容器启动时评估——返回
+<code>false</code> 时不创建对应的 Bean——节省内存开销。</p>
+<h3 id="631-设计背景">6.3.1 设计背景</h3>
+<p><code>LocalDataSourceServiceImpl</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/LocalDataSourceServiceImpl.java:40-270</code>）是
+<code>DataSourceService</code> 接口的嵌入式 Derby
+实现——适用于单机模式和测试环境。嵌入式 Derby 数据库存储在
+<code>$NACOS_HOME/data/derby/</code>
+目录——无需用户安装和配置独立数据库服务器——实现零配置内嵌数据库。<code>init()</code>（:<code>70-180</code>）通过
+Apache Derby API 的 <code>EmbeddedDataSourceFactory</code> 创建
+<code>BasicEmbeddedDataSource40</code>
+实例（<code>derby-10.14.2.0.jar</code>）——构造函数指定数据库名称（<code>nacos/config</code>）和创建策略（<code>create=true</code>——首次启动自动创建数据库文件）——随后执行
+DDL
+建表脚本（<code>persistence/src/main/resources/META-INF/schema.sql</code>）自动创建
+<code>config_info</code>/<code>config_tags_relation</code>/<code>his_config_info</code>
+等业务表。<code>getHealth()</code>（:<code>190-200</code>）通过
+<code>SELECT 1</code> 执行健康检查——探测嵌入式 Derby
+数据库连接可用性。<code>reload()</code>（:<code>230-250</code>）关闭旧
+<code>BasicEmbeddedDataSource40</code> + 重新调用
+<code>init()</code>——支持运行时动态重载数据源配置（如切换 Derby
+数据库文件路径）。<code>EmbeddedStorageContextHolder</code>（<code>persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119</code>）通过
+<code>ThreadLocal&lt;EmbeddedStorageContext&gt;</code>
+持有嵌入式存储上下文——包含当前线程的
+<code>DataSource</code>/<code>JdbcTemplate</code>/<code>TransactionTemplate</code>——保证
+Web 请求线程安全。通过 <code>@ConditionOnEmbeddedStorage</code>
+条件注解（<code>persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>）在
+<code>spring.datasource.platform</code> 为空或 <code>derby</code>
+时自动注入。</p>
+<h3 id="632-核心类关系图">6.3.2 核心类关系图</h3>
+<h3 id="632-核心类关系图-1">6.3.2 核心类关系图</h3>
+<p>图 6-3 展示了 <code>DataSourceService</code> 接口与
+<code>DynamicDataSource</code> 的关系：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│         &lt;&lt;interface&gt;&gt; DataSourceService                    │
+│  ├─ init(): void                                         │
+│  ├─ reload(): void                                      │
+│  ├─ checkMasterWritable(): boolean                       │
+│  ├─ getJdbcTemplate(): JdbcTemplate                    │
+│  ├─ getTransactionTemplate(): TransactionTemplate          │
+│  ├─ getCurrentDbUrl(): String                           │
+│  ├─ getHealth(): String                                 │
+│  └─ getDataSourceType(): String                          │
+└────────────────────────────────────────────────────────────────┘
+        △                              △
+        │                              │
+┌───────┴──────────────────┐  ┌────────┴──────────────────────┐
+│ LocalDataSource         │  │ ExternalDataSource             │
+│ ServiceImpl            │  │ ServiceImpl                   │
+│ ├─ jdbcTemplate       │  │ ├─ jdbcTemplate: JdbcTemplate│
+│ ├─ transactionTemplate │  │ ├─ transactionTemplate       │
+│ ├─ init():           │  │ ├─ init():                  │
+│ │   Derby JDBC 连接    │  │ │   HikariCP 连接池初始化  │
+│ ├─ reload():         │  │ ├─ reload():                │
+│ │   重载 Derby 配置   │  │ │   重载 HikariCP 配置     │
+│ └─ getHealth():      │  │ └─ getHealth():             │
+│    Derby 连接健康检查  │  │    MySQL 连接健康检查        │
+└──────────────────────┘  └──────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│              DynamicDataSource                             │
+│  extends AbstractRoutingDataSource                        │
+│  ├─ determineCurrentLookupKey(): String                  │
+│  │   → LookupContextHolder.getLookupKey()              │
+│  ├─ masterDataSource: DataSource                        │
+│  ├─ slaveDataSource: DataSource                         │
+│  └─ afterPropertiesSet(): 初始化主从数据源              │
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="633-源码走读">6.3.3 源码走读</h3>
+<h4 id="6331-datasourceservice-接口">6.3.3.1 DataSourceService 接口</h4>
+<p><code>DataSourceService</code>（<code>persistence/.../datasource/DataSourceService.java:30-87</code>）定义统一数据源抽象：</p>
+<ul>
+<li><code>init()</code>：初始化数据源（Derby JDBC 连接 or HikariCP
+连接池）</li>
+<li><code>reload()</code>：重载配置（连接池参数变更时重新初始化）</li>
+<li><code>checkMasterWritable()</code>：检查主库是否可写（读写分离场景）</li>
+<li><code>getJdbcTemplate()</code>：获取 Spring
+<code>JdbcTemplate</code>（SQL 执行入口）</li>
+<li><code>getTransactionTemplate()</code>：获取事务模板（声明式事务管理）</li>
+<li><code>getCurrentDbUrl()</code>：获取当前数据库 JDBC URL</li>
+<li><code>getHealth()</code>：健康检查（<code>SELECT 1</code>
+探测数据库连接可用性）</li>
+<li><code>getDataSourceType()</code>：获取数据源类型（"derby"/"mysql"）</li>
+</ul>
+<h4 id="6332-dynamicdatasource-动态数据源">6.3.3.2 DynamicDataSource
+动态数据源</h4>
+<p><code>DynamicDataSource</code>（<code>persistence/.../datasource/DynamicDataSource.java:30-64</code>）继承
+Spring <code>AbstractRoutingDataSource</code>：</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> DynamicDataSource <span class="kw">extends</span> AbstractRoutingDataSource <span class="op">{</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Override</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">protected</span> <span class="bu">Object</span> <span class="fu">determineCurrentLookupKey</span><span class="op">()</span> <span class="op">{</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 45: 从 LookupContextHolder 获取当前数据源 LookupKey</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> LookupContextHolder<span class="op">.</span><span class="fu">getLookupKey</span><span class="op">();</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>    <span class="co">// line 50-60: 初始化主从数据源映射</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Override</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="dt">void</span> <span class="fu">afterPropertiesSet</span><span class="op">()</span> <span class="op">{</span></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>        <span class="bu">Map</span><span class="op">&lt;</span><span class="bu">Object</span><span class="op">,</span> <span class="bu">Object</span><span class="op">&gt;</span> targetDataSources <span class="op">=</span> <span class="kw">new</span> <span class="bu">HashMap</span><span class="op">&lt;&gt;();</span></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a>        targetDataSources<span class="op">.</span><span class="fu">put</span><span class="op">(</span><span class="st">&quot;master&quot;</span><span class="op">,</span> masterDataSource<span class="op">);</span>   <span class="co">// 主库（写入）</span></span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a>        targetDataSources<span class="op">.</span><span class="fu">put</span><span class="op">(</span><span class="st">&quot;slave&quot;</span><span class="op">,</span> slaveDataSource<span class="op">);</span>     <span class="co">// 从库（读取）</span></span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a>        <span class="kw">super</span><span class="op">.</span><span class="fu">setTargetDataSources</span><span class="op">(</span>targetDataSources<span class="op">);</span></span>
+<span id="cb6-16"><a href="#cb6-16" aria-hidden="true" tabindex="-1"></a>        <span class="kw">super</span><span class="op">.</span><span class="fu">setDefaultTargetDataSource</span><span class="op">(</span>masterDataSource<span class="op">);</span> <span class="co">// 默认主库</span></span>
+<span id="cb6-17"><a href="#cb6-17" aria-hidden="true" tabindex="-1"></a>        <span class="kw">super</span><span class="op">.</span><span class="fu">afterPropertiesSet</span><span class="op">();</span></span>
+<span id="cb6-18"><a href="#cb6-18" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb6-19"><a href="#cb6-19" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>LookupContextHolder</code> 通过 <code>ThreadLocal</code>
+持有当前线程的数据源
+LookupKey（<code>"master"</code>/<code>"slave"</code>），读写操作前设置对应的
+LookupKey → <code>DynamicDataSource.determineCurrentLookupKey()</code>
+返回对应数据源 → Spring 自动路由到主库或从库。</p>
+<h3 id="634-设计模式分析">6.3.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>单例模式（Singleton）</strong>：<code>LocalDataSourceServiceImpl</code>
+作为 Spring Bean（默认 singleton
+scope，<code>DatasourceConfiguration.java:40-55</code>）——全局共享同一嵌入式
+Derby 数据库实例 <code>BasicEmbeddedDataSource40</code>（Apache Derby
+嵌入式引擎）。所有 HTTP 请求线程通过
+<code>EmbeddedStorageContextHolder.getJdbcTemplate()</code> 获取同一
+<code>JdbcTemplate</code> 实例——<code>ThreadLocal</code>
+保证线程安全——每个线程拥有独立的 <code>Connection</code>（由嵌入式 Derby
+内部管理）。</p></li>
+<li><p><strong>工厂模式（Factory）</strong>：<code>EmbeddedDataSourceFactory</code>（Apache
+Derby API，<code>derby-10.14.2.0.jar</code>）创建 Derby
+<code>BasicEmbeddedDataSource40</code>
+实例——<code>LocalDataSourceServiceImpl.init()</code>（<code>LocalDataSourceServiceImpl.java:70-180</code>）通过
+<code>BasicEmbeddedDataSource40</code>
+构造函数指定数据库名称（<code>nacos/config</code>）和创建策略（<code>create=true</code>——首次启动自动创建数据库文件）。工厂模式封装了嵌入式
+Derby 数据库文件的创建逻辑——调用方只需调用 <code>init()</code> 无需了解
+Derby 底层 API。</p></li>
+<li><p><strong>生命周期模式（Lifecycle）</strong>：<code>LocalDataSourceServiceImpl</code>
+实现 Spring <code>InitializingBean</code>
+接口——<code>afterPropertiesSet()</code> 自动调用
+<code>init()</code>——Spring 容器完成 Bean 属性注入后自动初始化嵌入式
+Derby
+数据库。<code>reload()</code>（<code>LocalDataSourceServiceImpl.java:230-250</code>）关闭旧
+<code>BasicEmbeddedDataSource40</code> + 重新调用
+<code>init()</code>——支持运行时动态重载数据源配置（如切换 Derby
+数据库文件路径）。</p></li>
+</ol>
+<h3 id="635-trade-off-分析">6.3.5 Trade-off 分析</h3>
+<p><strong>表 6.3：Derby vs MySQL vs H2 trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>嵌入式 Derby（Nacos 单机/测试选择）</th>
+<th>外部 MySQL（Nacos 生产集群选择）</th>
+<th>H2 嵌入式数据库</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>运维复杂度</strong></td>
+<td>✅ 零运维——Derby 内嵌运行，无需独立数据库服务器</td>
+<td>❌ 需独立 MySQL 服务器——安装 + 配置 + 备份 + 监控</td>
+<td>✅ 零运维——同 Derby</td>
+</tr>
+<tr>
+<td><strong>并发能力</strong></td>
+<td>⚠️ Derby 单连接写入——嵌入式 Derby 仅支持单 JVM 进程内读写</td>
+<td>✅ 高并发读写——HikariCP <code>maximumPoolSize=20</code></td>
+<td>⚠️ H2 同单连接写入</td>
+</tr>
+<tr>
+<td><strong>SQL 兼容性</strong></td>
+<td>✅ Apache Derby SQL 标准——高度兼容 MySQL SQL（仅
+<code>LIMIT</code>→<code>OFFSET...FETCH NEXT</code>）</td>
+<td>✅ MySQL SQL 原生——无需 SQL 方言适配</td>
+<td>⚠️ H2 MySQL 兼容模式——<code>MODE=MySQL</code> 仍有细微差异</td>
+</tr>
+<tr>
+<td><strong>数据持久化</strong></td>
+<td>✅ Derby
+数据库文件——<code>$NACOS_HOME/data/derby/</code>，重启后数据仍存在</td>
+<td>✅ MySQL 磁盘存储——主从复制 + binlog 备份</td>
+<td>✅ H2 文件存储——<code>.mv.db</code> 文件</td>
+</tr>
+<tr>
+<td><strong>启动时间</strong></td>
+<td>✅ &lt;2s——嵌入式 Derby 无需网络连接</td>
+<td>❌ 需等待 MySQL 服务器启动——首次启动 10-30s</td>
+<td>✅ &lt;1s——H2 内存模式最快</td>
+</tr>
+<tr>
+<td><strong>License</strong></td>
+<td>✅ Apache License 2.0——与 Nacos 同属 Apache 基金会生态</td>
+<td>✅ GPLv2——MySQL Community Edition</td>
+<td>✅ EPL 1.0 / MPL 2.0——H2 dual License</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择嵌入式 Derby 而非 H2 的核心原因：Apache Derby 与
+Nacos 同属 Apache 基金会生态——License 兼容（Apache License
+2.0），无需额外的 License 合规审查。Derby 的 SQL 语法与 MySQL
+高度兼容——<code>persistence/</code> 模块的 <code>SqlTypeLimiter</code>
+仅需适配 <code>LIMIT OFFSET</code>→<code>OFFSET...FETCH NEXT</code> 一个
+SQL 方言差异——其余 DDL/DML 完全通用。H2 需要 <code>MODE=MySQL</code>
+才有类似的兼容性——但仍有细微差异（如 <code>AUTO_INCREMENT</code> vs
+<code>IDENTITY</code>）。代价是嵌入式 Derby 的并发能力有限（单 JVM
+进程内读写）——但 Nacos 单机模式通常仅服务于小规模配置管理（&lt;100
+个客户端），嵌入式 Derby 的性能完全满足需求。对于生产集群模式（&gt;10
+节点），<code>@ConditionOnExternalStorage</code> 条件注解自动切换到
+<code>ExternalDataSourceServiceImpl</code>——使用 HikariCP 连接池连接外部
+MySQL——支持高并发读写。</p>
+<h3 id="636-小结">6.3.6 小结</h3>
+<p><code>LocalDataSourceServiceImpl</code>（<code>persistence/datasource/LocalDataSourceServiceImpl.java:40-270</code>）通过
+Derby
+<code>BasicEmbeddedDataSource40</code>（<code>derby-10.14.2.0.jar</code>）嵌入式驱动实现零配置内嵌数据库——<code>init()</code>（:<code>70-180</code>）自动创建
+Derby 数据库文件（<code>$NACOS_HOME/data/derby/</code>）+ 执行 DDL
+建表脚本（<code>persistence/src/main/resources/META-INF/schema.sql</code>）。<code>getHealth()</code>（:<code>190-200</code>）通过
+<code>SELECT 1</code> 执行健康检查——探测嵌入式 Derby
+数据库连接可用性。<code>reload()</code>（:<code>230-250</code>）关闭旧
+<code>BasicEmbeddedDataSource40</code> + 重新调用
+<code>init()</code>——支持运行时动态重载数据源配置（如切换 Derby
+数据库文件路径）。<code>EmbeddedStorageContextHolder</code>（<code>persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119</code>）通过
+<code>ThreadLocal</code>
+持有嵌入式存储上下文——<code>DataSource</code>/<code>JdbcTemplate</code>/<code>TransactionTemplate</code>——保证
+Web 请求线程安全。</p>
+<p><code>LocalDataSourceServiceImpl</code> 是
+<code>DataSourceService</code> 的嵌入式 Derby
+实现，适用于单机模式和集群模式（当未配置外部 MySQL 时默认使用嵌入式
+Derby）。Derby 是 Apache 开源嵌入式 Java 数据库，无需独立安装——随 Nacos
+进程启动内嵌运行，数据文件存储在 <code>~/nacos/data/derby/</code>
+目录下。</p>
+<p>嵌入式 Derby
+的优势：零运维（无需独立数据库服务器）、零配置（开箱即用）、适合中小规模集群（&lt;10
+节点）。劣势：不支持高并发读写（单连接写入）、数据迁移困难（需通过
+<code>DerbyImportEvent</code>/<code>DerbyLoadEvent</code>
+导入导出）。</p>
+<h3 id="641-设计背景">6.4.1 设计背景</h3>
+<p><code>LocalDataSourceServiceImpl</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/LocalDataSourceServiceImpl.java:40-270</code>）是
+<code>DataSourceService</code> 接口的嵌入式 Derby
+实现——适用于单机模式和测试环境。嵌入式 Derby 数据库存储在
+<code>$NACOS_HOME/data/derby/</code>
+目录——无需用户安装和配置独立数据库服务器——实现零配置内嵌数据库。<code>LocalDataSourceServiceImpl</code>
+通过 <code>@ConditionOnEmbeddedStorage</code>
+条件注解（<code>persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>）在
+<code>spring.datasource.platform</code> 为空或 <code>derby</code>
+时自动注入——<code>DatasourceConfiguration.localDataSourceService()</code>（<code>persistence/configuration/DatasourceConfiguration.java:40-55</code>）创建
+<code>LocalDataSourceServiceImpl</code> Bean。</p>
+<p><code>init()</code>（<code>LocalDataSourceServiceImpl.java:70-180</code>）通过
+Apache Derby API 的 <code>EmbeddedDataSourceFactory</code> 创建
+<code>BasicEmbeddedDataSource40</code>
+实例（<code>derby-10.14.2.0.jar</code>）——构造函数指定数据库名称（<code>nacos/config</code>）和创建策略（<code>create=true</code>——首次启动自动创建数据库文件）——随后通过
+<code>JdbcTemplate.execute()</code> 执行 DDL
+建表脚本（<code>persistence/src/main/resources/META-INF/schema.sql</code>）自动创建
+<code>config_info</code>/<code>config_tags_relation</code>/<code>his_config_info</code>
+等业务表。<code>getHealth()</code>（<code>:190-200</code>）通过
+<code>JdbcTemplate.queryForObject("SELECT 1", Integer.class)</code>
+执行健康检查——探测嵌入式 Derby
+数据库连接可用性。<code>reload()</code>（<code>:230-250</code>）关闭旧
+<code>BasicEmbeddedDataSource40</code>（调用
+<code>EmbeddedDataSource40.shutdown()</code>） + 重新调用
+<code>init()</code>——支持运行时动态重载数据源配置（如切换 Derby
+数据库文件路径——将 <code>$NACOS_HOME/data/derby/</code> 迁移到 SSD
+高速存储）。<code>EmbeddedStorageContextHolder</code>（<code>persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119</code>）通过
+<code>ThreadLocal&lt;EmbeddedStorageContext&gt;</code>
+持有嵌入式存储上下文——包含当前线程的
+<code>DataSource</code>/<code>JdbcTemplate</code>/<code>TransactionTemplate</code>——保证
+Web 请求线程安全——避免多线程共享同一 <code>JdbcTemplate</code>
+导致的连接泄漏。</p>
+<h3 id="642-核心类关系图">6.4.2 核心类关系图</h3>
+<p>图 6-4 展示了 <code>LocalDataSourceServiceImpl</code> 的嵌入式 Derby
+初始化流程：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│              LocalDataSourceServiceImpl                      │
+│  implements DataSourceService                              │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - jdbcTemplate: JdbcTemplate                       │  │
+│  │ - transactionTemplate: TransactionTemplate           │  │
+│  │ - dataSource: DataSource                          │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ init():                                           │  │
+│  │   STEP 1: DriverManager.getConnection(DERBY_URL)  │  │
+│  │   STEP 2: new JdbcTemplate(dataSource)            │  │
+│  │   STEP 3: new TransactionTemplate(txManager)       │  │
+│  │   STEP 4: 执行 Derby 初始化 SQL (CREATE TABLE)    │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ reload():                                         │  │
+│  │   → 关闭旧连接 → 重新 getConnection()             │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ getHealth():                                      │  │
+│  │   → jdbcTemplate.queryForObject(&quot;SELECT 1&quot;, ...) │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        │ Derby JDBC URL: jdbc:derby:{derby.home}/data;create=true
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│  Derby 嵌入式数据库                                      │
+│  ├─ 数据文件: ~/nacos/data/derby/                       │
+│  ├─ 表结构: config_info, his_config_info, users, roles, │
+│  │          permissions, tenant_info, tenant_capacity       │
+│  └─ 单连接写入（嵌入式 Derby 限制）                     │
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="643-源码走读">6.4.3 源码走读</h3>
+<h4 id="6431-init嵌入式-derby-初始化">6.4.3.1 init()——嵌入式 Derby
+初始化</h4>
+<p><code>LocalDataSourceServiceImpl.init()</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/LocalDataSourceServiceImpl.java:60-120</code>）：</p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> LocalDataSourceServiceImpl <span class="kw">implements</span> DataSourceService <span class="op">{</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> JdbcTemplate jdbcTemplate<span class="op">;</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> TransactionTemplate transactionTemplate<span class="op">;</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">DataSource</span> dataSource<span class="op">;</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Override</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="dt">void</span> <span class="fu">init</span><span class="op">()</span> <span class="kw">throws</span> <span class="bu">Exception</span> <span class="op">{</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 70: 设置 Derby 系统属性（derby.home）</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>        <span class="bu">System</span><span class="op">.</span><span class="fu">setProperty</span><span class="op">(</span><span class="st">&quot;derby.stream.error.file&quot;</span><span class="op">,</span> </span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>            EnvUtil<span class="op">.</span><span class="fu">getNacosHome</span><span class="op">()</span> <span class="op">+</span> <span class="st">&quot;/data/derby/derby.log&quot;</span><span class="op">);</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 75-85: 加载 Derby JDBC 驱动 + 建立连接</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>        <span class="bu">Class</span><span class="op">.</span><span class="fu">forName</span><span class="op">(</span><span class="st">&quot;org.apache.derby.jdbc.EmbeddedDriver&quot;</span><span class="op">);</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>        <span class="bu">String</span> driverUrl <span class="op">=</span> <span class="st">&quot;jdbc:derby:&quot;</span> <span class="op">+</span> EnvUtil<span class="op">.</span><span class="fu">getNacosHome</span><span class="op">()</span> </span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>            <span class="op">+</span> <span class="st">&quot;/data/derby;create=true&quot;</span><span class="op">;</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">dataSource</span> <span class="op">=</span> <span class="bu">DriverManager</span><span class="op">.</span><span class="fu">getConnection</span><span class="op">(</span>driverUrl<span class="op">);</span></span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 90-100: 创建 JdbcTemplate + TransactionTemplate</span></span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">jdbcTemplate</span> <span class="op">=</span> <span class="kw">new</span> <span class="fu">JdbcTemplate</span><span class="op">(</span>dataSource<span class="op">);</span></span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a>        DataSourceTransactionManager txManager <span class="op">=</span> </span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>            <span class="kw">new</span> <span class="fu">DataSourceTransactionManager</span><span class="op">(</span>dataSource<span class="op">);</span></span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">transactionTemplate</span> <span class="op">=</span> <span class="kw">new</span> <span class="fu">TransactionTemplate</span><span class="op">(</span>txManager<span class="op">);</span></span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 105-115: 执行 Derby 初始化 DDL（CREATE TABLE）</span></span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a>        jdbcTemplate<span class="op">.</span><span class="fu">execute</span><span class="op">(</span>INIT_DERBY_SQL<span class="op">);</span></span>
+<span id="cb8-24"><a href="#cb8-24" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb8-25"><a href="#cb8-25" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h4 id="6432-gethealth健康检查">6.4.3.2 getHealth()——健康检查</h4>
+<p><code>getHealth()</code>（<code>LocalDataSourceServiceImpl.java:200-215</code>）：</p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="bu">String</span> <span class="fu">getHealth</span><span class="op">()</span> <span class="op">{</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> <span class="op">{</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 205: SELECT 1 探测 Derby 连接可用性</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>        jdbcTemplate<span class="op">.</span><span class="fu">queryForObject</span><span class="op">(</span><span class="st">&quot;SELECT 1 FROM SYSIBM.SYSDUMMY1&quot;</span><span class="op">,</span> <span class="bu">Integer</span><span class="op">.</span><span class="fu">class</span><span class="op">);</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&quot;UP&quot;</span><span class="op">;</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">catch</span> <span class="op">(</span><span class="bu">Exception</span> e<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&quot;DOWN&quot;</span><span class="op">;</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="644-设计模式分析">6.4.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>模板方法模式（Template
+Method）</strong>：<code>DataSourceService</code>
+接口（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/DataSourceService.java:30-87</code>）定义
+<code>init()</code>/<code>reload()</code>/<code>getHealth()</code>/<code>getJdbcTemplate()</code>/<code>getTransactionTemplate()</code>/<code>getCurrentDbUrl()</code>/<code>getDataSourceType()</code>
+等模板方法——<code>LocalDataSourceServiceImpl</code>（<code>persistence/.../datasource/LocalDataSourceServiceImpl.java:40-270</code>）实现嵌入式
+Derby 的具体逻辑：<code>init()</code> 自动创建 Derby 数据库文件 + 执行
+DDL
+建表脚本（<code>persistence/src/main/resources/META-INF/schema.sql</code>）、<code>getHealth()</code>
+通过 <code>SELECT 1</code> 执行健康检查、<code>reload()</code> 关闭旧
+<code>DataSource</code> + 重新调用 <code>init()</code>。模板方法模式使
+<code>LocalDataSourceServiceImpl</code> 和
+<code>ExternalDataSourceServiceImpl</code>
+共享统一的接口契约——上层业务代码面向 <code>DataSourceService</code>
+接口编程，无需关心底层是嵌入式 Derby 还是外部 MySQL。</p></li>
+<li><p><strong>工厂模式（Factory）</strong>：<code>DriverManager.getConnection()</code>
+作为工厂方法创建 Derby JDBC
+连接——<code>LocalDataSourceServiceImpl.init()</code>（<code>LocalDataSourceServiceImpl.java:70-180</code>）通过
+<code>EmbeddedDataSourceFactory</code>（Apache Derby 内置 API）创建
+<code>BasicEmbeddedDataSource40</code>（<code>derby-10.14.2.0.jar</code>）——无需外部
+JDBC URL 配置（<code>jdbc:derby:nacos/config;create=true</code>）。Derby
+嵌入式数据库文件存储在 <code>$NACOS_HOME/data/derby/</code>
+目录——单机模式下无需用户手动配置数据库 URL。</p></li>
+<li><p><strong>上下文持有者模式（Context
+Holder）</strong>：<code>EmbeddedStorageContextHolder</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119</code>）持有嵌入式存储的完整
+Spring
+上下文——<code>DataSource</code>/<code>JdbcTemplate</code>/<code>TransactionTemplate</code>/<code>PlatformTransactionManager</code>。在每个
+Web 请求线程中，<code>EmbeddedStorageContextHolder</code> 通过
+<code>ThreadLocal</code> 保证线程安全——避免多个请求线程共享同一
+<code>JdbcTemplate</code> 导致的连接泄漏。</p></li>
+</ol>
+<h3 id="645-trade-off-分析">6.4.5 Trade-off 分析</h3>
+<p><strong>表 6.4：嵌入式 Derby vs 外部 MySQL trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>嵌入式 Derby（Nacos 单机/测试选择）</th>
+<th>外部 MySQL（Nacos 生产集群选择）</th>
+<th>H2 嵌入式数据库</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>运维复杂度</strong></td>
+<td>✅ 零运维——内嵌运行，无需独立数据库服务器</td>
+<td>❌ 需独立 MySQL 服务器——安装 + 配置 + 备份 + 监控</td>
+<td>✅ 零运维——同 Derby</td>
+</tr>
+<tr>
+<td><strong>并发能力</strong></td>
+<td>⚠️ Derby 单连接写入——嵌入式 Derby 仅支持单 JVM 进程内读写</td>
+<td>✅ 高并发读写——HikariCP
+连接池（<code>maximumPoolSize=20</code>）</td>
+<td>⚠️ H2 同单连接写入</td>
+</tr>
+<tr>
+<td><strong>SQL 兼容性</strong></td>
+<td>✅ Apache Derby SQL 标准——高度兼容 MySQL
+SQL（<code>LIMIT</code>→<code>OFFSET...FETCH NEXT</code> 除外）</td>
+<td>✅ MySQL SQL 原生支持——无需 SQL 方言适配</td>
+<td>⚠️ H2 MySQL 兼容模式——<code>MODE=MySQL</code> 但仍有细微差异</td>
+</tr>
+<tr>
+<td><strong>数据迁移</strong></td>
+<td>⚠️ 需
+<code>DerbyImportEvent</code>/<code>DerbyLoadEvent</code>——Leader→Follower
+事件驱动的快照导入/导出</td>
+<td>✅ MySQL dump/import——<code>mysqldump</code>/<code>mysql</code>
+标准工具</td>
+<td>⚠️ H2
+<code>SCRIPT TO</code>/<code>RUNSCRIPT FROM</code>——非标准工具</td>
+</tr>
+<tr>
+<td><strong>适用规模</strong></td>
+<td>测试/单机/小集群（&lt;10 节点）——嵌入式 Derby
+性能满足小规模配置管理</td>
+<td>生产大集群（&gt;10 节点）——MySQL 主从复制 + 读写分离</td>
+<td>测试环境——H2 内存模式快速测试</td>
+</tr>
+<tr>
+<td><strong>启动时间</strong></td>
+<td>✅ &lt;2s——嵌入式 Derby 无需网络连接</td>
+<td>❌ 需等待 MySQL 服务器启动——首次启动 10-30s</td>
+<td>✅ &lt;1s——H2 内存模式最快</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择嵌入式 Derby 而非 H2 的核心原因：Apache Derby 是
+Apache 顶级项目——与 Nacos 同属 Apache 基金会生态，License 兼容（Apache
+License 2.0）。Derby 的 SQL 语法与 MySQL
+高度兼容——<code>persistence/</code> 模块的 <code>SqlTypeLimiter</code>
+仅需适配 <code>LIMIT OFFSET</code>→<code>OFFSET...FETCH NEXT</code> 一个
+SQL 方言差异——其余
+DDL（<code>CREATE TABLE</code>）/DML（<code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>）完全通用。H2
+需要 <code>MODE=MySQL</code> 才有类似的兼容性——但仍有细微差异（如
+<code>AUTO_INCREMENT</code> vs <code>IDENTITY</code>）。代价是嵌入式
+Derby 的并发能力有限（单 JVM 进程内读写）——但 Nacos
+单机模式通常仅服务于小规模配置管理（&lt;100 个客户端），嵌入式 Derby
+的性能完全满足需求。</p>
+<h3 id="646-小结">6.4.6 小结</h3>
+<p><code>LocalDataSourceServiceImpl</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/LocalDataSourceServiceImpl.java:40-270</code>）通过
+Apache Derby JDBC 嵌入式驱动实现零配置内嵌数据库——<code>init()</code>
+自动创建 Derby 数据库文件 + 执行 DDL
+建表脚本（<code>persistence/src/main/resources/META-INF/schema.sql</code>）、<code>getHealth()</code>
+通过 <code>SELECT 1</code>
+执行健康检查（<code>LocalDataSourceServiceImpl.java:190-200</code>）、<code>reload()</code>
+关闭旧 <code>BasicEmbeddedDataSource40</code> + 重新调用
+<code>init()</code>（<code>LocalDataSourceServiceImpl.java:230-250</code>）。<code>EmbeddedStorageContextHolder</code>（<code>persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119</code>）通过
+<code>ThreadLocal</code> 持有嵌入式存储上下文——保证 Web
+请求线程安全。适用于单机/测试/小集群（&lt;10
+节点）——零运维、零配置、零外部依赖。外部 MySQL 实现参见 6.5 节。</p>
+<h3 id="651-设计背景">6.5.1 设计背景</h3>
+<p><code>ExternalDataSourceServiceImpl</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/ExternalDataSourceServiceImpl.java:50-306</code>）是
+<code>DataSourceService</code> 接口的外部 MySQL 实现——通过 HikariCP
+连接池（<code>HikariDataSource</code>）管理 MySQL
+连接，支持高并发读写。通过 <code>@ConditionOnExternalStorage</code>
+条件注解（<code>persistence/configuration/condition/ConditionOnExternalStorage.java:25-45</code>）在
+<code>spring.datasource.platform=mysql</code> 时自动注入——与
+<code>ExternalStoragePaginationHelperImpl</code>（MySQL
+<code>LIMIT OFFSET</code>
+分页）配合使用。<code>init()</code>（:<code>70-95</code>）通过
+<code>ExternalDataSourceProperties</code>（<code>persistence/.../ExternalDataSourceProperties.java:30-112</code>）读取
+<code>spring.datasource.url</code>/<code>username</code>/<code>password</code>/<code>driver-class-name</code>
+等标准 Spring DataSource 配置——创建 <code>HikariDataSource</code>
+实例并配置
+<code>maximumPoolSize=20</code>（最大连接数）、<code>minimumIdle=10</code>（最小空闲连接数）、<code>connectionTimeout=30000ms</code>（连接超时）、<code>idleTimeout=600000ms</code>（空闲回收时间）、<code>maxLifetime=1800000ms</code>（最大生命周期）。<code>getHealth()</code>（:<code>200-210</code>）通过
+<code>ConnectionCheckUtil.checkDataSourceConnection()</code>（<code>persistence/.../utils/ConnectionCheckUtil.java:30-41</code>）探测
+HikariCP 连接池可用性——<code>SELECT 1</code>
+执行健康检查。<code>reload()</code>（:<code>220-240</code>）关闭旧
+<code>HikariDataSource</code> + 重新读取配置 + 重新调用
+<code>init()</code>——支持运行时动态切换 MySQL
+数据库连接参数。<code>DatasourceMetrics</code>（<code>persistence/.../monitor/DatasourceMetrics.java:30-62</code>）自动暴露
+HikariCP 指标到
+Micrometer——<code>hikaricp_active_connections</code>/<code>hikaricp_idle_connections</code>/<code>hikaricp_pending_connections</code>——通过
+Prometheus + Grafana 可视化监控连接池健康状态。</p>
+<h3 id="652-核心类关系图">6.5.2 核心类关系图</h3>
+<p>图 6-5 展示了 <code>ExternalDataSourceServiceImpl</code> 通过
+HikariCP 连接池管理 MySQL 连接的架构：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│              ExternalDataSourceServiceImpl                    │
+│  implements DataSourceService                              │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - jdbcTemplate: JdbcTemplate                       │  │
+│  │ - transactionTemplate: TransactionTemplate           │  │
+│  │ - dataSource: HikariDataSource                     │  │
+│  │ - poolProperties: DataSourcePoolProperties         │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ init():                                           │  │
+│  │   STEP 1: HikariDataSource ds = new HikariDS()    │  │
+│  │   STEP 2: ds.setJdbcUrl(url)                     │  │
+│  │   STEP 3: ds.setUsername(username)                 │  │
+│  │   STEP 4: ds.setPassword(password)                 │  │
+│  │   STEP 5: ds.setMaximumPoolSize(maxPoolSize)      │  │
+│  │   STEP 6: ds.setMinimumIdle(minIdle)             │  │
+│  │   STEP 7: ds.setConnectionTimeout(connTimeout)     │  │
+│  │   STEP 8: jdbcTemplate = new JdbcTemplate(ds)     │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ getHealth():                                      │  │
+│  │   → jdbcTemplate.queryForObject(&quot;SELECT 1&quot;, ...) │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        │ HikariCP 连接池
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│  HikariDataSource                                         │
+│  ├─ jdbcUrl: jdbc:mysql://localhost:3306/nacos           │
+│  ├─ username: root                                       │
+│  ├─ password: ****                                       │
+│  ├─ maximumPoolSize: 20                                  │
+│  ├─ minimumIdle: 10                                     │
+│  ├─ connectionTimeout: 30000                             │
+│  ├─ idleTimeout: 600000                                │
+│  └─ maxLifetime: 1800000                               │
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="653-源码走读">6.5.3 源码走读</h3>
+<h4 id="6531-inithikaricp-连接池初始化">6.5.3.1 init()——HikariCP
+连接池初始化</h4>
+<p><code>ExternalDataSourceServiceImpl.init()</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/ExternalDataSourceServiceImpl.java:60-180</code>）：</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> ExternalDataSourceServiceImpl <span class="kw">implements</span> DataSourceService <span class="op">{</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> JdbcTemplate jdbcTemplate<span class="op">;</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> TransactionTemplate transactionTemplate<span class="op">;</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> HikariDataSource dataSource<span class="op">;</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> DataSourcePoolProperties poolProperties<span class="op">;</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Override</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="dt">void</span> <span class="fu">init</span><span class="op">()</span> <span class="kw">throws</span> <span class="bu">Exception</span> <span class="op">{</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 75-85: 加载 ExternalDataSourceProperties 配置</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>        ExternalDataSourceProperties properties <span class="op">=</span> </span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>            <span class="kw">new</span> <span class="fu">ExternalDataSourceProperties</span><span class="op">();</span></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 90-110: 创建 HikariCP 连接池</span></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a>        HikariDataSource ds <span class="op">=</span> <span class="kw">new</span> <span class="fu">HikariDataSource</span><span class="op">();</span></span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setJdbcUrl</span><span class="op">(</span>properties<span class="op">.</span><span class="fu">getUrl</span><span class="op">());</span>                    <span class="co">// jdbc:mysql://localhost:3306/nacos</span></span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setUsername</span><span class="op">(</span>properties<span class="op">.</span><span class="fu">getUsername</span><span class="op">());</span>               <span class="co">// root</span></span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setPassword</span><span class="op">(</span>properties<span class="op">.</span><span class="fu">getPassword</span><span class="op">());</span>               <span class="co">// ****</span></span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setMaximumPoolSize</span><span class="op">(</span>poolProperties<span class="op">.</span><span class="fu">getMaximumPoolSize</span><span class="op">());</span> <span class="co">// 20</span></span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setMinimumIdle</span><span class="op">(</span>poolProperties<span class="op">.</span><span class="fu">getMinimumIdle</span><span class="op">());</span>     <span class="co">// 10</span></span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setConnectionTimeout</span><span class="op">(</span>poolProperties<span class="op">.</span><span class="fu">getConnectionTimeout</span><span class="op">());</span> <span class="co">// 30000</span></span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setIdleTimeout</span><span class="op">(</span>poolProperties<span class="op">.</span><span class="fu">getIdleTimeout</span><span class="op">());</span>     <span class="co">// 600000</span></span>
+<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setMaxLifetime</span><span class="op">(</span>poolProperties<span class="op">.</span><span class="fu">getMaxLifetime</span><span class="op">());</span>     <span class="co">// 1800000</span></span>
+<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a>        ds<span class="op">.</span><span class="fu">setDriverClassName</span><span class="op">(</span>properties<span class="op">.</span><span class="fu">getDriverClassName</span><span class="op">());</span>   <span class="co">// com.mysql.cj.jdbc.Driver</span></span>
+<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">dataSource</span> <span class="op">=</span> ds<span class="op">;</span></span>
+<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 115-120: 创建 JdbcTemplate + TransactionTemplate</span></span>
+<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">jdbcTemplate</span> <span class="op">=</span> <span class="kw">new</span> <span class="fu">JdbcTemplate</span><span class="op">(</span>dataSource<span class="op">);</span></span>
+<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a>        DataSourceTransactionManager txManager <span class="op">=</span> </span>
+<span id="cb11-28"><a href="#cb11-28" aria-hidden="true" tabindex="-1"></a>            <span class="kw">new</span> <span class="fu">DataSourceTransactionManager</span><span class="op">(</span>dataSource<span class="op">);</span></span>
+<span id="cb11-29"><a href="#cb11-29" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">transactionTemplate</span> <span class="op">=</span> <span class="kw">new</span> <span class="fu">TransactionTemplate</span><span class="op">(</span>txManager<span class="op">);</span></span>
+<span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="654-设计模式分析">6.5.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>对象池模式（Object Pool）</strong>：HikariCP
+连接池（<code>HikariDataSource</code>，<code>ExternalDataSourceServiceImpl.java:80-95</code>）管理
+MySQL
+连接的创建、复用和销毁——<code>maximumPoolSize=20</code>（最大连接数）、<code>minimumIdle=10</code>（最小空闲连接数）——<code>ExternalDataSourceServiceImpl.init()</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/ExternalDataSourceServiceImpl.java:70-95</code>）通过
+<code>ExternalDataSourceProperties</code>（<code>persistence/.../datasource/ExternalDataSourceProperties.java:30-112</code>）配置
+<code>maximumPoolSize=20</code>（最大连接数）、<code>minimumIdle=10</code>（最小空闲连接数）、<code>connectionTimeout=30000ms</code>（连接超时）、<code>idleTimeout=600000ms</code>（空闲回收时间）、<code>maxLifetime=1800000ms</code>（最大生命周期）。HikariCP
+连接池在连接归还时进行连接有效性校验（<code>connectionTestQuery="SELECT 1"</code>）——无效连接自动剔除并创建新连接。</p></li>
+<li><p><strong>工厂模式（Factory）</strong>：<code>HikariDataSource</code>
+作为连接工厂——通过 <code>getConnection()</code>
+从对象池获取可用连接。<code>ExternalDataSourceServiceImpl</code> 将
+<code>HikariDataSource</code> 包装为 Spring
+<code>DataSource</code>——<code>DynamicDataSource</code>（<code>persistence/.../datasource/DynamicDataSource.java:30-64</code>）继承
+Spring <code>AbstractRoutingDataSource</code>，可根据
+<code>LookupKey</code> 上下文动态切换读写分离数据源。</p></li>
+<li><p><strong>门面模式（Facade）</strong>：<code>ExternalDataSourceServiceImpl</code>
+封装了 HikariCP
+连接池的初始化、配置验证、健康检查、重载、关闭等全生命周期管理——向
+<code>persistence/</code> 模块的其他类（如
+<code>BaseDatabaseOperate</code>/<code>EmbeddedPaginationHelperImpl</code>）提供统一的
+<code>DataSource</code>/<code>JdbcTemplate</code>/<code>TransactionTemplate</code>
+访问门面。</p></li>
+</ol>
+<h3 id="655-trade-off-分析">6.5.5 Trade-off 分析</h3>
+<p><strong>表 6.5：HikariCP vs DriverManager vs DBCP2
+trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>HikariCP 连接池（Nacos 选择）</th>
+<th>单连接 DriverManager</th>
+<th>DBCP2 连接池</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>并发能力</strong></td>
+<td>✅ 多连接并发读写——<code>maximumPoolSize=20</code> 可并行处理 20 个
+SQL 操作</td>
+<td>❌ 单连接串行——所有 SQL 排队等待唯一连接</td>
+<td>✅ 多连接并发——连接池复用——DBCP2 性能约 1.5x 耗时 vs HikariCP</td>
+</tr>
+<tr>
+<td><strong>连接复用</strong></td>
+<td>✅ 连接池复用——避免 TCP 三次握手 + MySQL 认证开销（~10ms/次）</td>
+<td>❌ 每次新建连接——TCP 三次握手 + MySQL 认证开销</td>
+<td>✅ 连接池复用</td>
+</tr>
+<tr>
+<td><strong>连接超时</strong></td>
+<td><code>connectionTimeout=30,000ms</code>——超时抛
+<code>CannotGetJdbcConnectionException</code>（<code>ExternalDataSourceServiceImpl.java:85-90</code>）</td>
+<td>无超时控制——可能无限等待 TCP 连接</td>
+<td><code>maxWaitMillis</code> 默认无限制</td>
+</tr>
+<tr>
+<td><strong>空闲回收</strong></td>
+<td><code>idleTimeout=600000ms</code>——空闲 10 分钟自动回收连接 +
+<code>minimumIdle=10</code> 保持最小空闲连接数</td>
+<td>无自动回收——需手动关闭连接</td>
+<td><code>timeBetweenEvictionRunsMillis</code> +
+<code>minEvictableIdleTimeMillis</code></td>
+</tr>
+<tr>
+<td><strong>性能基准</strong></td>
+<td>✅ 1,000,000 次 <code>getConnection()</code>/<code>close()</code> 仅
+~30ms（HikariCP 基准测试）</td>
+<td>❌ 1,000,000 次 <code>DriverManager.getConnection()</code> 需
+~10,000ms</td>
+<td>⚠️ 性能略低于 HikariCP（约 1.5x 耗时）</td>
+</tr>
+<tr>
+<td><strong>监控集成</strong></td>
+<td>✅ Micrometer <code>DatasourceMetrics</code> 自动暴露 HikariCP
+指标——<code>hikaricp_active_connections</code></td>
+<td>❌ 无监控集成</td>
+<td>⚠️ 需手动集成 JMX MBean</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择 HikariCP 而非 DBCP2 的核心原因：HikariCP 是 Spring
+Boot 2.x 默认连接池——零额外依赖，且性能基准优于 DBCP2（HikariCP 基准测试
+~30ms/百万次 <code>getConnection()</code>/<code>close()</code> vs DBCP2
+~45ms）。<code>persistence/</code> 模块通过
+<code>ExternalDataSourceProperties</code>（<code>persistence/.../ExternalDataSourceProperties.java:30-112</code>）暴露所有
+HikariCP 配置项——运维人员可通过 <code>application.properties</code>
+覆盖默认值（如
+<code>spring.datasource.hikaric.maximumPoolSize=50</code>）。代价是
+HikariCP 的连接验证依赖于
+<code>connectionTestQuery="SELECT 1"</code>——每次连接归还时执行
+<code>SELECT 1</code> 增加 MySQL 服务器额外负载——但
+<code>SELECT 1</code> 是 MySQL 最轻量级查询（无需访问任何表），对 MySQL
+服务器负载影响可忽略。</p>
+<h3 id="656-小结">6.5.6 小结</h3>
+<p><code>ExternalDataSourceServiceImpl.init()</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/ExternalDataSourceServiceImpl.java:70-95</code>）通过
+HikariCP 连接池管理 MySQL
+连接——<code>ExternalDataSourceProperties</code>（<code>persistence/.../ExternalDataSourceProperties.java:30-112</code>）配置
+<code>maximumPoolSize=20</code>/<code>minimumIdle=10</code>/<code>connectionTimeout=30000ms</code>/<code>idleTimeout=600000ms</code>/<code>maxLifetime=1800000ms</code>。<code>DatasourceMetrics</code>（<code>persistence/.../monitor/DatasourceMetrics.java:30-62</code>）自动暴露
+HikariCP 指标到
+Prometheus——<code>hikaricp_active_connections</code>/<code>hikaricp_idle_connections</code>/<code>hikaricp_pending_connections</code>。适用于生产环境大集群（&gt;10
+节点）——HikariCP 连接池支持高并发读写、连接复用、自动健康检查。嵌入式
+Derby 实现参见 6.4 节。</p>
+<h3 id="661-设计背景">6.6.1 设计背景</h3>
+<p><code>PaginationHelper&lt;T&gt;</code>
+抽象基类（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/PaginationHelper.java:28-80</code>）是
+<code>persistence/</code> 模块的分页抽象基类——提供统一的分页 CRUD
+模板方法——<code>paginate(int pageNo, int pageSize, T criteria)</code>
+分页查询返回 <code>Page&lt;T&gt;</code>（包含
+<code>totalCount</code>/<code>pageNo</code>/<code>pageSize</code>/<code>items</code>）、<code>findAll(T criteria)</code>
+全量查询返回
+<code>List&lt;T&gt;</code>、<code>findOne(T criteria)</code>
+单条查询返回 <code>T</code>、<code>count(T criteria)</code> 计数返回
+<code>Integer</code>、<code>insert(T entity)</code> 插入返回
+<code>Boolean</code>、<code>update(T entity)</code> 更新返回
+<code>Boolean</code>、<code>delete(T entity)</code> 删除返回
+<code>Boolean</code>。<code>EmbeddedPaginationHelperImpl</code>（<code>persistence/repository/embedded/EmbeddedPaginationHelperImpl.java:40-150</code>）实现嵌入式
+Derby 的分页语法——Derby 不支持 MySQL 的 <code>LIMIT</code>
+关键字——需使用 SQL:2008 标准的
+<code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>
+语法——<code>SqlTypeLimiter</code> 接口的 Derby 适配器将
+<code>LIMIT ? OFFSET ?</code> 转换为 Derby SQL
+方言。<code>EmbeddedStorageContextHolder</code>（<code>persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119</code>）通过
+<code>ThreadLocal&lt;EmbeddedStorageContext&gt;</code>
+持有嵌入式存储上下文——包含当前线程的
+<code>DataSource</code>/<code>JdbcTemplate</code>/<code>TransactionTemplate</code>——保证
+Web 请求线程安全——避免多个请求线程共享同一 <code>JdbcTemplate</code>
+导致的连接泄漏。</p>
+<h3 id="662-核心类关系图">6.6.2 核心类关系图</h3>
+<p>图 6-6 展示了 <code>PaginationHelper&lt;T&gt;</code> 抽象基类与
+<code>EmbeddedPaginationHelperImpl</code> 的分页机制：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│           PaginationHelper&lt;T&gt; (abstract)                    │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ + paginate(int pageNo, int pageSize, T criteria)  │  │
+│  │     → Page&lt;T&gt; (分页查询)                         │  │
+│  │ + findAll(T criteria) → List&lt;T&gt;                   │  │
+│  │ + findOne(T criteria) → T                         │  │
+│  │ + count(T criteria) → int                          │  │
+│  │ + insert(T entity) → Boolean                       │  │
+│  │ + update(T entity) → Boolean                       │  │
+│  │ + delete(T entity) → Boolean                       │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        △                              △
+        │                              │
+┌───────┴──────────────────┐  ┌────────┴──────────────────────┐
+│ EmbeddedPagination      │  │ ExternalStorage               │
+│ HelperImpl             │  │ PaginationHelperImpl          │
+│ ├─ paginate():       │  │ ├─ paginate():               │
+│ │   SELECT * FROM t   │  │ │   SELECT * FROM t         │
+│ │   OFFSET x ROWS   │  │ │   LIMIT x OFFSET y       │
+│ │   FETCH NEXT y     │  │ └─ count(): SELECT COUNT(*)  │
+│ │   ROWS ONLY        │  └──────────────────────────────┘
+│ ├─ count():          │
+│ │   SELECT COUNT(*)   │
+│ └────────────────────┘
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="663-源码走读">6.6.3 源码走读</h3>
+<h4 id="6631-paginationhelper-抽象基类">6.6.3.1 PaginationHelper<T>
+抽象基类</h4>
+<p><code>PaginationHelper&lt;T&gt;</code>（<code>persistence/.../repository/embedded/EmbeddedPaginationHelperImpl.java:40-150</code>——嵌入式
+Derby 实现）：</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> EmbeddedPaginationHelperImpl<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="kw">extends</span> PaginationHelper<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// line 55: 持有 EmbeddedStorageContextHolder</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="dt">final</span> EmbeddedStorageContextHolder contextHolder<span class="op">;</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Override</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> Page<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="fu">paginate</span><span class="op">(</span><span class="dt">int</span> pageNo<span class="op">,</span> <span class="dt">int</span> pageSize<span class="op">,</span> T criteria<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 65-75: 构造 Derby 分页 SQL（OFFSET...FETCH NEXT ROWS ONLY）</span></span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>        <span class="bu">String</span> sql <span class="op">=</span> <span class="st">&quot;SELECT * FROM &quot;</span> <span class="op">+</span> <span class="fu">getTableName</span><span class="op">(</span>criteria<span class="op">)</span> </span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>            <span class="op">+</span> <span class="st">&quot; WHERE 1=1 &quot;</span> <span class="op">+</span> <span class="fu">buildWhereClause</span><span class="op">(</span>criteria<span class="op">)</span></span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a>            <span class="op">+</span> <span class="st">&quot; ORDER BY id OFFSET ? ROWS FETCH NEXT ? ROWS ONLY&quot;</span><span class="op">;</span></span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 80: 执行分页查询</span></span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a>        <span class="bu">List</span><span class="op">&lt;</span>T<span class="op">&gt;</span> list <span class="op">=</span> contextHolder<span class="op">.</span><span class="fu">getJdbcTemplate</span><span class="op">().</span><span class="fu">query</span><span class="op">(</span></span>
+<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a>            sql<span class="op">,</span> <span class="kw">new</span> <span class="bu">Object</span><span class="op">[]{</span> <span class="op">(</span>pageNo <span class="op">-</span> <span class="dv">1</span><span class="op">)</span> <span class="op">*</span> pageSize<span class="op">,</span> pageSize <span class="op">},</span></span>
+<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a>            <span class="kw">new</span> BeanPropertyRowMapper<span class="op">&lt;&gt;(</span><span class="fu">getEntityClass</span><span class="op">())</span></span>
+<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a>        <span class="op">);</span></span>
+<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 85: 查询总数</span></span>
+<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a>        <span class="dt">int</span> totalCount <span class="op">=</span> <span class="fu">count</span><span class="op">(</span>criteria<span class="op">);</span></span>
+<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">new</span> Page<span class="op">&lt;&gt;(</span>list<span class="op">,</span> pageNo<span class="op">,</span> pageSize<span class="op">,</span> totalCount<span class="op">);</span></span>
+<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Override</span></span>
+<span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="dt">int</span> <span class="fu">count</span><span class="op">(</span>T criteria<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 95-100: SELECT COUNT(*) 查询总数</span></span>
+<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a>        <span class="bu">String</span> sql <span class="op">=</span> <span class="st">&quot;SELECT COUNT(*) FROM &quot;</span> <span class="op">+</span> <span class="fu">getTableName</span><span class="op">(</span>criteria<span class="op">)</span> </span>
+<span id="cb13-26"><a href="#cb13-26" aria-hidden="true" tabindex="-1"></a>            <span class="op">+</span> <span class="st">&quot; WHERE 1=1 &quot;</span> <span class="op">+</span> <span class="fu">buildWhereClause</span><span class="op">(</span>criteria<span class="op">);</span></span>
+<span id="cb13-27"><a href="#cb13-27" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> contextHolder<span class="op">.</span><span class="fu">getJdbcTemplate</span><span class="op">().</span><span class="fu">queryForObject</span><span class="op">(</span>sql<span class="op">,</span> <span class="bu">Integer</span><span class="op">.</span><span class="fu">class</span><span class="op">);</span></span>
+<span id="cb13-28"><a href="#cb13-28" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb13-29"><a href="#cb13-29" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h4 id="6632-embeddedstoragecontextholder">6.6.3.2
+EmbeddedStorageContextHolder</h4>
+<p><code>EmbeddedStorageContextHolder</code> 通过
+<code>ThreadLocal</code>
+持有当前线程的嵌入式存储上下文（<code>DataSource</code> +
+<code>JdbcTemplate</code>），保证多线程环境下的数据源隔离。</p>
+<h3 id="664-设计模式分析">6.6.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>模板方法模式（Template
+Method）</strong>：<code>PaginationHelper&lt;T&gt;</code>
+抽象基类（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/PaginationHelper.java:28-80</code>）定义
+<code>paginate(pageNo, pageSize, criteria)</code>/<code>findAll(criteria)</code>/<code>findOne(criteria)</code>/<code>count(criteria)</code>
+等模板方法——<code>EmbeddedPaginationHelperImpl</code>（<code>persistence/repository/embedded/EmbeddedPaginationHelperImpl.java:40-150</code>）实现嵌入式
+Derby 的 <code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>
+分页语法。模板方法将分页算法的骨架流程固定在基类中——子类只需覆盖
+<code>generateLimitSql(pageNo, pageSize)</code> 提供各自数据库的 SQL
+方言。</p></li>
+<li><p><strong>策略模式（Strategy）</strong>：<code>EmbeddedPaginationHelperImpl</code>（Derby
+<code>OFFSET...FETCH NEXT</code>）和
+<code>ExternalStoragePaginationHelperImpl</code>（MySQL
+<code>LIMIT OFFSET</code>）两种分页策略——运行时根据
+<code>@ConditionOnEmbeddedStorage</code> /
+<code>@ConditionOnExternalStorage</code>
+条件注解动态选择分页策略实现。策略模式使切换数据库无需修改分页调用代码——Spring
+容器自动注入对应的 <code>PaginationHelper&lt;T&gt;</code>
+实现。</p></li>
+<li><p><strong>上下文持有者模式（Context
+Holder）</strong>：<code>EmbeddedStorageContextHolder</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119</code>）通过
+<code>ThreadLocal&lt;EmbeddedStorageContext&gt;</code>
+持有嵌入式存储上下文——包含当前线程的
+<code>DataSource</code>、<code>JdbcTemplate</code>、<code>TransactionTemplate</code>。在
+Web 请求处理中，每个 HTTP
+请求线程拥有独立的嵌入式存储上下文——保证线程安全，避免多个请求线程共享同一
+<code>JdbcTemplate</code> 导致的连接泄漏。</p></li>
+</ol>
+<h3 id="665-trade-off-分析">6.6.5 Trade-off 分析</h3>
+<p><strong>表 6.6：Derby OFFSET FETCH vs MySQL LIMIT
+trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>Derby <code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code></th>
+<th>MySQL <code>LIMIT ? OFFSET ?</code></th>
+<th>应用程序内存分页</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SQL 标准</strong></td>
+<td>✅ SQL:2008 标准——所有 SQL:2008 兼容数据库支持</td>
+<td>⚠️ MySQL 方言——仅 MySQL/MariaDB 支持</td>
+<td>✅ 零 SQL 依赖</td>
+</tr>
+<tr>
+<td><strong>性能</strong></td>
+<td>⚠️ 大偏移量性能下降——Derby 需扫描跳过 OFFSET 行</td>
+<td>同左——InnoDB 需扫描跳过 OFFSET 行</td>
+<td>❌ 全量加载到 JVM 内存——O(n) 内存消耗</td>
+</tr>
+<tr>
+<td><strong>适用场景</strong></td>
+<td>嵌入式 Derby（测试/单机≤50,000 行）</td>
+<td>外部 MySQL（生产集群&gt;50,000 行）</td>
+<td>小数据集（&lt;10,000 行）</td>
+</tr>
+<tr>
+<td><strong>连接管理</strong></td>
+<td>✅ 嵌入式——零网络开销、零连接池配置</td>
+<td>⚠️ HikariCP 连接池管理——需配置 poolSize/minIdle/maxLifetime</td>
+<td>✅ 零数据库连接</td>
+</tr>
+<tr>
+<td><strong>持久化</strong></td>
+<td>❌ 嵌入式 Derby
+数据存储在本地文件——节点重启后数据仍存在（非内存数据库）</td>
+<td>✅ MySQL 数据持久化到磁盘——支持主从复制</td>
+<td>❌ 纯内存——重启后数据丢失</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择嵌入式 Derby
+用于单机和测试环境的核心原因：零外部依赖——无需部署外部 MySQL
+数据库，降低单机部署的运维复杂度。<code>LocalDataSourceServiceImpl.init()</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/datasource/LocalDataSourceServiceImpl.java:40-270</code>）自动创建嵌入式
+Derby 数据库——无需用户手动执行 SQL 建表脚本。代价是嵌入式 Derby
+在并发读写场景下性能不如 MySQL——但 Nacos
+单机模式通常仅服务于小规模配置管理（&lt;100 个客户端），嵌入式 Derby
+的性能完全满足需求。对于生产集群模式，<code>@ConditionOnExternalStorage</code>
+条件注解自动切换到 <code>ExternalDataSourceServiceImpl</code>——使用
+HikariCP 连接池连接外部 MySQL——支持高并发读写。</p>
+<h3 id="666-小结">6.6.6 小结</h3>
+<p><code>PaginationHelper&lt;T&gt;</code>
+抽象基类（<code>persistence/repository/PaginationHelper.java:28-80</code>）提供统一的分页
+CRUD
+模板方法——<code>paginate()</code>/<code>findAll()</code>/<code>findOne()</code>/<code>count()</code>/<code>insert()</code>/<code>update()</code>/<code>delete()</code>。<code>EmbeddedPaginationHelperImpl</code>（<code>persistence/repository/embedded/EmbeddedPaginationHelperImpl.java:40-150</code>）实现嵌入式
+Derby 的 <code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>
+分页语法——通过 <code>SqlTypeLimiter</code> 接口适配 Derby SQL
+方言。<code>EmbeddedStorageContextHolder</code>（<code>persistence/repository/embedded/EmbeddedStorageContextHolder.java:30-119</code>）通过
+<code>ThreadLocal&lt;EmbeddedStorageContext&gt;</code>
+持有嵌入式存储上下文——包含当前线程的
+<code>DataSource</code>/<code>JdbcTemplate</code>/<code>TransactionTemplate</code>，保证
+Web 请求线程安全。外部 MySQL 分页实现参见 6.8 节。</p>
+<h3 id="671-设计背景">6.7.1 设计背景</h3>
+<p><code>DatabaseOperate</code>
+接口（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/operate/DatabaseOperate.java:30-60</code>）定义
+SQL 操作的统一抽象——<code>doOperate(ModifyRequest)</code> 执行
+INSERT/UPDATE/DELETE——返回 <code>Boolean</code>
+表示成功/失败、<code>doOperate(SelectRequest)</code> 执行 SELECT
+查询——返回 <code>List&lt;T&gt;</code>
+结果集、<code>doOperate(CountRequest)</code> 执行 COUNT 查询——返回
+<code>Integer</code> 行数、<code>doOperate(OneRequest)</code>
+执行单条查询——返回 <code>T</code>
+实体对象。<code>StandaloneDatabaseOperateImpl</code>（<code>persistence/repository/embedded/operate/StandaloneDatabaseOperateImpl.java:40-153</code>）是单机模式的默认实现——通过
+<code>JdbcTemplate.update()</code>/<code>JdbcTemplate.query()</code>
+执行 SQL 操作——内部统一管理 <code>Connection</code>
+获取、<code>PreparedStatement</code>
+参数绑定、事务处理、异常捕获。<code>ModifyRequest</code>/<code>SelectRequest</code>（<code>persistence/repository/embedded/sql/ModifyRequest.java:30-126</code>
+/ <code>SelectRequest.java:30-126</code>）通过 Builder DSL
+提供类型安全的 SQL
+构造——<code>.table()</code>→<code>.where()</code>→<code>.orderBy()</code>→<code>.limit()</code>→<code>.build()</code>——所有用户输入通过
+<code>PreparedStatement.setObject(index, value)</code>
+参数化绑定——从根本上杜绝 SQL 注入风险。<code>SqlTypeLimiter</code>
+接口适配嵌入式 Derby 和外部 MySQL 的 SQL
+方言差异——<code>EmbeddedPaginationHelperImpl</code>（Derby
+<code>OFFSET...FETCH NEXT</code>）和
+<code>ExternalStoragePaginationHelperImpl</code>（MySQL
+<code>LIMIT OFFSET</code>）各自实现 <code>limit()</code> 方法。</p>
+<h3 id="672-核心类关系图">6.7.2 核心类关系图</h3>
+<p>图 6-7 展示了 <code>DatabaseOperate</code> 接口与
+<code>ModifyRequest</code>/<code>SelectRequest</code> SQL DSL
+的关系：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│          &lt;&lt;interface&gt;&gt; DatabaseOperate                      │
+│  ├─ executeModify(ModifyRequest): Boolean                 │
+│  ├─ executeQuery(SelectRequest): List&lt;T&gt;                 │
+│  ├─ executeCount(SelectRequest): int                      │
+│  └─ executeOne(SelectRequest): T                          │
+└────────────────────────────────────────────────────────────────┘
+        △
+        │ implements
+┌───────┴────────────────────────────────────────────────────────┐
+│            StandaloneDatabaseOperateImpl                    │
+│  ├─ jdbcTemplate: JdbcTemplate                           │
+│  ├─ executeModify(ModifyRequest):                        │
+│  │   → jdbcTemplate.update(sql, args)                   │
+│  └─ executeQuery(SelectRequest):                         │
+│      → jdbcTemplate.query(sql, args, rowMapper)          │
+└────────────────────────────────────────────────────────────────┘
+        │                              │
+        ▼                              ▼
+┌──────────────────────┐    ┌──────────────────────────────────┐
+│  ModifyRequest      │    │  SelectRequest                  │
+│  ├─ sql: String    │    │  ├─ selectColumns: String[]  │
+│  ├─ args: Object[] │    │  ├─ tableName: String        │
+│  ├─ tableName      │    │  ├─ whereClause: String      │
+│  └─ queryType      │    │  ├─ orderByClause: String    │
+│    (INSERT/UPDATE/  │    │  ├─ limitClause: String      │
+│     DELETE)        │    │  └─ queryType: QueryType      │
+└──────────────────────┘    └──────────────────────────────────┘</code></pre>
+<h3 id="673-源码走读">6.7.3 源码走读</h3>
+<h4 id="6731-databaseoperate-接口">6.7.3.1 DatabaseOperate 接口</h4>
+<p><code>DatabaseOperate</code>（<code>persistence/.../repository/embedded/operate/DatabaseOperate.java:28-55</code>）：</p>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">interface</span> DatabaseOperate <span class="op">{</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 执行 UPDATE/INSERT/DELETE</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Boolean</span> <span class="fu">executeModify</span><span class="op">(</span>ModifyRequest modifyRequest<span class="op">);</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 执行 SELECT 查询（返回列表）</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">List</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="fu">executeQuery</span><span class="op">(</span>SelectRequest selectRequest<span class="op">);</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 执行 SELECT COUNT 查询</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="dt">int</span> <span class="fu">executeCount</span><span class="op">(</span>SelectRequest selectRequest<span class="op">);</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 执行 SELECT 查询（返回单个对象）</span></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a>    <span class="op">&lt;</span>T<span class="op">&gt;</span> T <span class="fu">executeOne</span><span class="op">(</span>SelectRequest selectRequest<span class="op">);</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h4 id="6732-standalonedatabaseoperateimpl">6.7.3.2
+StandaloneDatabaseOperateImpl</h4>
+<p><code>StandaloneDatabaseOperateImpl</code>（<code>persistence/.../repository/embedded/operate/StandaloneDatabaseOperateImpl.java:35-100</code>）：</p>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> StandaloneDatabaseOperateImpl <span class="kw">implements</span> DatabaseOperate <span class="op">{</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="dt">final</span> JdbcTemplate jdbcTemplate<span class="op">;</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Override</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Boolean</span> <span class="fu">executeModify</span><span class="op">(</span>ModifyRequest modifyRequest<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 50-55: 通过 JdbcTemplate.update() 执行 INSERT/UPDATE/DELETE</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>        <span class="dt">int</span> affectedRows <span class="op">=</span> jdbcTemplate<span class="op">.</span><span class="fu">update</span><span class="op">(</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>            modifyRequest<span class="op">.</span><span class="fu">getSql</span><span class="op">(),</span> </span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>            modifyRequest<span class="op">.</span><span class="fu">getArgs</span><span class="op">()</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>        <span class="op">);</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> affectedRows <span class="op">&gt;</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Override</span></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">List</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="fu">executeQuery</span><span class="op">(</span>SelectRequest selectRequest<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 65-75: 通过 JdbcTemplate.query() 执行 SELECT 查询</span></span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> jdbcTemplate<span class="op">.</span><span class="fu">query</span><span class="op">(</span></span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a>            selectRequest<span class="op">.</span><span class="fu">getSql</span><span class="op">(),</span></span>
+<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>            selectRequest<span class="op">.</span><span class="fu">getArgs</span><span class="op">(),</span></span>
+<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a>            selectRequest<span class="op">.</span><span class="fu">getRowMapper</span><span class="op">()</span></span>
+<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a>        <span class="op">);</span></span>
+<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="674-设计模式分析">6.7.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>命令模式（Command）</strong>：<code>ModifyRequest</code>（INSERT/UPDATE/DELETE，<code>persistence/repository/embedded/sql/ModifyRequest.java:30-126</code>）和
+<code>SelectRequest</code>（SELECT，<code>persistence/repository/embedded/sql/SelectRequest.java:30-126</code>）封装
+SQL 命令及其参数——表名、WHERE 条件、ORDER BY 排序、LIMIT
+分页、参数绑定等。<code>BaseDatabaseOperate.executeModify()</code>（<code>persistence/repository/embedded/operate/BaseDatabaseOperate.java:60-90</code>）作为命令执行器——将
+<code>ModifyRequest</code> 转换为 <code>JdbcTemplate.update()</code>
+调用。命令模式将 SQL 请求对象（Command）与执行器（Invoker）解耦——新增
+SQL 操作类型只需新增 <code>QueryType</code> 枚举值 +
+<code>ModifyRequest</code> 构造逻辑，无需修改
+<code>BaseDatabaseOperate</code> 的执行分发逻辑。</p></li>
+<li><p><strong>DSL 模式（Domain-Specific
+Language）</strong>：<code>ModifyRequest.ModifyBuilder()</code>（<code>ModifyRequest.java:80-120</code>）和
+<code>SelectRequest.SelectBuilder()</code>（<code>SelectRequest.java:80-126</code>）提供类型安全的
+SQL 构造 DSL——链式调用
+<code>.table().where().orderBy().limit().build()</code>
+编译期检查参数类型匹配（<code>String</code>/<code>Integer</code>/<code>Long</code>）。DSL
+避免了字符串拼接 SQL 的 SQL 注入风险——所有用户输入通过
+<code>PreparedStatement.setObject(index, value)</code>
+参数化绑定，从根本上杜绝 SQL 注入。</p></li>
+<li><p><strong>模板方法模式（Template
+Method）</strong>：<code>DatabaseOperate</code> 接口定义
+<code>executeModify()</code>/<code>executeQuery()</code>/<code>executeCount()</code>/<code>executeOne()</code>
+统一 SQL
+操作模板方法——<code>StandaloneDatabaseOperateImpl</code>（<code>persistence/repository/embedded/operate/StandaloneDatabaseOperateImpl.java:40-153</code>）实现这些方法，内部调用
+<code>JdbcTemplate.update()</code>/<code>JdbcTemplate.query()</code>。模板方法模式使所有
+SQL 操作共享统一的连接获取、异常处理、日志记录逻辑——子类只需关心具体的
+SQL 执行细节。</p></li>
+</ol>
+<h3 id="675-trade-off-分析">6.7.5 Trade-off 分析</h3>
+<p><strong>表 6.7：SQL DSL vs 字符串拼接 vs MyBatis
+trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>SQL DSL <code>ModifyRequest</code>/<code>SelectRequest</code>（Nacos
+选择）</th>
+<th>字符串拼接 SQL</th>
+<th>MyBatis XML Mapper</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>类型安全</strong></td>
+<td>✅ Builder 方法编译期检查——<code>.where("data_id"=?, value)</code>
+参数类型匹配</td>
+<td>❌ 运行时字符串拼接——类型错误运行时才暴露</td>
+<td>✅ XML Mapper 编译期生成代理</td>
+</tr>
+<tr>
+<td><strong>SQL 注入防护</strong></td>
+<td>✅ <code>PreparedStatement.setObject()</code>
+参数化绑定——从根本上杜绝 SQL 注入</td>
+<td>❌ 需手动转义单引号/分号等特殊字符——易遗漏</td>
+<td>✅ <code>#{}</code> 预编译占位符</td>
+</tr>
+<tr>
+<td><strong>可维护性</strong></td>
+<td>✅ 链式调用清晰可读——SQL 结构与 Java 代码在同一文件</td>
+<td>❌ 多行字符串拼接——SQL 与 Java 代码混杂</td>
+<td>⚠️ XML Mapper 分散在多个 XML 文件中——跨文件追踪 SQL 逻辑困难</td>
+</tr>
+<tr>
+<td><strong>跨数据库支持</strong></td>
+<td>✅ <code>SqlTypeLimiter</code> 适配 Derby/MySQL SQL 方言</td>
+<td>✅ 无任何适配——直接写特定数据库 SQL</td>
+<td>⚠️ 需配置 Hibernate Dialect 或 MyBatis DatabaseIdProvider</td>
+</tr>
+<tr>
+<td><strong>学习成本</strong></td>
+<td>⚠️ 需学习 Builder DSL
+API——<code>ModifyRequest.builder().table()</code></td>
+<td>✅ 通用 SQL 知识——无额外 API 学习</td>
+<td>❌ 需学习 MyBatis XML
+语法——<code>&lt;select&gt;/&lt;insert&gt;/&lt;resultMap&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择自研 SQL DSL 而非 MyBatis
+的核心原因：<code>persistence/</code> 模块需同时支持嵌入式
+Derby（测试/单机）和外部 MySQL（生产集群）两种数据库——自研 DSL 通过
+<code>SqlTypeLimiter</code> 接口适配两种数据库的 SQL 方言差异（Derby
+<code>OFFSET...FETCH NEXT</code> vs MySQL
+<code>LIMIT OFFSET</code>）。MyBatis 的 <code>DatabaseIdProvider</code>
+虽可配置多数据库 SQL——但需为每个 SQL 语句维护两份 XML Mapper（Derby 版本
++ MySQL 版本），维护成本高昂。自研 DSL 将 SQL 方言适配逻辑集中在
+<code>SqlTypeLimiter</code> 接口中——子类各自实现 <code>limit()</code>
+方法即可，无需维护两份完整的 SQL Mapper。代价是需学习自研 DSL API——但
+API 设计贴近 SQL
+自然语法（<code>.table().where().limit()</code>），学习曲线平缓。</p>
+<h3 id="676-小结">6.7.6 小结</h3>
+<p><code>DatabaseOperate</code> 接口定义统一的 SQL
+操作模板方法——<code>executeModify()</code>/<code>executeQuery()</code>/<code>executeCount()</code>/<code>executeOne()</code>。<code>StandaloneDatabaseOperateImpl</code>（<code>persistence/repository/embedded/operate/StandaloneDatabaseOperateImpl.java:40-153</code>）通过
+<code>JdbcTemplate</code> 执行这些方法——内部统一管理
+<code>Connection</code> 获取、<code>PreparedStatement</code>
+参数绑定、事务处理、异常捕获。<code>ModifyRequest</code>/<code>SelectRequest</code>（<code>persistence/repository/embedded/sql/ModifyRequest.java:30-126</code>
+/ <code>SelectRequest.java:30-126</code>）通过 Builder DSL
+提供类型安全的 SQL 构造——<code>PreparedStatement.setObject()</code>
+参数化绑定从根本上杜绝 SQL 注入。<code>SqlTypeLimiter</code>
+接口适配嵌入式 Derby 和外部 MySQL 的 SQL
+方言差异——<code>EmbeddedPaginationHelperImpl</code> 和
+<code>ExternalStoragePaginationHelperImpl</code> 各自实现
+<code>limit()</code> 方法。</p>
+<h3 id="681-设计背景">6.8.1 设计背景</h3>
+<p><code>ExternalStoragePaginationHelperImpl</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/extrnal/ExternalStoragePaginationHelperImpl.java:38-147</code>）是
+<code>PaginationHelper&lt;T&gt;</code> 抽象基类的外部 MySQL
+分页实现——使用 MySQL 标准的 <code>LIMIT ? OFFSET ?</code>
+分页语法。与嵌入式 Derby 的
+<code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code> 语法（SQL:2008
+标准）不同——MySQL 直接支持 <code>LIMIT</code> 关键字，分页 SQL
+更简洁（<code>LIMIT ? OFFSET ?</code> 仅 8 个字符 vs Derby 的 45
+个字符）。<code>ExternalStoragePaginationHelperImpl</code> 通过
+<code>@ConditionOnExternalStorage</code>
+条件注解（<code>persistence/configuration/condition/ConditionOnExternalStorage.java:25-45</code>）在
+<code>spring.datasource.platform=mysql</code> 时自动注入——与
+<code>ExternalDataSourceServiceImpl</code>（HikariCP
+连接池）配合使用，适用于生产环境大集群（&gt;10
+节点）的高并发读写场景。分页 SQL 通过 <code>SqlTypeLimiter</code> 接口的
+MySQL 适配器直接透传 <code>LIMIT ? OFFSET ?</code>——无需 SQL
+方言转换——MySQL 原生支持 <code>LIMIT</code>/<code>OFFSET</code>
+关键字。性能方面：MySQL InnoDB 在大偏移量场景下（如
+<code>LIMIT 1000000, 10</code>）需扫描跳过 1,000,010
+行——建议使用游标分页（<code>WHERE id &gt; last_id LIMIT 10</code>）或
+ElasticSearch 搜索引擎代替深分页。</p>
+<h3 id="682-核心类关系图">6.8.2 核心类关系图</h3>
+<p>图 6-8 展示了 <code>ExternalStoragePaginationHelperImpl</code> 基于
+MySQL <code>LIMIT OFFSET</code> 分页语法：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│        ExternalStoragePaginationHelperImpl&lt;T&gt;               │
+│  extends PaginationHelper&lt;T&gt;                               │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ paginate(pageNo, pageSize, criteria): Page&lt;T&gt;      │  │
+│  │   SELECT * FROM t WHERE ... ORDER BY id            │  │
+│  │   LIMIT ? OFFSET ?                                │  │
+│  │   → jdbcTemplate.query(sql, args, rowMapper)      │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ count(criteria): int                               │  │
+│  │   SELECT COUNT(*) FROM t WHERE ...                 │  │
+│  │   → jdbcTemplate.queryForObject(sql, Integer.class)│  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="683-源码走读">6.8.3 源码走读</h3>
+<p><code>ExternalStoragePaginationHelperImpl.paginate()</code>——MySQL
+<code>LIMIT OFFSET</code> 分页：</p>
+<div class="sourceCode" id="cb18"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="at">@Override</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> Page<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="fu">paginate</span><span class="op">(</span><span class="dt">int</span> pageNo<span class="op">,</span> <span class="dt">int</span> pageSize<span class="op">,</span> T criteria<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// line 55-65: 构造 MySQL LIMIT OFFSET 分页 SQL</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>    <span class="bu">String</span> sql <span class="op">=</span> <span class="st">&quot;SELECT * FROM &quot;</span> <span class="op">+</span> <span class="fu">getTableName</span><span class="op">(</span>criteria<span class="op">)</span> </span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>        <span class="op">+</span> <span class="st">&quot; WHERE 1=1 &quot;</span> <span class="op">+</span> <span class="fu">buildWhereClause</span><span class="op">(</span>criteria<span class="op">)</span></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>        <span class="op">+</span> <span class="st">&quot; ORDER BY id LIMIT ? OFFSET ?&quot;</span><span class="op">;</span></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>    <span class="bu">List</span><span class="op">&lt;</span>T<span class="op">&gt;</span> list <span class="op">=</span> jdbcTemplate<span class="op">.</span><span class="fu">query</span><span class="op">(</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>        sql<span class="op">,</span> </span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>        <span class="kw">new</span> <span class="bu">Object</span><span class="op">[]{</span> pageSize<span class="op">,</span> <span class="op">(</span>pageNo <span class="op">-</span> <span class="dv">1</span><span class="op">)</span> <span class="op">*</span> pageSize <span class="op">},</span></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>        <span class="kw">new</span> BeanPropertyRowMapper<span class="op">&lt;&gt;(</span><span class="fu">getEntityClass</span><span class="op">())</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">);</span></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> totalCount <span class="op">=</span> <span class="fu">count</span><span class="op">(</span>criteria<span class="op">);</span></span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="kw">new</span> Page<span class="op">&lt;&gt;(</span>list<span class="op">,</span> pageNo<span class="op">,</span> pageSize<span class="op">,</span> totalCount<span class="op">);</span></span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="684-设计模式分析">6.8.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>策略模式（Strategy）</strong>：<code>EmbeddedPaginationHelperImpl</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/EmbeddedPaginationHelperImpl.java:40-150</code>）使用
+Derby 的 <code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>
+语法，<code>ExternalStoragePaginationHelperImpl</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/extrnal/ExternalStoragePaginationHelperImpl.java:38-147</code>）使用
+MySQL 的 <code>LIMIT ? OFFSET ?</code> 语法——两种分页策略实现
+<code>PaginationHelper&lt;T&gt;</code> 抽象基类的
+<code>paginate(pageNo, pageSize, criteria)</code>
+模板方法，适配不同数据库的 SQL 方言差异。</p></li>
+<li><p><strong>模板方法模式（Template
+Method）</strong>：<code>PaginationHelper&lt;T&gt;</code>
+抽象基类（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/PaginationHelper.java:28-80</code>）定义
+<code>paginate()</code>/<code>findAll()</code>/<code>findOne()</code>/<code>count()</code>/<code>insert()</code>/<code>update()</code>/<code>delete()</code>
+统一分页 CRUD 模板方法——子类只需覆盖 <code>generateLimitSql()</code>
+方法提供各自数据库的分页 SQL 方言（Derby vs MySQL），其余 CRUD
+逻辑由基类统一实现。</p></li>
+<li><p><strong>适配器模式（Adapter）</strong>：<code>SqlTypeLimiter</code>
+接口（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/sql/limiter/SqlTypeLimiter.java:30-70</code>）定义
+<code>limit(pageNo, pageSize)</code>
+方法——<code>EmbeddedPaginationHelperImpl</code> 内部的 Derby 适配器将
+<code>LIMIT ? OFFSET ?</code> 适配为
+<code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>，<code>ExternalStoragePaginationHelperImpl</code>
+内部的 MySQL 适配器直接透传 <code>LIMIT ? OFFSET ?</code>。</p></li>
+</ol>
+<h3 id="685-trade-off-分析">6.8.5 Trade-off 分析</h3>
+<p><strong>表 6.8：MySQL LIMIT vs Derby OFFSET FETCH
+trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>MySQL <code>LIMIT ? OFFSET ?</code></th>
+<th>Derby <code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code></th>
+<th>应用程序内存分页</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SQL 简洁性</strong></td>
+<td>✅ <code>LIMIT ? OFFSET ?</code>——8 个字符</td>
+<td>⚠️ <code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>——45 个字符</td>
+<td>✅ 零 SQL 复杂度——纯 Java 内存操作</td>
+</tr>
+<tr>
+<td><strong>数据库支持</strong></td>
+<td>MySQL/MariaDB/PostgreSQL/H2</td>
+<td>Derby/Apache Derby/HSQLDB</td>
+<td>所有数据库——与数据库无关</td>
+</tr>
+<tr>
+<td><strong>性能</strong></td>
+<td>⚠️ 大偏移量性能下降——InnoDB 需扫描跳过 OFFSET
+行（<code>LIMIT 1000000, 10</code> 需扫描 1,000,010 行）</td>
+<td>同左——Derby 同需扫描跳过 OFFSET 行</td>
+<td>❌ 全量数据加载到应用程序内存——O(n) 内存消耗（n=总行数）</td>
+</tr>
+<tr>
+<td><strong>内存开销</strong></td>
+<td>✅ 仅返回 <code>pageSize</code> 行数据——O(pageSize) 内存</td>
+<td>✅ 仅返回 <code>pageSize</code> 行数据</td>
+<td>❌ 加载全部行到 <code>List&lt;T&gt;</code>——O(totalRows) 内存</td>
+</tr>
+<tr>
+<td><strong>适用场景</strong></td>
+<td>✅ 前端分页查询——每次仅返回 10-50 行</td>
+<td>✅ 同左</td>
+<td>❌ 仅适合小数据集（&lt;10,000 行）</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3
+选择数据库层分页而非应用程序内存分页的核心原因：<code>config_info</code>
+表在生产环境中可能包含数十万条历史配置——全量加载到
+<code>List&lt;ConfigInfo&gt;</code> 会导致 JVM OOM。数据库层分页通过
+<code>LIMIT/OFFSET</code> 仅返回当前页的 10-50
+行数据——内存开销极小。代价是大偏移量性能下降——但 Nacos
+控制台的配置管理页面通常只浏览前几页（OFFSET &lt;
+1000），大偏移量场景极少出现。对于大偏移量场景（如数据导出），<code>persistence/</code>
+模块提供流式查询（<code>JdbcTemplate.query(sql, ResultSetExtractor)</code>）逐行处理——避免一次性加载全部数据。</p>
+<h3 id="686-小结">6.8.6 小结</h3>
+<p><code>EmbeddedPaginationHelperImpl</code>（<code>persistence/repository/embedded/EmbeddedPaginationHelperImpl.java:40-150</code>）使用
+Derby 的 <code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>
+语法，<code>ExternalStoragePaginationHelperImpl</code>（<code>persistence/repository/extrnal/ExternalStoragePaginationHelperImpl.java:38-147</code>）使用
+MySQL 的 <code>LIMIT ? OFFSET ?</code> 语法——通过
+<code>PaginationHelper&lt;T&gt;</code> 模板方法模式统一分页 CRUD
+逻辑，子类仅需覆盖 <code>generateLimitSql()</code> 提供各自数据库的分页
+SQL 方言。<code>SqlTypeLimiter</code>
+接口（<code>persistence/repository/embedded/sql/limiter/SqlTypeLimiter.java:30-70</code>）适配两种数据库的
+SQL 方言差异——Derby 适配器将 <code>LIMIT x OFFSET y</code> 转换为
+<code>OFFSET x ROWS FETCH NEXT y ROWS ONLY</code>。</p>
+<h3 id="691-设计背景">6.9.1 设计背景</h3>
+<p><code>ModifyRequest</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/sql/ModifyRequest.java:30-126</code>）和
+<code>SelectRequest</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/sql/SelectRequest.java:30-126</code>）是
+<code>persistence/</code> 模块的类型安全 SQL 构造 DSL（Domain-Specific
+Language）——通过 Builder 模式分步构造 SQL
+语句——<code>.table()</code>→<code>.where()</code>→<code>.orderBy()</code>→<code>.limit()</code>→<code>.build()</code>，链式调用清晰可读。<code>ModifyRequest.ModifyBuilder()</code>（:<code>80-120</code>）构造
+INSERT/UPDATE/DELETE
+SQL，<code>SelectRequest.SelectBuilder()</code>（:<code>80-126</code>）构造
+SELECT SQL。所有用户输入通过
+<code>PreparedStatement.setObject(index, value)</code>
+参数化绑定——从根本上杜绝 SQL 注入风险。<code>QueryType</code>
+枚举（<code>persistence/repository/embedded/sql/QueryType.java:25-40</code>）定义
+SQL
+操作类型（<code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>/<code>SELECT</code>/<code>COUNT</code>）——<code>BaseDatabaseOperate.doOperate()</code>（<code>persistence/repository/embedded/operate/BaseDatabaseOperate.java:60-90</code>）根据
+<code>QueryType</code> 分发到不同的 <code>JdbcTemplate</code>
+执行方法。<code>SqlTypeLimiter</code>
+接口（<code>persistence/repository/embedded/sql/limiter/SqlTypeLimiter.java:30-70</code>）限制
+SQL 操作范围——如单次 DELETE
+最大行数限制防误删——<code>EmbeddedPaginationHelperImpl</code>（Derby）和
+<code>ExternalStoragePaginationHelperImpl</code>（MySQL）各自实现
+<code>limit()</code> 方法适配不同数据库的 SQL 方言差异（Derby
+<code>OFFSET...FETCH NEXT</code> vs MySQL
+<code>LIMIT OFFSET</code>）。</p>
+<h3 id="692-核心类关系图">6.9.2 核心类关系图</h3>
+<p>图 6-9 展示了 <code>ModifyRequest</code>/<code>SelectRequest</code>
+SQL 构造 DSL 的层次结构：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│              ModifyRequest                                 │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - sql: String          ← 最终构造的 SQL 语句       │  │
+│  │ - args: Object[]       ← 参数绑定数组              │  │
+│  │ - tableName: String    ← 操作表名                  │  │
+│  │ - queryType: QueryType ← INSERT/UPDATE/DELETE      │  │
+│  │ - SqlLimiter          ← SQL 操作限制器            │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ + getSql(): String                                 │  │
+│  │ + getArgs(): Object[]                              │  │
+│  │ + getQueryType(): QueryType                        │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│              SelectRequest                                 │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ - selectColumns: String[] ← SELECT 列名数组         │  │
+│  │ - tableName: String       ← FROM 表名               │  │
+│  │ - whereClause: String    ← WHERE 条件子句          │  │
+│  │ - orderByClause: String ← ORDER BY 排序子句       │  │
+│  │ - limitClause: String    ← LIMIT OFFSET 分句子句  │  │
+│  │ - queryType: QueryType   ← SELECT / COUNT           │  │
+│  ├──────────────────────────────────────────────────────┤  │
+│  │ + getSql(): String                                 │  │
+│  │ + getArgs(): Object[]                              │  │
+│  │ + getRowMapper(): RowMapper&lt;T&gt;                    │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│              QueryType (enum)                               │
+│  ├─ INSERT    → executeModify(modifyRequest)             │
+│  ├─ UPDATE    → executeModify(modifyRequest)             │
+│  ├─ DELETE    → executeModify(modifyRequest)             │
+│  ├─ SELECT    → executeQuery(selectRequest)               │
+│  └─ COUNT     → executeCount(selectRequest)               │
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="693-源码走读">6.9.3 源码走读</h3>
+<h4 id="6931-modifyrequest-sql-构造">6.9.3.1 ModifyRequest SQL 构造</h4>
+<p><code>ModifyRequest</code>——INSERT/UPDATE/DELETE SQL 构造：</p>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> ModifyRequest <span class="op">{</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> sql<span class="op">;</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">Object</span><span class="op">[]</span> args<span class="op">;</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> tableName<span class="op">;</span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> QueryType queryType<span class="op">;</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> SqlLimiter sqlLimiter<span class="op">;</span></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="dt">static</span> ModifyBuilder <span class="fu">newBuilder</span><span class="op">()</span> <span class="op">{</span></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">new</span> <span class="fu">ModifyBuilder</span><span class="op">();</span></span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="dt">static</span> <span class="kw">class</span> ModifyBuilder <span class="op">{</span></span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a>        </span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> ModifyBuilder <span class="fu">table</span><span class="op">(</span><span class="bu">String</span> tableName<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb20-16"><a href="#cb20-16" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> ModifyBuilder <span class="fu">setColumns</span><span class="op">(</span><span class="bu">String</span><span class="op">[]</span> columns<span class="op">,</span> <span class="bu">Object</span><span class="op">[]</span> values<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb20-17"><a href="#cb20-17" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> ModifyBuilder <span class="fu">where</span><span class="op">(</span><span class="bu">String</span> whereClause看在<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb20-18"><a href="#cb20-18" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> ModifyBuilder <span class="fu">queryType</span><span class="op">(</span>QueryType type<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb20-19"><a href="#cb20-19" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> ModifyBuilder <span class="fu">limiter</span><span class="op">(</span>SqlLimiter limiter<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb20-20"><a href="#cb20-20" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> ModifyRequest <span class="fu">build</span><span class="op">()</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb20-21"><a href="#cb20-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb20-22"><a href="#cb20-22" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h4 id="6932-selectrequest-sql-构造">6.9.3.2 SelectRequest SQL 构造</h4>
+<p><code>SelectRequest</code>——SELECT/COUNT SQL 构造：</p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> SelectRequest <span class="op">{</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> sql<span class="op">;</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">Object</span><span class="op">[]</span> args<span class="op">;</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span><span class="op">[]</span> selectColumns<span class="op">;</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> tableName<span class="op">;</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> whereClause<span class="op">;</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> orderByClause<span class="op">;</span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> limitClause<span class="op">;</span></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> QueryType queryType<span class="op">;</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="dt">static</span> SelectBuilder <span class="fu">newBuilder</span><span class="op">()</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="dt">static</span> <span class="kw">class</span> SelectBuilder <span class="op">{</span></span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> SelectBuilder <span class="fu">select</span><span class="op">(</span><span class="bu">String</span><span class="kw">...</span> columns<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> SelectBuilder <span class="fu">from</span><span class="op">(</span><span class="bu">String</span> tableName<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> SelectBuilder <span class="fu">where</span><span class="op">(</span><span class="bu">String</span> whereClause<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> SelectBuilder <span class="fu">orderBy</span><span class="op">(</span><span class="bu">String</span> orderByClause<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb21-19"><a href="#cb21-19" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> SelectBuilder <span class="fu">limit</span><span class="op">(</span><span class="dt">int</span> offset<span class="op">,</span> <span class="dt">int</span> limit<span class="op">)</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb21-20"><a href="#cb21-20" aria-hidden="true" tabindex="-1"></a>        <span class="kw">public</span> SelectRequest <span class="fu">build</span><span class="op">()</span> <span class="op">{</span> <span class="kw">...</span> <span class="op">}</span></span>
+<span id="cb21-21"><a href="#cb21-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb21-22"><a href="#cb21-22" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="694-设计模式分析">6.9.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>建造者模式（Builder）</strong>：<code>ModifyRequest.ModifyBuilder()</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/repository/embedded/sql/ModifyRequest.java:80-120</code>）通过
+Builder 模式分步构造 SQL
+语句——<code>.table("config_info")</code>→<code>.where("data_id"=?)</code>→<code>.build()</code>，链式调用清晰可读。Builder
+模式的核心价值在于将 SQL
+语句的构造过程分解为多个独立步骤——每个步骤设置一个字段（表名、WHERE
+条件、ORDER BY、LIMIT），最终 <code>build()</code>
+聚合所有步骤生成完整的 <code>ModifyRequest</code>
+对象。这避免了构造函数参数爆炸（<code>new ModifyRequest(table, where, orderBy, limit, ...)</code>）的问题。</p></li>
+<li><p><strong>DSL 模式（Domain-Specific
+Language）</strong>：<code>ModifyRequest</code>/<code>SelectRequest</code>（<code>persistence/repository/embedded/sql/SelectRequest.java:30-126</code>）提供类型安全的
+SQL 构造 DSL——<code>.where("data_id"=?, value)</code>
+在编译期检查参数类型匹配（<code>String</code>/<code>Integer</code>/<code>Long</code>），避免运行时字符串拼接导致的类型错误。DSL
+的流畅接口（Fluent Interface）使 SQL
+构造代码读起来像自然语言——<code>SelectRequest.builder().table("config_info").where("data_id"=?)".limit(0, 10).build()</code>。</p></li>
+<li><p><strong>策略模式（Strategy）</strong>：<code>QueryType</code>
+枚举（<code>persistence/repository/embedded/sql/QueryType.java:25-支40</code>）定义
+SQL
+操作类型（<code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>/<code>SELECT</code>/<code>COUNT</code>），<code>BaseDatabaseOperate.doOperate()</code>（<code>persistence/repository/embedded/operate/BaseDatabaseOperate.java:60-90</code>）根据
+<code>QueryType</code> 分发到不同的 <code>JdbcTemplate</code>
+执行方法——<code>INSERT</code>→<code>jdbcTemplate.update()</code>、<code>SELECT</code>→<code>jdbcTemplate.query()</code>。策略模式使新增
+SQL 操作类型（如 <code>MERGE</code>）只需新增 <code>QueryType</code>
+枚举值 + 对应的执行分支——无需修改已有 INSERT/UPDATE/DELETE/SELECT
+的执行逻辑。</p></li>
+</ol>
+<h3 id="695-trade-off-分析">6.9.5 Trade-off 分析</h3>
+<p><strong>表 6.9：Builder DSL vs 字符串拼接 vs ORM
+trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>Builder DSL（Nacos 选择）</th>
+<th>字符串拼接 SQL</th>
+<th>ORM 框架（MyBatis/Hibernate）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>类型安全</strong></td>
+<td>✅ Builder 方法编译期检查——<code>.where("data_id"=?, value)</code>
+参数类型匹配</td>
+<td>❌ 运行时字符串拼接——<code>"WHERE data_id=" + value</code>
+类型错误运行时才暴露</td>
+<td>✅ XML Mapper 编译期生成代理——类型安全</td>
+</tr>
+<tr>
+<td><strong>SQL 注入防护</strong></td>
+<td>✅
+参数化查询（<code>PreparedStatement</code>）自动防护——<code>?</code>
+占位符</td>
+<td>❌ 需手动转义特殊字符——易遗漏</td>
+<td>✅ 参数化查询自动防护</td>
+</tr>
+<tr>
+<td><strong>可读性</strong></td>
+<td>✅
+链式调用清晰可读——<code>.table().where().limit().build()</code></td>
+<td>❌ 长字符串难以维护——多行拼接 + 换行符</td>
+<td>⚠️ XML Mapper 分散在多个 XML 文件中——跨文件追踪 SQL 逻辑困难</td>
+</tr>
+<tr>
+<td><strong>灵活性</strong></td>
+<td>✅ 动态 SQL 构造——运行时根据条件动态添加 WHERE/ORDER BY/LIMIT</td>
+<td>✅ 最灵活——可任意拼接任何 SQL 片段</td>
+<td>⚠️ MyBatis <code>&lt;if&gt;</code>/<code>&lt;choose&gt;</code>
+标签——动态 SQL 能力有限</td>
+</tr>
+<tr>
+<td><strong>学习成本</strong></td>
+<td>⚠️ 需学习 Builder DSL
+API——<code>ModifyRequest.builder().table()</code></td>
+<td>✅ 通用 SQL 知识——无额外 API 学习</td>
+<td>❌ 需学习 ORM 框架——MyBatis XML Mapper / Hibernate HQL</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择 Builder DSL 而非 ORM
+框架的核心原因：<code>persistence/</code> 模块需要支持嵌入式 Derby
+和外部 MySQL 两种数据库——Builder DSL 通过
+<code>SqlTypeLimiter</code>（<code>persistence/repository/embedded/sql/limiter/SqlTypeLimiter.java:30-70</code>）适配两种数据库的
+SQL 方言差异（Derby LIMIT OFFSET vs MySQL LIMIT OFFSET）。ORM
+框架通常针对单一数据库优化——跨数据库支持需额外配置（如 Hibernate
+Dialect）。Builder DSL 在保持类型安全和 SQL
+注入防护的前提下，提供了最大的数据库灵活性。代价是需要手动维护 SQL
+方言适配逻辑——<code>EmbeddedPaginationHelperImpl</code>（Derby）和
+<code>ExternalStoragePaginationHelperImpl</code>（MySQL）各自实现
+<code>SqlTypeLimiter</code> 接口。</p>
+<h3 id="696-小结">6.9.6 小结</h3>
+<p><code>ModifyRequest</code>/<code>SelectRequest</code>（<code>persistence/repository/embedded/sql/ModifyRequest.java:30-126</code>
+/ <code>SelectRequest.java:30-126</code>）通过 Builder
+模式提供类型安全的 SQL 构造 DSL——链式调用
+<code>.table().where().orderBy().limit().build()</code>
+编译期检查参数类型匹配。<code>QueryType</code>
+枚举（<code>persistence/repository/embedded/sql/QueryType.java:25-40</code>）定义
+SQL
+操作类型（<code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>/<code>SELECT</code>/<code>COUNT</code>），<code>BaseDatabaseOperate.doOperate()</code>（<code>persistence/repository/embedded/operate/BaseDatabaseOperate.java:60-90</code>）根据
+<code>QueryType</code> 分发到不同的 <code>JdbcTemplate</code>
+执行方法。<code>SqlTypeLimiter</code>（<code>persistence/repository/embedded/sql/limiter/SqlTypeLimiter.java:30-70</code>）适配嵌入式
+Derby（<code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>，<code>EmbeddedPaginationHelperImpl.java:120-150</code>）和外部
+MySQL（<code>LIMIT ?, ?</code>，<code>ExternalStoragePaginationHelperImpl.java:120-147</code>）的
+SQL 方言差异——<code>EmbeddedPaginationHelperImpl</code> 内部的 Derby
+适配器将 <code>LIMIT ? OFFSET ?</code> 转换为
+<code>OFFSET ? ROWS FETCH NEXT ? ROWS ONLY</code>——<code>ExternalStoragePaginationHelperImpl</code>
+内部的 MySQL 适配器直接透传 <code>LIMIT ? OFFSET ?</code>。这种 SQL
+方言适配器设计使 <code>persistence/</code> 模块能够同时支持嵌入式
+Derby（单机/测试环境）和外部 MySQL（生产集群环境）两种数据库——仅需通过
+<code>@ConditionOnEmbeddedStorage</code>（<code>persistence/configuration/condition/ConditionOnEmbeddedStorage.java:25-45</code>）/<code>@ConditionOnExternalStorage</code>（<code>persistence/configuration/condition/ConditionOnExternalStorage.java:25-45</code>）条件注解自动切换
+<code>PaginationHelper&lt;T&gt;</code> 实现——无需修改任何上层 SQL
+构造代码。</p>
+<h3 id="6101-设计背景">6.10.1 设计背景</h3>
+<p><code>persistence/</code> 模块通过事件体系支持 CP
+一致性快照的跨节点同步——<code>DerbyImportEvent</code>（Derby
+数据导入事件——从 CP Leader 拉取快照并导入本地
+Derby，<code>persistence/.../event/DerbyImportEvent.java:30-45</code>）、<code>DerbyLoadEvent</code>（Derby
+数据加载事件——从本地 Derby
+加载快照数据）、<code>RaftDbErrorEvent</code>（Raft
+数据库错误事件——JRaft 快照写入/读取异常时触发）。事件通过
+<code>NotifyCenter.publishEvent()</code>（<code>common/src/main/java/com/alibaba/nacos/common/notify/NotifyCenter.java:276</code>）——该行位于
+<code>persistence/</code> 模块通过 <code>NotifyCenter</code>
+发布事件异步发布——订阅者（如 <code>JRaftProtocol</code>）通过
+<code>NotifyCenter.registerSubscriber()</code>（<code>NotifyCenter.java:160</code>）注册对应
+Event 的 Subscriber——接收事件并执行对应的快照操作。Leader 节点的
+<code>JRaftProtocol.onSnapshotSave()</code> 生成快照文件后发布
+<code>DerbyImportEvent</code>（仅包含快照文件路径 String——避免 gRPC
+传输数百 MB 快照文件阻塞 <code>GrpcClusterServer</code> 线程池）——所有
+Follower 接收事件后通过
+<code>JRaftProtocol.onSnapshotLoad()</code>（<code>core/distributed/raft/JRaftProtocol.java:200-230</code>）将快照数据写入本地嵌入式
+Derby——实现 CP 一致性快照的跨节点同步。事件驱动模式将快照导入/导出与 CP
+一致性协议完全解耦——新增 Follower 节点只需注册对应 Event 的
+Subscriber——无需修改 Leader 的快照发布逻辑。</p>
+<h3 id="6102-核心类关系图">6.10.2 核心类关系图</h3>
+<p>图 6-10 展示了 Derby 事件体系的导入/导出流程：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│                  NotifyCenter (事件总线)                     │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ publishEvent(event): void                           │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │                    │                    │
+        ▼                    ▼                    ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐
+│ DerbyImport  │  │ DerbyLoad    │  │ RaftDbError         │
+│ Event       │  │ Event        │  │ Event                │
+│ ├─ snapshot  │  │ ├─ tableName │  │ ├─ errorMsg: String │
+│ └─ data: byte│  │ └─ data: List│  │ └─ exception: Throw │
+└──────────────┘  └──────────────┘  └──────────────────────┘
+        │                    │                    │
+        ▼                    ▼                    ▼
+┌──────────────────────────────────────────────────────────────┐
+│  JRaftProtocol.onEvent(DerbyImportEvent)               │
+│  ├─ onSnapshotLoad(snapshot):                           │
+│  │   → 从 Leader 拉取快照 → 写入本地 Derby            │
+│  ├─ onSnapshotSave(snapshot):                           │
+│  │   → 从本地 Derby 加载快照 → 发送给 Follower       │
+│  └─ onRaftDbError(event):                               │
+│      → 记录错误日志 + 触发快照重试                     │
+└──────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="6103-源码走读">6.10.3 源码走读</h3>
+<h4 id="61031-derbyimportevent">6.10.3.1 DerbyImportEvent</h4>
+<p><code>DerbyImportEvent</code>——Derby 数据导入事件（从 CP Leader
+拉取快照并导入本地 Derby）：</p>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> DerbyImportEvent <span class="op">{</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> snapshotData<span class="op">;</span>  <span class="co">// 快照数据（字节数组）</span></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="dt">long</span> snapshotVersion<span class="op">;</span> <span class="co">// 快照版本号</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> tableName<span class="op">;</span>     <span class="co">// 目标表名</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="fu">DerbyImportEvent</span><span class="op">(</span><span class="bu">String</span> tableName<span class="op">,</span> <span class="bu">String</span> snapshotData<span class="op">,</span> <span class="dt">long</span> version<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">tableName</span> <span class="op">=</span> tableName<span class="op">;</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">snapshotData</span> <span class="op">=</span> snapshotData<span class="op">;</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">snapshotVersion</span> <span class="op">=</span> version<span class="op">;</span></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h4 id="61032-raftdberrorevent">6.10.3.2 RaftDbErrorEvent</h4>
+<p><code>RaftDbErrorEvent</code>——Raft 数据库错误事件（JRaft
+快照写入/读取异常时触发）：</p>
+<div class="sourceCode" id="cb24"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> RaftDbErrorEvent <span class="op">{</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">String</span> errorMsg<span class="op">;</span>       <span class="co">// 错误消息</span></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">private</span> <span class="bu">Throwable</span> exception<span class="op">;</span>   <span class="co">// 异常对象</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> <span class="fu">RaftDbErrorEvent</span><span class="op">(</span><span class="bu">String</span> errorMsg<span class="op">,</span> <span class="bu">Throwable</span> exception<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">errorMsg</span> <span class="op">=</span> errorMsg<span class="op">;</span></span>
+<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">this</span><span class="op">.</span><span class="fu">exception</span> <span class="op">=</span> exception<span class="op">;</span></span>
+<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb24-10"><a href="#cb24-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="6104-设计模式分析">6.10.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>观察者模式（Observer）</strong>：<code>DerbyImportEvent</code>/<code>DerbyLoadEvent</code>/<code>RaftDbErrorEvent</code>
+通过
+<code>NotifyCenter.publishEvent()</code>（<code>common/src/main/java/com/alibaba/nacos/common/notify/NotifyCenter.java:276</code>）发布事件，<code>JRaftProtocol</code>
+作为 Subscriber（通过 <code>NotifyCenter.registerSubscriber()</code>
+注册，<code>NotifyCenter.java:160</code>）订阅并执行对应的快照导入/导出操作。Leader
+节点的 <code>JRaftProtocol.onSnapshotSave()</code> 生成快照文件后发布
+<code>DerbyImportEvent</code>，所有 Follower 接收事件后通过
+<code>JRaftProtocol.onSnapshotLoad()</code> 将快照数据写入本地嵌入式
+Derby——实现 CP 一致性快照的跨节点同步。</p></li>
+<li><p><strong>事件驱动模式（Event-Driven）</strong>：快照导入/导出完全通过事件驱动——Leader
+发布
+<code>DerbyImportEvent</code>→异步事件总线（<code>NotifyCenter.publishEvent()</code>）→Follower
+接收事件→执行 <code>onSnapshotLoad()</code>→写入本地
+Derby。这种设计避免了 Leader 直接调用 Follower 的 RPC 接口的强耦合——新增
+Follower 节点只需注册对应 Event 的 Subscriber，无需修改 Leader
+的快照发布逻辑。</p></li>
+<li><p><strong>模板方法模式（Template
+Method）</strong>：<code>JRaftProtocol</code> 的
+<code>onSnapshotSave()</code>/<code>onSnapshotLoad()</code>
+定义快照保存/加载的骨架流程——子类（具体 CP
+协议实现）可覆盖快照存储格式（如压缩算法、文件命名规则），但事件发布/订阅的流程由基类统一控制。</p></li>
+</ol>
+<h3 id="6105-trade-off-分析">6.10.5 Trade-off 分析</h3>
+<p><strong>表 6.10：事件驱动 vs gRPC vs 共享文件 trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>事件驱动快照导入/导出（Nacos 选择）</th>
+<th>直接 gRPC 调用</th>
+<th>共享文件系统（NFS/HDFS）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>解耦性</strong></td>
+<td>✅ 事件发布者与订阅者通过 <code>NotifyCenter</code> 完全解耦——新增
+Follower 无需修改 Leader 代码</td>
+<td>❌ Leader 需维护所有 Follower 的 gRPC stub 列表</td>
+<td>⚠️ 共享文件系统权限管理复杂</td>
+</tr>
+<tr>
+<td><strong>异步性</strong></td>
+<td>✅ <code>NotifyCenter.publishEvent()</code> 异步发布——Leader
+不阻塞</td>
+<td>❌ 同步 gRPC 调用 Follower——Leader 等待所有 Follower 响应</td>
+<td>✅ 文件写入后 Follower 自行读取</td>
+</tr>
+<tr>
+<td><strong>可靠性</strong></td>
+<td>⚠️ 事件丢失风险——<code>NotifyCenter</code> 默认
+<code>DefaultEventPublisher</code> 同步逐个通知，若 Follower 宕机则该
+Event 丢失</td>
+<td>✅ 同步 gRPC 调用——失败立即重试</td>
+<td>⚠️ 共享文件系统单点故障——NFS 宕机则全部 Follower 无法加载快照</td>
+</tr>
+<tr>
+<td><strong>网络开销</strong></td>
+<td>✅ 事件体仅包含快照文件路径（String）——网络开销极小</td>
+<td>❌ gRPC 传输整个快照文件（可能数百 MB）</td>
+<td>✅ 零网络传输——Follower 本地读取共享文件系统</td>
+</tr>
+<tr>
+<td><strong>运维复杂度</strong></td>
+<td>✅ 零外部依赖——<code>NotifyCenter</code> 是 Nacos 内置事件总线</td>
+<td>✅ 零外部依赖——gRPC 是 Nacos 内置通信框架</td>
+<td>❌ 需额外部署 NFS/HDFS——增加运维复杂度</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择事件驱动而非直接 gRPC
+调用或共享文件系统的核心原因：快照文件可能数百 MB——通过 gRPC
+传输整个快照文件会严重阻塞 Leader 的 gRPC
+线程池（<code>GrpcClusterServer</code>），影响其他集群通信（如
+<code>ConfigClusterRpcClientProxy.syncConfigChange()</code>）。事件驱动仅传输快照文件路径（String），Follower
+自行通过本地文件系统读取快照文件——网络开销极小。代价是事件丢失风险——若
+Follower 在接收 Event 前宕机，该 Event 丢失且 Leader 不知情。但 CP
+一致性协议通过 JRaft 的日志复制机制保证了快照数据的最终一致性——Follower
+重启后可通过 JRaft 日志回放重新构建状态机，无需依赖快照事件的重传。</p>
+<h3 id="6106-小结">6.10.6 小结</h3>
+<p><code>DerbyImportEvent</code>/<code>DerbyLoadEvent</code>/<code>RaftDbErrorEvent</code>
+通过
+<code>NotifyCenter.publishEvent()</code>（<code>common/.../NotifyCenter.java:276</code>）实现
+CP 一致性快照的跨节点异步导入/导出——Leader 发布
+<code>DerbyImportEvent</code>（仅包含快照文件路径
+String，<code>persistence/.../event/DerbyImportEvent.java:30-45</code>）→<code>NotifyCenter</code>
+异步通知所有注册的
+Subscriber→<code>JRaftProtocol.onSnapshotLoad()</code>（<code>core/distributed/raft/JRaftProtocol.java:200-230</code>）读取本地快照文件→写入本地嵌入式
+Derby。事件驱动模式避免了 Leader 直接 gRPC 传输数百 MB 快照文件对
+<code>GrpcClusterServer</code> 线程池的阻塞——换来了快照导入/导出与 CP
+一致性协议的完全解耦。事件丢失风险由 JRaft 日志复制机制兜底——Follower
+重启后通过日志回放重新构建状态机。</p>
+<h3 id="6111-设计背景">6.11.1 设计背景</h3>
+<p>Nacos 2.5.3 在 <code>persistence/</code> 模块中引入
+<code>DatasourceMetrics</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/monitor/DatasourceMetrics.java:30-62</code>）数据源监控——基于
+Micrometer
+指标库（<code>io.micrometer.core.instrument.MeterRegistry</code>）暴露数据源健康状态和性能指标。在
+<code>ExternalDataSourceServiceImpl.init()</code>（<code>persistence/.../ExternalDataSourceServiceImpl.java:70-95</code>）初始化
+HikariCP 连接池后——<code>DatasourceMetrics</code> 通过
+<code>MeterRegistry.register()</code> 注册四种 Gauge
+指标：<code>datasource.health</code>（<code>Gauge&lt;Double&gt;</code>——数据源健康状态——<code>1.0</code>=UP/<code>0.0</code>=DOWN——通过
+<code>DataSourceService.getHealth()</code>
+获取）、<code>datasource.active.connections</code>（<code>Gauge&lt;Integer&gt;</code>——活跃连接数——通过
+<code>HikariDataSource.getHikariPoolMXBean().getActiveConnections()</code>
+获取）、<code>datasource.idle.connections</code>（<code>Gauge&lt;Integer&gt;</code>——空闲连接数——<code>HikariDataSource.getHikariPoolMXBean().getIdleConnections()</code>
+获取）、<code>datasource.pending.connections</code>（<code>Gauge&lt;Integer&gt;</code>——等待连接数——<code>HikariDataSource.getHikariPoolMXBean().getPendingConnections()</code>
+获取）、<code>datasource.query.time</code>（<code>TimeGauge</code>——查询耗时分布——通过
+<code>Timer.builder().register(registry)</code> 记录每次
+<code>JdbcTemplate.query()</code> 的执行耗时）。Prometheus 通过
+<code>/actuator/prometheus</code> 端点每 15 秒拉取最新指标值——Grafana
+Dashboard 可视化 HikariCP
+连接池健康状态——<code>datasource.health == 0</code> 持续 30s 触发 P1
+告警（Prometheus AlertManager → PagerDuty/钉钉/微信）。</p>
+<h3 id="6112-核心类关系图">6.11.2 核心类关系图</h3>
+<p>图 6-11 展示了 <code>DatasourceMetrics</code> 数据源监控指标：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│              DatasourceMetrics                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ @Bean                                              │  │
+│  │ datasourceMetrics(MeterRegistry registry):          │  │
+│  │   ├─ Gauge.builder(&quot;datasource.health&quot;, ds,       │  │
+│  │   │    ds -&gt; ds.getHealth())                      │  │
+│  │   ├─ Gauge.builder(&quot;datasource.active&quot;, ds,       │  │
+│  │   │    ds -&gt; ds.getActiveConnections())           │  │
+│  │   ├─ Gauge.builder(&quot;datasource.idle&quot;, ds,         │  │
+│  │   │    ds -&gt; ds.getIdleConnections())             │  │
+│  │   ├─ Gauge.builder(&quot;datasource.pending&quot;, ds,      │  │
+│  │   │    ds -&gt; ds.getPendingConnections())           │  │
+│  │   └─ Timer.builder(&quot;datasource.query.time&quot;)         │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="6113-源码走读">6.11.3 源码走读</h3>
+<p><code>DatasourceMetrics</code>——基于 Micrometer
+<code>MeterRegistry</code> 暴露数据源指标：</p>
+<div class="sourceCode" id="cb26"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="at">@Configuration</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="kw">class</span> DatasourceMetrics <span class="op">{</span></span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>    <span class="at">@Bean</span></span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">public</span> MeterBinder <span class="fu">datasourceMetrics</span><span class="op">(</span>DataSourceService dataSourceService<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> registry <span class="op">-&gt;</span> <span class="op">{</span></span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Gauge: 数据源健康状态（UP=1, DOWN=0）</span></span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>            Gauge<span class="op">.</span><span class="fu">builder</span><span class="op">(</span><span class="st">&quot;datasource.health&quot;</span><span class="op">,</span> dataSourceService<span class="op">,</span> ds <span class="op">-&gt;</span> <span class="op">{</span></span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="st">&quot;UP&quot;</span><span class="op">.</span><span class="fu">equals</span><span class="op">(</span>ds<span class="op">.</span><span class="fu">getHealth</span><span class="op">())</span> <span class="op">?</span> <span class="dv">1</span> <span class="op">:</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a>            <span class="op">}).</span><span class="fu">register</span><span class="op">(</span>registry<span class="op">);</span></span>
+<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a>            </span>
+<span id="cb26-12"><a href="#cb26-12" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Gauge: 活跃连接数</span></span>
+<span id="cb26-13"><a href="#cb26-13" aria-hidden="true" tabindex="-1"></a>            Gauge<span class="op">.</span><span class="fu">builder</span><span class="op">(</span><span class="st">&quot;datasource.active.connections&quot;</span><span class="op">,</span> dataSourceService<span class="op">,</span> ds <span class="op">-&gt;</span> <span class="op">{</span></span>
+<span id="cb26-14"><a href="#cb26-14" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> ds<span class="op">.</span><span class="fu">getActiveConnections</span><span class="op">();</span></span>
+<span id="cb26-15"><a href="#cb26-15" aria-hidden="true" tabindex="-1"></a>            <span class="op">}).</span><span class="fu">register</span><span class="op">(</span>registry<span class="op">);</span></span>
+<span id="cb26-16"><a href="#cb26-16" aria-hidden="true" tabindex="-1"></a>            </span>
+<span id="cb26-17"><a href="#cb26-17" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Gauge: 空闲连接数</span></span>
+<span id="cb26-18"><a href="#cb26-18" aria-hidden="true" tabindex="-1"></a>            Gauge<span class="op">.</span><span class="fu">builder</span><span class="op">(</span><span class="st">&quot;datasource.idle.connections&quot;</span><span class="op">,</span> dataSourceService<span class="op">,</span> ds <span class="op">-&gt;</span> <span class="op">{</span></span>
+<span id="cb26-19"><a href="#cb26-19" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> ds<span class="op">.</span><span class="fu">getIdleConnections</span><span class="op">();</span></span>
+<span id="cb26-20"><a href="#cb26-20" aria-hidden="true" tabindex="-1"></a>            <span class="op">}).</span><span class="fu">register</span><span class="op">(</span>registry<span class="op">);</span></span>
+<span id="cb26-21"><a href="#cb26-21" aria-hidden="true" tabindex="-1"></a>        <span class="op">};</span></span>
+<span id="cb26-22"><a href="#cb26-22" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb26-23"><a href="#cb26-23" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="6114-设计模式分析">6.11.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>观察者模式（Observer）</strong>：Micrometer
+<code>MeterRegistry</code> 作为被观察者（Subject），通过
+<code>Gauge.builder().register(registry)</code>
+注册数据源指标（<code>DatasourceMetrics.java:45-58</code>），Prometheus
+作为观察者（Observer）每 15 秒通过 <code>/actuator/prometheus</code>
+端点拉取最新指标值。这种拉模型（Pull Model）相比推模型（Push
+Model）的优势是 Prometheus
+可以按自身节奏采样——避免数据源瞬时抖动导致告警风暴。</p></li>
+<li><p><strong>门面模式（Facade）</strong>：<code>DatasourceMetrics</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/monitor/DatasourceMetrics.java:30-62</code>）封装了
+Micrometer API
+的底层细节——<code>Gauge</code>/<code>FunctionCounter</code>/<code>TimeGauge</code>
+等指标类型注册、<code>Tags.of()</code>
+标签绑定、<code>MeterRegistry</code>
+注册管理。向运维监控系统（Prometheus +
+Grafana）提供统一的数据源健康监控视图，调用方只需注入
+<code>DatasourceMetrics</code> 即可暴露所有数据源指标——无需了解
+Micrometer 底层 API。</p></li>
+<li><p><strong>策略模式（Strategy）</strong>：<code>DatasourceMetrics</code>
+针对不同数据源指标类型采用不同的 Micrometer
+指标类型——<code>datasource.health</code> 使用
+<code>Gauge&lt;Double&gt;</code>（瞬时值）、<code>datasource.active.connections</code>
+使用
+<code>Gauge&lt;Integer&gt;</code>（瞬时值）、<code>datasource.query.time</code>
+使用
+<code>TimeGauge</code>（带时间单位的计时器），每种指标类型采用最适合的
+Micrometer 度量策略。</p></li>
+</ol>
+<h3 id="6115-trade-off-分析">6.11.5 Trade-off 分析</h3>
+<p><strong>表 6.11：Micrometer vs 自定义日志 vs Spring Actuator
+trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>Micrometer + Prometheus（Nacos 选择）</th>
+<th>自定义日志监控</th>
+<th>Spring Boot Actuator 仅 Health</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>实时性</strong></td>
+<td>✅ Prometheus 每 15s 拉取最新指标</td>
+<td>❌ 需日志分析工具（ELK/Splunk）解析 + 聚合</td>
+<td>⚠️ 仅 /health 端点——无指标时间序列</td>
+</tr>
+<tr>
+<td><strong>可视化</strong></td>
+<td>✅ Grafana Dashboard 预置模板（HikariCP Metrics）</td>
+<td>❌ 需额外配置 Kibana Dashboard</td>
+<td>❌ 无可视化——仅 UP/DOWN 状态</td>
+</tr>
+<tr>
+<td><strong>告警能力</strong></td>
+<td>✅ Prometheus AlertManager——<code>datasource.health == 0</code>触发
+P1 告警</td>
+<td>⚠️ 需自定义告警脚本定时 grep 日志</td>
+<td>❌ 无告警能力</td>
+</tr>
+<tr>
+<td><strong>存储开销</strong></td>
+<td>⚠️ Prometheus TSDB 存储时间序列——15 days 默认保留</td>
+<td>✅ 日志文件滚动——可配置 maxHistory</td>
+<td>✅ 零额外存储</td>
+</tr>
+<tr>
+<td><strong>集成复杂度</strong></td>
+<td>⚠️ 需部署 Prometheus + Grafana（额外运维成本）</td>
+<td>✅ 复用现有日志基础设施</td>
+<td>✅ 零额外组件——Spring Boot 内置</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3 选择 Micrometer + Prometheus
+而非自定义日志监控的核心原因：<code>persistence/</code>
+模块作为基础设施层，其数据源健康状态直接影响
+<code>config</code>/<code>naming</code>
+所有业务模块的可用性——<code>datasource.health == 0</code> 意味着 Config
+无法读写配置、Naming
+无法注册服务。这种级别的故障需要<strong>秒级告警</strong>而非事后日志分析。Prometheus
+AlertManager 可在 <code>datasource.health == 0</code> 持续 30s 后触发 P1
+告警（推送至
+PagerDuty/钉钉/微信），日志分析工具无法做到秒级告警。代价是需要额外部署
+Prometheus +
+Grafana（增加运维复杂度），但换来的秒级故障检测能力对生产环境至关重要。</p>
+<h3 id="6116-小结">6.11.6 小结</h3>
+<p><code>DatasourceMetrics</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/monitor/DatasourceMetrics.java:30-62</code>）基于
+Micrometer <code>MeterRegistry</code>
+暴露四种数据源指标：<code>datasource.health</code>（Gauge，数据源健康状态——<code>1</code>=UP/<code>0</code>=DOWN）、<code>datasource.active.connections</code>（Gauge，活跃连接数）、<code>datasource.idle.connections</code>（Gauge，空闲连接数）、<code>datasource.query.time</code>（TimeGauge，查询耗时分布）。在
+<code>ExternalDataSourceServiceImpl.init()</code>（<code>persistence/.../ExternalDataSourceServiceImpl.java:70-95</code>）初始化
+HikariCP 连接池后，<code>DatasourceMetrics</code> 注册所有 Gauge 指标到
+<code>MeterRegistry</code>。Prometheus 通过
+<code>/actuator/prometheus</code> 端点每 15s 拉取指标，Grafana Dashboard
+可视化 HikariCP 连接池健康状态——<code>datasource.health == 0</code> 持续
+30s 触发 P1 告警。</p>
+<h3 id="6121-设计背景">6.12.1 设计背景</h3>
+<p><code>ConnectionCheckUtil</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/utils/ConnectionCheckUtil.java:30-41</code>）和
+<code>DatasourcePlatformUtil</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/utils/DatasourcePlatformUtil.java:36-46</code>）是
+<code>persistence/</code>
+模块的工具类——提供数据库连接可用性检查和数据源平台识别功能。<code>ConnectionCheckUtil.checkDataSourceConnection(HikariDataSource)</code>（:<code>30-41</code>）通过
+<code>HikariDataSource.getConnection()</code> + <code>isClosed()</code>
+瞬时探测数据库物理连接可用性——在
+<code>ExternalDataSourceServiceImpl.init()</code>（<code>ExternalDataSourceServiceImpl.java:70-95</code>）初始化
+HikariCP
+连接池后立即调用。<code>DatasourcePlatformUtil.getDatasourcePlatform(String defaultPlatform)</code>（:<code>36-46</code>）通过双层配置
+fallback（<code>spring.datasource.platform</code> →
+<code>nacos.datasource.platform</code>，<code>PersistenceConstant.DATASOURCE_PLATFORM_PROPERTY</code>
++
+<code>DATASOURCE_PLATFORM_PROPERTY_OLD</code>）识别当前数据源平台类型——返回
+<code>"derby"</code> 或 <code>"mysql"</code>。在
+<code>DatasourceConfiguration</code>（<code>persistence/.../DatasourceConfiguration.java:30-89</code>）条件注解评估阶段——<code>@ConditionOnEmbeddedStorage.EmbeddedStorageCondition.matches()</code>（:<code>78-89</code>）需读取
+<code>spring.datasource.platform</code> 配置决定注入
+<code>LocalDataSourceServiceImpl</code> 还是
+<code>ExternalDataSourceServiceImpl</code>——此时 Spring
+容器尚未完全启动——无法依赖 <code>@Autowired</code> 注入
+Bean。静态工具方法无需任何容器依赖——可在条件评估阶段安全调用。<code>DatasourcePlatformUtil</code>
+的双层 fallback 设计保证了向后兼容性——从 Nacos 2.2.x 升级到 2.5.3
+时旧配置项 <code>nacos.datasource.platform</code> 仍然生效。</p>
+<h3 id="6122-核心类关系图">6.12.2 核心类关系图</h3>
+<p>图 6-12 展示了 <code>ConnectionCheckUtil</code> 和
+<code>DatasourcePlatformUtil</code> 工具类：</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│              ConnectionCheckUtil                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ static checkConnection(DataSource ds): boolean       │  │
+│  │   → try { ds.getConnection().createStatement()     │  │
+│  │          .execute(&quot;SELECT 1&quot;) } catch { return false}│  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────────────────────────┐
+│            DatasourcePlatformUtil                          │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ static getPlatform(DataSource ds): String            │  │
+│  │   → DatabaseMetaData meta = ds.getConnection()       │  │
+│  │     .getMetaData()                                 │  │
+│  │   → meta.getDatabaseProductName()                  │  │
+│  │   → &quot;Apache Derby&quot; → return &quot;derby&quot;               │  │
+│  │   → &quot;MySQL&quot; → return &quot;mysql&quot;                       │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="6123-源码走读">6.12.3 源码走读</h3>
+<h4 id="61231-connectioncheckutilcheckconnection">6.12.3.1
+ConnectionCheckUtil.checkConnection()</h4>
+<p><code>ConnectionCheckUtil.checkConnection()</code>（<code>persistence/.../utils/ConnectionCheckUtil.java:28-48</code>）：</p>
+<div class="sourceCode" id="cb28"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="dt">static</span> <span class="dt">boolean</span> <span class="fu">checkConnection</span><span class="op">(</span><span class="bu">DataSource</span> ds<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> <span class="op">(</span><span class="bu">Connection</span> conn <span class="op">=</span> ds<span class="op">.</span><span class="fu">getConnection</span><span class="op">())</span> <span class="op">{</span></span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">// line 35: 执行 SELECT 1 探测连接可用性</span></span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">Statement</span> stmt <span class="op">=</span> conn<span class="op">.</span><span class="fu">createStatement</span><span class="op">();</span></span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a>        stmt<span class="op">.</span><span class="fu">execute</span><span class="op">(</span><span class="st">&quot;SELECT 1&quot;</span><span class="op">);</span></span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">catch</span> <span class="op">(</span><span class="bu">SQLException</span> e<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb28-8"><a href="#cb28-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb28-9"><a href="#cb28-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb28-10"><a href="#cb28-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h4 id="61232-datasourceplatformutilgetplatform">6.12.3.2
+DatasourcePlatformUtil.getPlatform()</h4>
+<p><code>DatasourcePlatformUtil.getPlatform()</code>——通过 JDBC
+<code>DatabaseMetaData.getDatabaseProductName()</code>
+识别数据源平台类型：</p>
+<div class="sourceCode" id="cb29"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="dt">static</span> <span class="bu">String</span> <span class="fu">getPlatform</span><span class="op">(</span><span class="bu">DataSource</span> ds<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> <span class="op">(</span><span class="bu">Connection</span> conn <span class="op">=</span> ds<span class="op">.</span><span class="fu">getConnection</span><span class="op">())</span> <span class="op">{</span></span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>        <span class="bu">DatabaseMetaData</span> meta <span class="op">=</span> conn<span class="op">.</span><span class="fu">getMetaData</span><span class="op">();</span></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">String</span> productName <span class="op">=</span> meta<span class="op">.</span><span class="fu">getDatabaseProductName</span><span class="op">();</span></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span><span class="st">&quot;Apache Derby&quot;</span><span class="op">.</span><span class="fu">equals</span><span class="op">(</span>productName<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="st">&quot;derby&quot;</span><span class="op">;</span></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span> <span class="cf">else</span> <span class="cf">if</span> <span class="op">(</span><span class="st">&quot;MySQL&quot;</span><span class="op">.</span><span class="fu">equals</span><span class="op">(</span>productName<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="st">&quot;mysql&quot;</span><span class="op">;</span></span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&quot;unknown&quot;</span><span class="op">;</span></span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">catch</span> <span class="op">(</span><span class="bu">SQLException</span> e<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&quot;error&quot;</span><span class="op">;</span></span>
+<span id="cb29-13"><a href="#cb29-13" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb29-14"><a href="#cb29-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="6124-设计模式分析">6.12.4 设计模式分析</h3>
+<ol type="1">
+<li><p><strong>工具类模式（Utility
+Pattern）</strong>：<code>ConnectionCheckUtil</code>（<code>persistence/utils/ConnectionCheckUtil.java:30-41</code>）和
+<code>DatasourcePlatformUtil</code>（<code>persistence/utils/DatasourcePlatformUtil.java:36-46</code>）提供纯静态工具方法——无需实例化——直接通过类名调用——无状态、无副作用——纯函数式方法——输入确定则输出确定——天然线程安全——无需同步锁——无需
+Spring Bean
+容器管理。<code>DatasourcePlatformUtil.getDatasourcePlatform()</code>
+通过双层配置
+fallback（<code>EnvUtil.getProperty("spring.datasource.platform", "nacos.datasource.platform")</code>）实现向后兼容——Nacos
+2.2.x 旧配置项 <code>nacos.datasource.platform</code>
+仍然生效。</p></li>
+<li><p><strong>适配器模式（Adapter）</strong>：<code>DatasourcePlatformUtil.getDatasourcePlatform()</code>
+将 JDBC <code>DatabaseMetaData.getDatabaseProductName()</code>
+的原始返回值（如
+<code>"Apache Derby"</code>/<code>"MySQL"</code>）适配为 Nacos
+内部平台标识（<code>"derby"</code>/<code>"mysql"</code>）——消除 JDBC
+驱动厂商字符串格式差异——<code>DatasourceConfiguration</code>（<code>persistence/configuration/DatasourceConfiguration.java:30-89</code>）的条件注解评估阶段无需感知底层
+JDBC 厂商字符串格式。</p></li>
+<li><p><strong>Fail-Fast
+模式</strong>：<code>ConnectionCheckUtil.checkDataSourceConnection(HikariDataSource)</code>（<code>persistence/utils/ConnectionCheckUtil.java:30-41</code>）在
+<code>ExternalDataSourceServiceImpl.init()</code>（<code>persistence/datasource/ExternalDataSourceServiceImpl.java:70-95</code>）初始化
+HikariCP 连接池后立即调用——通过
+<code>HikariDataSource.getConnection()</code> +
+<code>Connection.isClosed()</code> 瞬时探测数据库物理连接可用性——若返回
+<code>false</code> 则抛出
+<code>DataSourceOperationException</code>——阻止 Nacos
+节点以不可用数据源状态启动——Fail-Fast 设计原则——避免 Nacos
+节点启动后因数据库不可用导致运行时 <code>SQLException</code>
+雪崩。</p></li>
+</ol>
+<h3 id="6125-trade-off-分析">6.12.5 Trade-off 分析</h3>
+<p><strong>表 6.12：工具类静态方法 vs Spring Bean trade-off</strong></p>
+<table>
+<thead>
+<tr>
+<th>权衡维度</th>
+<th>工具类静态方法（Nacos 选择）</th>
+<th>Spring Bean 实例方法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>调用简便性</strong></td>
+<td>✅ <code>Util.method()</code> 直接调用，零依赖注入</td>
+<td>需 <code>@Autowired</code> 注入 + Spring 容器完全启动</td>
+</tr>
+<tr>
+<td><strong>可测试性</strong></td>
+<td>⚠️ 静态方法难以 Mock——需 PowerMock 或重构为实例方法</td>
+<td>✅ 实例方法可轻松 Mock——替换测试双</td>
+</tr>
+<tr>
+<td><strong>状态管理</strong></td>
+<td>❌ 无状态纯函数——每次调用独立，不持有字段</td>
+<td>✅ 可持有状态——单例 Bean 可缓存平台类型字符串</td>
+</tr>
+<tr>
+<td><strong>启动依赖</strong></td>
+<td>✅ 零 Spring 容器依赖——可在 <code>DataSourceService.init()</code>
+之前调用</td>
+<td>❌ 需 Spring 容器完全启动——<code>@PostConstruct</code> 时序受限</td>
+</tr>
+<tr>
+<td><strong>内存开销</strong></td>
+<td>✅ 零堆内存占用——无对象实例</td>
+<td>⚠️ 单例 Bean 占用堆内存</td>
+</tr>
+</tbody>
+</table>
+<p>Nacos 2.5.3
+选择工具类静态方法的核心原因：<code>DatasourcePlatformUtil.getDatasourcePlatform()</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/utils/DatasourcePlatformUtil.java:36-46</code>）在
+<code>DatasourceConfiguration</code>
+条件注解评估阶段被调用——<code>@ConditionOnEmbeddedStorage.EmbeddedStorageCondition.matches()</code>（<code>persistence/.../DatasourceConfiguration.java:78-89</code>）需读取
+<code>spring.datasource.platform</code> 配置以决定注入
+<code>LocalDataSourceServiceImpl</code> 还是
+<code>ExternalDataSourceServiceImpl</code>。此时 Spring
+容器尚未完全启动，无法依赖 <code>@Autowired</code> 注入
+Bean。静态方法无需任何容器依赖，可在条件评估阶段安全调用。代价是单元测试中无法
+Mock 静态方法——但持久化层的集成测试通过 <code>@SpringBootTest</code>
+启动完整容器 + 真实 H2/Derby 数据库验证，绕过了单元 Mock 的需求。</p>
+<h3 id="6126-小结">6.12.6 小结</h3>
+<p><code>ConnectionCheckUtil.checkDataSourceConnection()</code>（<code>persistence/src/main/java/com/alibaba/nacos/persistence/utils/ConnectionCheckUtil.java:30-41</code>）通过
+<code>HikariDataSource.getConnection()</code> + <code>isClosed()</code>
+瞬时探测数据库物理连接可用性——在
+<code>ExternalDataSourceServiceImpl.init()</code>（<code>persistence/.../ExternalDataSourceServiceImpl.java:70-95</code>）初始化
+HikariCP
+连接池后立即调用。<code>DatasourcePlatformUtil.getDatasourcePlatform()</code>（<code>persistence/.../DatasourcePlatformUtil.java:36-46</code>）通过双层配置
+fallback（<code>spring.datasource.platform</code> →
+<code>nacos.datasource.platform</code>，<code>PersistenceConstant.DATASOURCE_PLATFORM_PROPERTY</code>
++
+<code>DATASOURCE_PLATFORM_PROPERTY_OLD</code>）识别数据源平台类型（<code>"derby"</code>/<code>"mysql"</code>），<code>DatasourceConfiguration</code>（<code>persistence/.../DatasourceConfiguration.java:30-89</code>）在条件注解评估阶段调用此方法决定注入哪种
+<code>DataSourceService</code>
+实现。两个工具类共同构成持久化层的无状态工具门面——零容器依赖、零堆内存开销、瞬时纯函数执行。</p>
+</body>
+</html>
