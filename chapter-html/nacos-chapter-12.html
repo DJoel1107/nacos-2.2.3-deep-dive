@@ -6155,7 +6155,7 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb154-1"><a href
   服务端 onBeat() 更新 lastHeartbeatTime: ~50μs
   无需持久化 → 纯内存操作
   → 单节点 TPS: ~10,000 TPS
-  → 3o节点集群 TPS: ~30,000 TPS</code></pre>
+  → 30节点集群 TPS: ~30,000 TPS</code></pre>
 <h3 id="性能瓶颈分析">性能瓶颈分析</h3>
 <p><strong>服务注册瓶颈</strong>：</p>
 <ul>
@@ -7018,7 +7018,7 @@ class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb175-1"><a href
 <p><strong>JVM GC 日志分析命令行</strong>：</p>
 <div class="sourceCode" id="cb176"><pre
 class="sourceCode bash"><code class="sourceCode bash"><span id="cb176-1"><a href="#cb176-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 在线分析 GC 日志（无需重启服务）</span></span>
-<span id="cb176-2"><a href="#cb176-2" aria-hidden="true" tabindex="-1"></a><span class="ex">jstat</span> <span class="at">-gcutil</span> <span class="va">$(</span><span class="ex">pgrep</span> <span class="at">-f</span> nacos<span class="va">)</span> 1000 10gers</span>
+<span id="cb176-2"><a href="#cb176-2" aria-hidden="true" tabindex="-1"></a><span class="ex">jstat</span> <span class="at">-gcutil</span> <span class="va">$(</span><span class="ex">pgrep</span> <span class="at">-f</span> nacos<span class="va">)</span> 1000 10</span>
 <span id="cb176-3"><a href="#cb176-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 输出：S0 S1 E O M CCS YGC YGCT FGC FGCT GCT</span></span>
 <span id="cb176-4"><a href="#cb176-4" aria-hidden="true" tabindex="-1"></a><span class="co">#        0.00 45.23 62.18 41.52 88.19 87.32 120 1.234 3 0.567 1.801</span></span>
 <span id="cb176-5"><a href="#cb176-5" aria-hidden="true" tabindex="-1"></a></span>
@@ -7028,7 +7028,7 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb176-1"><a href
 <span id="cb176-9"><a href="#cb176-9" aria-hidden="true" tabindex="-1"></a><span class="co"># O=41.52%: 老年代使用率 41.52% → 健康状态 &lt; 70%</span></span>
 <span id="cb176-10"><a href="#cb176-10" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb176-11"><a href="#cb176-11" aria-hidden="true" tabindex="-1"></a><span class="co"># GC 实时滚动日志</span></span>
-<span id="cb176-12"><a href="#cb176-12" aria-hidden="true" tabindex="-1"></a><span class="fu">tail</span> <span class="at">-f</span> /var/log/nacos/gc.logergonomic</span>
+<span id="cb176-12"><a href="#cb176-12" aria-hidden="true" tabindex="-1"></a><span class="fu">tail</span> <span class="at">-f</span> /var/log/nacos/gc.log</span>
 <span id="cb176-13"><a href="#cb176-13" aria-hidden="true" tabindex="-1"></a><span class="co"># 示例输出：</span></span>
 <span id="cb176-14"><a href="#cb176-14" aria-hidden="true" tabindex="-1"></a><span class="co"># [GC pause (G1 Evacuation Pause) (young), 0.0123450 secs]</span></span>
 <span id="cb176-15"><a href="#cb176-15" aria-hidden="true" tabindex="-1"></a><span class="co">#    [Parallel Time: 12.0 ms, GC Workers: 4n]</span></span>
@@ -7896,7 +7896,7 @@ class="sourceCode sql"><code class="sourceCode sql"><span id="cb212-1"><a href="
 class="sourceCode ini"><code class="sourceCode ini"><span id="cb213-1"><a href="#cb213-1" aria-hidden="true" tabindex="-1"></a><span class="co"># /etc/mysql/mysql.conf.d/mysqld.cnf</span></span>
 <span id="cb213-2"><a href="#cb213-2" aria-hidden="true" tabindex="-1"></a><span class="dt">slow_query_log </span><span class="ot">=</span><span class="st"> </span><span class="dv">1</span></span>
 <span id="cb213-3"><a href="#cb213-3" aria-hidden="true" tabindex="-1"></a><span class="dt">slow_query_log_file </span><span class="ot">=</span><span class="st"> /var/log/mysql/mysql-slow.log</span></span>
-<span id="cb213-4"><a href="#cb213-4" aria-hidden="true" tabindex="-1"></a><span class="dt">long_query_time </span><span class="ot">=</span><span class="st"> 肚子</span></span>
+<span id="cb213-4"><a href="#cb213-4" aria-hidden="true" tabindex="-1"></a><span class="dt">long_query_time </span><span class="ot">=</span><span class="st"> </span><span class="dv">1</span></span>
 <span id="cb213-5"><a href="#cb213-5" aria-hidden="true" tabindex="-1"></a><span class="dt">log_queries_not_using_indexes </span><span class="ot">=</span><span class="st"> </span><span class="dv">1</span></span></code></pre></div>
 <div class="sourceCode" id="cb214"><pre
 class="sourceCode bash"><code class="sourceCode bash"><span id="cb214-1"><a href="#cb214-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 慢查询分析（MySQL 自带的 mysqldumpslow 工具）</span></span>

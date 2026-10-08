@@ -4257,7 +4257,7 @@ max_connections = 500
   服务端 onBeat() 更新 lastHeartbeatTime: ~50μs
   无需持久化 → 纯内存操作
   → 单节点 TPS: ~10,000 TPS
-  → 3o节点集群 TPS: ~30,000 TPS
+  → 30节点集群 TPS: ~30,000 TPS
 ```
 
 ### 性能瓶颈分析
@@ -4944,7 +4944,7 @@ groups:
 
 ```bash
 # 在线分析 GC 日志（无需重启服务）
-jstat -gcutil $(pgrep -f nacos) 1000 10gers
+jstat -gcutil $(pgrep -f nacos) 1000 10
 # 输出：S0 S1 E O M CCS YGC YGCT FGC FGCT GCT
 #        0.00 45.23 62.18 41.52 88.19 87.32 120 1.234 3 0.567 1.801
 
@@ -4954,7 +4954,7 @@ jstat -gcutil $(pgrep -f nacos) 1000 10gers
 # O=41.52%: 老年代使用率 41.52% → 健康状态 < 70%
 
 # GC 实时滚动日志
-tail -f /var/log/nacos/gc.logergonomic
+tail -f /var/log/nacos/gc.log
 # 示例输出：
 # [GC pause (G1 Evacuation Pause) (young), 0.0123450 secs]
 #    [Parallel Time: 12.0 ms, GC Workers: 4n]
@@ -5804,7 +5804,7 @@ EXPLAIN SELECT content FROM config_info WHERE data_id = ? AND group_id = ? AND t
 # /etc/mysql/mysql.conf.d/mysqld.cnf
 slow_query_log = 1
 slow_query_log_file = /var/log/mysql/mysql-slow.log
-long_query_time = 肚子
+long_query_time = 1
 log_queries_not_using_indexes = 1
 ```
 
