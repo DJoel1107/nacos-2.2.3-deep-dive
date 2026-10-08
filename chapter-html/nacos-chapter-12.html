@@ -7031,7 +7031,7 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb176-1"><a href
 <span id="cb176-12"><a href="#cb176-12" aria-hidden="true" tabindex="-1"></a><span class="fu">tail</span> <span class="at">-f</span> /var/log/nacos/gc.log</span>
 <span id="cb176-13"><a href="#cb176-13" aria-hidden="true" tabindex="-1"></a><span class="co"># 示例输出：</span></span>
 <span id="cb176-14"><a href="#cb176-14" aria-hidden="true" tabindex="-1"></a><span class="co"># [GC pause (G1 Evacuation Pause) (young), 0.0123450 secs]</span></span>
-<span id="cb176-15"><a href="#cb176-15" aria-hidden="true" tabindex="-1"></a><span class="co">#    [Parallel Time: 12.0 ms, GC Workers: 4n]</span></span>
+<span id="cb176-15"><a href="#cb176-15" aria-hidden="true" tabindex="-1"></a><span class="co">#    [Parallel Time: 12.0 ms, GC Workers: 4]</span></span>
 <span id="cb176-16"><a href="#cb176-16" aria-hidden="true" tabindex="-1"></a><span class="co"># [GC pause (G1 Humongous Allocation) (young) (initial-mark), 0.0012340 secs]</span></span></code></pre></div>
 <p><strong>内存计算实例（中型集群 16GB heap）</strong>：</p>
 <pre><code>Xmx=16G → G1HeapRegionSize=16G/2048=8M

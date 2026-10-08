@@ -4957,7 +4957,7 @@ jstat -gcutil $(pgrep -f nacos) 1000 10
 tail -f /var/log/nacos/gc.log
 # 示例输出：
 # [GC pause (G1 Evacuation Pause) (young), 0.0123450 secs]
-#    [Parallel Time: 12.0 ms, GC Workers: 4n]
+#    [Parallel Time: 12.0 ms, GC Workers: 4]
 # [GC pause (G1 Humongous Allocation) (young) (initial-mark), 0.0012340 secs]
 ```
 
