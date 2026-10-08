@@ -1221,7 +1221,7 @@ curl -X POST http://nacos:8848/nacos/v1/cs/configs/listener \
 # 1. 查看当前 allSubs 大小（通过 JMX 或日志）
 grep "allSubs size" ${nacos.home}/logs/config-server.log | tail -1
 
-# 2. 若 allSubs size > thread.max * 流10 → 线程池饱和
+# 2. 若 allSubs size > thread.max * 1.5 → 线程池饱和
 # 解决方案：调大线程池参数
 ```
 
@@ -1876,7 +1876,7 @@ Nacos 支持 4 种健康检查类型，各有适用场景：
 完整的健康检查生命周期（以默认配置为例）：
 
 ```
-时间线（秒）：0    5    10   15   2 打0   25   30   35   40   45   50
+时间线（秒）：0    5    10   15   20   25   30   35   40   45   50
 客户端      ├─心跳─┼─心跳─┼─心跳─┼─心跳─┼（断连）
 服务端      │      │      │      │      ├─ClientBeatCheckTaskV2 检测
             │      │      │      │      ├─UnhealthyInstanceChecker: 

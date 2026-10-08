@@ -971,7 +971,7 @@ public class ModifyRequest {
         
         public ModifyBuilder table(String tableName) { ... }
         public ModifyBuilder setColumns(String[] columns, Object[] values) { ... }
-        public ModifyBuilder where(String whereClause看在) { ... }
+        public ModifyBuilder where(String whereClause) { ... }
         public ModifyBuilder queryType(QueryType type) { ... }
         public ModifyBuilder limiter(SqlLimiter limiter) { ... }
         public ModifyRequest build() { ... }

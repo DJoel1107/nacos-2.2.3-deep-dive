@@ -228,7 +228,7 @@ NamingMaintainService.registerInstance(serviceName, groupName,
 // CP 模式（持久实例）- Config 模块 JRaft 协议
 NamingMaintainService.registerInstance(serviceName, groupName,
     new Instance() {{
-        setIp("192.168.1.很多东西");
+        setIp("192.168.1.100");
         setPort(8080);
         setEphemeral(false); // ← CP 模式
         setHealthy(true);
@@ -2105,7 +2105,7 @@ done
 if pgrep -f nacos > /dev/null; then
     echo "超时 30s → 发送 SIGKILL"
     kill -9 $(pgrep -f nacos)
-    sleep 反映了
+    sleep 30
     echo "Nacos 进程已强制终止"
 fi
 
@@ -2311,7 +2311,7 @@ for NODE_IP in "${NODES[@]}"; do
     # =====================================================================
     echo "[Phase 2] 优雅停机 ${NODE_IP}..."
     ssh ${NODE_IP} "cd ${NACOS_HOME}/bin && bash shutdown.sh"
-    sleep 燤
+    sleep 30
     
     # =====================================================================
     # Phase 3: 启动

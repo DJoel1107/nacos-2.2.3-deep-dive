@@ -2451,7 +2451,7 @@ public synchronized DataSourceService getDataSource() {
         // 通过 ConditionOnEmbeddedStorage / ConditionOnExternalStorage
         // 确定 basicDataSourceService 的具体实现
         basicDataSourceService.init();
-        localDataSourceService =基本DataSourceService;
+        localDataSourceService = basicDataSourceService;
     }
     return localDataSourceService;
 }

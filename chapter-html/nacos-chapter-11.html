@@ -488,7 +488,7 @@ class="sourceCode java"><code class="sourceCode java"><span id="cb4-1"><a href="
 <span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="co">// CP 模式（持久实例）- Config 模块 JRaft 协议</span></span>
 <span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>NamingMaintainService<span class="op">.</span><span class="fu">registerInstance</span><span class="op">(</span>serviceName<span class="op">,</span> groupName<span class="op">,</span></span>
 <span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">new</span> <span class="fu">Instance</span><span class="op">()</span> <span class="op">{{</span></span>
-<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>        <span class="fu">setIp</span><span class="op">(</span><span class="st">&quot;192.168.1.很多东西&quot;</span><span class="op">);</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>        <span class="fu">setIp</span><span class="op">(</span><span class="st">&quot;192.168.1.100&quot;</span><span class="op">);</span></span>
 <span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>        <span class="fu">setPort</span><span class="op">(</span><span class="dv">8080</span><span class="op">);</span></span>
 <span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>        <span class="fu">setEphemeral</span><span class="op">(</span><span class="kw">false</span><span class="op">);</span> <span class="co">// ← CP 模式</span></span>
 <span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>        <span class="fu">setHealthy</span><span class="op">(</span><span class="kw">true</span><span class="op">);</span></span>
@@ -2981,7 +2981,7 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb43-1"><a href=
 <span id="cb43-68"><a href="#cb43-68" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="ex">pgrep</span> <span class="at">-f</span> nacos <span class="op">&gt;</span> /dev/null<span class="kw">;</span> <span class="cf">then</span></span>
 <span id="cb43-69"><a href="#cb43-69" aria-hidden="true" tabindex="-1"></a>    <span class="bu">echo</span> <span class="st">&quot;超时 30s → 发送 SIGKILL&quot;</span></span>
 <span id="cb43-70"><a href="#cb43-70" aria-hidden="true" tabindex="-1"></a>    <span class="bu">kill</span> <span class="at">-9</span> <span class="va">$(</span><span class="ex">pgrep</span> <span class="at">-f</span> nacos<span class="va">)</span></span>
-<span id="cb43-71"><a href="#cb43-71" aria-hidden="true" tabindex="-1"></a>    <span class="fu">sleep</span> 反映了</span>
+<span id="cb43-71"><a href="#cb43-71" aria-hidden="true" tabindex="-1"></a>    <span class="fu">sleep</span> 30</span>
 <span id="cb43-72"><a href="#cb43-72" aria-hidden="true" tabindex="-1"></a>    <span class="bu">echo</span> <span class="st">&quot;Nacos 进程已强制终止&quot;</span></span>
 <span id="cb43-73"><a href="#cb43-73" aria-hidden="true" tabindex="-1"></a><span class="cf">fi</span></span>
 <span id="cb43-74"><a href="#cb43-74" aria-hidden="true" tabindex="-1"></a></span>
@@ -3241,7 +3241,7 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb46-1"><a href=
 <span id="cb46-44"><a href="#cb46-44" aria-hidden="true" tabindex="-1"></a>    <span class="co"># =====================================================================</span></span>
 <span id="cb46-45"><a href="#cb46-45" aria-hidden="true" tabindex="-1"></a>    <span class="bu">echo</span> <span class="st">&quot;[Phase 2] 优雅停机 </span><span class="va">${NODE_IP}</span><span class="st">...&quot;</span></span>
 <span id="cb46-46"><a href="#cb46-46" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ssh</span> <span class="va">${NODE_IP}</span> <span class="st">&quot;cd </span><span class="va">${NACOS_HOME}</span><span class="st">/bin &amp;&amp; bash shutdown.sh&quot;</span></span>
-<span id="cb46-47"><a href="#cb46-47" aria-hidden="true" tabindex="-1"></a>    <span class="fu">sleep</span> 燤</span>
+<span id="cb46-47"><a href="#cb46-47" aria-hidden="true" tabindex="-1"></a>    <span class="fu">sleep</span> 30</span>
 <span id="cb46-48"><a href="#cb46-48" aria-hidden="true" tabindex="-1"></a>    </span>
 <span id="cb46-49"><a href="#cb46-49" aria-hidden="true" tabindex="-1"></a>    <span class="co"># =====================================================================</span></span>
 <span id="cb46-50"><a href="#cb46-50" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Phase 3: 启动</span></span>

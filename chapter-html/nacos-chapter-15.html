@@ -2959,33 +2959,37 @@ class="sourceCode java"><code class="sourceCode java"><span id="cb48-1"><a href=
 class="sourceCode java"><code class="sourceCode java"><span id="cb49-1"><a href="#cb49-1" aria-hidden="true" tabindex="-1"></a><span class="co">// 源码：client/src/main/java/com/alibaba/nacos/client/config/impl/CacheData.java:194-196</span></span>
 <span id="cb49-2"><a href="#cb49-2" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="bu">String</span> <span class="fu">getContent</span><span class="op">()</span> <span class="op">{</span></span>
 <span id="cb49-3"><a href="#cb49-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> content<span class="op">;</span></span>
-<span id="cb49-4"><a href="#cb49-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
-<span id="cb49-5"><a href="#cb49-5" aria-hidden="true" tabindex="-1"></a>```服务端侧<span class="op">,</span>这些规则本质上是在 config 存储中的业务配置<span class="op">,</span>遵循 Nacos 配置的订阅与推送语义。在 <span class="fl">2.5.3</span> 中<span class="op">,</span>配置与规则在服务端的落库统一由独立成模块的 `persistence<span class="op">/</span>` 承接<span class="op">,</span>存储实现与协议处理解耦<span class="op">,</span>客户端无需感知具体存储介质。</span>
-<span id="cb49-6"><a href="#cb49-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb49-7"><a href="#cb49-7" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;</span> <span class="op">**</span>生产要点<span class="op">**:</span>不要让 Dashboard 直推成为唯一规则来源<span class="op">(</span>重启丢失<span class="op">);</span>用 Nacos 持久化 <span class="op">+</span> 启动时 `NacosDataSource` 加载<span class="op">,</span>保证每次启动规则自动就绪。</span>
-<span id="cb49-8"><a href="#cb49-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb49-9"><a href="#cb49-9" aria-hidden="true" tabindex="-1"></a>### 四类规则配置说明</span>
-<span id="cb49-10"><a href="#cb49-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb49-11"><a href="#cb49-11" aria-hidden="true" tabindex="-1"></a>```json</span>
-<span id="cb49-12"><a href="#cb49-12" aria-hidden="true" tabindex="-1"></a><span class="co">// 1 流控规则(FlowRule)-- 按 QPS 或线程数限流</span></span>
-<span id="cb49-13"><a href="#cb49-13" aria-hidden="true" tabindex="-1"></a><span class="op">[</span></span>
-<span id="cb49-14"><a href="#cb49-14" aria-hidden="true" tabindex="-1"></a>  <span class="op">{</span> <span class="st">&quot;resource&quot;</span><span class="op">:</span> <span class="st">&quot;createOrder&quot;</span><span class="op">,</span> <span class="st">&quot;grade&quot;</span><span class="op">:</span> <span class="dv">1</span><span class="op">,</span> <span class="st">&quot;count&quot;</span><span class="op">:</span> <span class="dv">100</span><span class="op">,</span> <span class="st">&quot;controlBehavior&quot;</span><span class="op">:</span> <span class="dv">0</span> <span class="op">}</span></span>
-<span id="cb49-15"><a href="#cb49-15" aria-hidden="true" tabindex="-1"></a><span class="op">]</span></span>
-<span id="cb49-16"><a href="#cb49-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb49-17"><a href="#cb49-17" aria-hidden="true" tabindex="-1"></a><span class="co">// 2 降级规则(DegradeRule)-- 按慢调用比例 / 异常比例 / 异常数熔断</span></span>
-<span id="cb49-18"><a href="#cb49-18" aria-hidden="true" tabindex="-1"></a><span class="op">[</span></span>
-<span id="cb49-19"><a href="#cb49-19" aria-hidden="true" tabindex="-1"></a>  <span class="op">{</span> <span class="st">&quot;resource&quot;</span><span class="op">:</span> <span class="st">&quot;createOrder&quot;</span><span class="op">,</span> <span class="st">&quot;grade&quot;</span><span class="op">:</span> <span class="dv">0</span><span class="op">,</span> <span class="st">&quot;count&quot;</span><span class="op">:</span> <span class="dv">50</span><span class="op">,</span> <span class="st">&quot;timeWindow&quot;</span><span class="op">:</span> <span class="dv">10</span> <span class="op">}</span></span>
-<span id="cb49-20"><a href="#cb49-20" aria-hidden="true" tabindex="-1"></a><span class="op">]</span></span>
-<span id="cb49-21"><a href="#cb49-21" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb49-22"><a href="#cb49-22" aria-hidden="true" tabindex="-1"></a><span class="co">// 3 热点参数规则(ParamFlowRule)-- 针对参数维度的限流</span></span>
-<span id="cb49-23"><a href="#cb49-23" aria-hidden="true" tabindex="-1"></a><span class="op">[</span></span>
-<span id="cb49-24"><a href="#cb49-24" aria-hidden="true" tabindex="-1"></a>  <span class="op">{</span> <span class="st">&quot;resource&quot;</span><span class="op">:</span> <span class="st">&quot;createOrder&quot;</span><span class="op">,</span> <span class="st">&quot;grade&quot;</span><span class="op">:</span> <span class="dv">1</span><span class="op">,</span> <span class="st">&quot;count&quot;</span><span class="op">:</span> <span class="dv">20</span><span class="op">,</span> <span class="st">&quot;paramIdx&quot;</span><span class="op">:</span> <span class="dv">0</span> <span class="op">}</span></span>
-<span id="cb49-25"><a href="#cb49-25" aria-hidden="true" tabindex="-1"></a><span class="op">]</span></span>
-<span id="cb49-26"><a href="#cb49-26" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb49-27"><a href="#cb49-27" aria-hidden="true" tabindex="-1"></a><span class="co">// 4 系统保护规则(SystemRule)-- 针对系统整体负载保护</span></span>
-<span id="cb49-28"><a href="#cb49-28" aria-hidden="true" tabindex="-1"></a><span class="op">[</span></span>
-<span id="cb49-29"><a href="#cb49-29" aria-hidden="true" tabindex="-1"></a>  <span class="op">{</span> <span class="st">&quot;highestSystemLoad&quot;</span><span class="op">:</span> <span class="fl">0.8</span><span class="op">,</span> <span class="st">&quot;avgRt&quot;</span><span class="op">:</span> <span class="dv">500</span><span class="op">,</span> <span class="st">&quot;maxThread&quot;</span><span class="op">:</span> <span class="dv">200</span><span class="op">,</span> <span class="st">&quot;qps&quot;</span><span class="op">:</span> <span class="dv">2000</span> <span class="op">}</span></span>
-<span id="cb49-30"><a href="#cb49-30" aria-hidden="true" tabindex="-1"></a><span class="op">]</span></span></code></pre></div>
+<span id="cb49-4"><a href="#cb49-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>服务端侧,这些规则本质上是在 config 存储中的业务配置,遵循 Nacos
+配置的订阅与推送语义。在 2.5.3
+中,配置与规则在服务端的落库统一由独立成模块的 <code>persistence/</code>
+承接,存储实现与协议处理解耦,客户端无需感知具体存储介质。</p>
+<blockquote>
+<p><strong>生产要点</strong>:不要让 Dashboard
+直推成为唯一规则来源(重启丢失);用 Nacos 持久化 + 启动时
+<code>NacosDataSource</code> 加载,保证每次启动规则自动就绪。</p>
+</blockquote>
+<h3 id="四类规则配置说明">四类规则配置说明</h3>
+<div class="sourceCode" id="cb50"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb50-1"><a href="#cb50-1" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">1</span> <span class="er">流控规则(FlowRule)--</span> <span class="er">按</span> <span class="er">QPS</span> <span class="er">或线程数限流</span></span>
+<span id="cb50-2"><a href="#cb50-2" aria-hidden="true" tabindex="-1"></a><span class="ot">[</span></span>
+<span id="cb50-3"><a href="#cb50-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">{</span> <span class="dt">&quot;resource&quot;</span><span class="fu">:</span> <span class="st">&quot;createOrder&quot;</span><span class="fu">,</span> <span class="dt">&quot;grade&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span> <span class="dt">&quot;count&quot;</span><span class="fu">:</span> <span class="dv">100</span><span class="fu">,</span> <span class="dt">&quot;controlBehavior&quot;</span><span class="fu">:</span> <span class="dv">0</span> <span class="fu">}</span></span>
+<span id="cb50-4"><a href="#cb50-4" aria-hidden="true" tabindex="-1"></a><span class="ot">]</span></span>
+<span id="cb50-5"><a href="#cb50-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb50-6"><a href="#cb50-6" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">2</span> <span class="er">降级规则(DegradeRule)--</span> <span class="er">按慢调用比例</span> <span class="er">/</span> <span class="er">异常比例</span> <span class="er">/</span> <span class="er">异常数熔断</span></span>
+<span id="cb50-7"><a href="#cb50-7" aria-hidden="true" tabindex="-1"></a><span class="ot">[</span></span>
+<span id="cb50-8"><a href="#cb50-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">{</span> <span class="dt">&quot;resource&quot;</span><span class="fu">:</span> <span class="st">&quot;createOrder&quot;</span><span class="fu">,</span> <span class="dt">&quot;grade&quot;</span><span class="fu">:</span> <span class="dv">0</span><span class="fu">,</span> <span class="dt">&quot;count&quot;</span><span class="fu">:</span> <span class="dv">50</span><span class="fu">,</span> <span class="dt">&quot;timeWindow&quot;</span><span class="fu">:</span> <span class="dv">10</span> <span class="fu">}</span></span>
+<span id="cb50-9"><a href="#cb50-9" aria-hidden="true" tabindex="-1"></a><span class="ot">]</span></span>
+<span id="cb50-10"><a href="#cb50-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb50-11"><a href="#cb50-11" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">3</span> <span class="er">热点参数规则(ParamFlowRule)--</span> <span class="er">针对参数维度的限流</span></span>
+<span id="cb50-12"><a href="#cb50-12" aria-hidden="true" tabindex="-1"></a><span class="ot">[</span></span>
+<span id="cb50-13"><a href="#cb50-13" aria-hidden="true" tabindex="-1"></a>  <span class="fu">{</span> <span class="dt">&quot;resource&quot;</span><span class="fu">:</span> <span class="st">&quot;createOrder&quot;</span><span class="fu">,</span> <span class="dt">&quot;grade&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span> <span class="dt">&quot;count&quot;</span><span class="fu">:</span> <span class="dv">20</span><span class="fu">,</span> <span class="dt">&quot;paramIdx&quot;</span><span class="fu">:</span> <span class="dv">0</span> <span class="fu">}</span></span>
+<span id="cb50-14"><a href="#cb50-14" aria-hidden="true" tabindex="-1"></a><span class="ot">]</span></span>
+<span id="cb50-15"><a href="#cb50-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb50-16"><a href="#cb50-16" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">4</span> <span class="er">系统保护规则(SystemRule)--</span> <span class="er">针对系统整体负载保护</span></span>
+<span id="cb50-17"><a href="#cb50-17" aria-hidden="true" tabindex="-1"></a><span class="ot">[</span></span>
+<span id="cb50-18"><a href="#cb50-18" aria-hidden="true" tabindex="-1"></a>  <span class="fu">{</span> <span class="dt">&quot;highestSystemLoad&quot;</span><span class="fu">:</span> <span class="fl">0.8</span><span class="fu">,</span> <span class="dt">&quot;avgRt&quot;</span><span class="fu">:</span> <span class="dv">500</span><span class="fu">,</span> <span class="dt">&quot;maxThread&quot;</span><span class="fu">:</span> <span class="dv">200</span><span class="fu">,</span> <span class="dt">&quot;qps&quot;</span><span class="fu">:</span> <span class="dv">2000</span> <span class="fu">}</span></span>
+<span id="cb50-19"><a href="#cb50-19" aria-hidden="true" tabindex="-1"></a><span class="ot">]</span></span></code></pre></div>
 <p>各规则关键字段语义:</p>
 <p>表 15-17:15.8 Sentinel 四类规则字段说明</p>
 <table>
@@ -3197,14 +3201,14 @@ Dashboard
 8080。首次登录默认账号
 <code>sentinel</code>/<code>sentinel</code>,生产应改默认口令并置于可控网络。</p>
 <p><strong>客户端接入</strong>:</p>
-<div class="sourceCode" id="cb50"><pre
-class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb50-1"><a href="#cb50-1" aria-hidden="true" tabindex="-1"></a><span class="fu">spring</span><span class="kw">:</span></span>
-<span id="cb50-2"><a href="#cb50-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">cloud</span><span class="kw">:</span></span>
-<span id="cb50-3"><a href="#cb50-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">sentinel</span><span class="kw">:</span></span>
-<span id="cb50-4"><a href="#cb50-4" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">transport</span><span class="kw">:</span></span>
-<span id="cb50-5"><a href="#cb50-5" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">dashboard</span><span class="kw">:</span><span class="at"> 127.0.0.1:8080</span><span class="co">   # 控制台地址</span></span>
-<span id="cb50-6"><a href="#cb50-6" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">port</span><span class="kw">:</span><span class="at"> </span><span class="dv">8719</span><span class="co">                    # 客户端本地通信端口</span></span>
-<span id="cb50-7"><a href="#cb50-7" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">eager</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span><span class="co">                     # 启动即注册与控制台建联,便于联调</span></span></code></pre></div>
+<div class="sourceCode" id="cb51"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb51-1"><a href="#cb51-1" aria-hidden="true" tabindex="-1"></a><span class="fu">spring</span><span class="kw">:</span></span>
+<span id="cb51-2"><a href="#cb51-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">cloud</span><span class="kw">:</span></span>
+<span id="cb51-3"><a href="#cb51-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">sentinel</span><span class="kw">:</span></span>
+<span id="cb51-4"><a href="#cb51-4" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">transport</span><span class="kw">:</span></span>
+<span id="cb51-5"><a href="#cb51-5" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">dashboard</span><span class="kw">:</span><span class="at"> 127.0.0.1:8080</span><span class="co">   # 控制台地址</span></span>
+<span id="cb51-6"><a href="#cb51-6" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">port</span><span class="kw">:</span><span class="at"> </span><span class="dv">8719</span><span class="co">                    # 客户端本地通信端口</span></span>
+<span id="cb51-7"><a href="#cb51-7" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">eager</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span><span class="co">                     # 启动即注册与控制台建联,便于联调</span></span></code></pre></div>
 <p><strong>多环境 / 多集群下的 Dashboard
 部署</strong>:生产通常一个环境一套 Nacos,但 Dashboard
 可按需收敛:规则持久化在 Nacos(跨实例一致),Dashboard
@@ -3596,15 +3600,15 @@ LoadBalancer(新)或 Ribbon(老 Boot2),二选一。</p>
 </tbody>
 </table>
 <p><strong>推荐验证命令序列</strong>(每次选型/升级后执行):</p>
-<div class="sourceCode" id="cb52"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb52-1"><a href="#cb52-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 1 确认四者实际版本是否落在同一矩阵</span></span>
-<span id="cb52-2"><a href="#cb52-2" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-E</span> <span class="st">&quot;spring-cloud|spring-boot|nacos-client&quot;</span></span>
-<span id="cb52-3"><a href="#cb52-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 2 单独核对 nacos-client 生效版本</span></span>
-<span id="cb52-4"><a href="#cb52-4" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="at">-Dincludes</span><span class="op">=</span>com.alibaba.nacos:nacos-client</span>
-<span id="cb52-5"><a href="#cb52-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 3 定位是谁在传递某个冲突版本</span></span>
-<span id="cb52-6"><a href="#cb52-6" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="at">-Dverbose</span> <span class="at">-Dincludes</span><span class="op">=</span>com.google.protobuf:protobuf-java</span>
-<span id="cb52-7"><a href="#cb52-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 4 输出最终解析版本清单(含被仲裁排除项)</span></span>
-<span id="cb52-8"><a href="#cb52-8" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:list <span class="at">-DoutputFile</span><span class="op">=</span>dep.txt <span class="kw">&amp;&amp;</span> <span class="fu">grep</span> <span class="at">-E</span> <span class="st">&quot;nacos|spring-cloud-alibaba|protobuf|grpc&quot;</span> dep.txt</span></code></pre></div>
+<div class="sourceCode" id="cb53"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb53-1"><a href="#cb53-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 1 确认四者实际版本是否落在同一矩阵</span></span>
+<span id="cb53-2"><a href="#cb53-2" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="kw">|</span> <span class="fu">grep</span> <span class="at">-E</span> <span class="st">&quot;spring-cloud|spring-boot|nacos-client&quot;</span></span>
+<span id="cb53-3"><a href="#cb53-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 2 单独核对 nacos-client 生效版本</span></span>
+<span id="cb53-4"><a href="#cb53-4" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="at">-Dincludes</span><span class="op">=</span>com.alibaba.nacos:nacos-client</span>
+<span id="cb53-5"><a href="#cb53-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 3 定位是谁在传递某个冲突版本</span></span>
+<span id="cb53-6"><a href="#cb53-6" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="at">-Dverbose</span> <span class="at">-Dincludes</span><span class="op">=</span>com.google.protobuf:protobuf-java</span>
+<span id="cb53-7"><a href="#cb53-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 4 输出最终解析版本清单(含被仲裁排除项)</span></span>
+<span id="cb53-8"><a href="#cb53-8" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:list <span class="at">-DoutputFile</span><span class="op">=</span>dep.txt <span class="kw">&amp;&amp;</span> <span class="fu">grep</span> <span class="at">-E</span> <span class="st">&quot;nacos|spring-cloud-alibaba|protobuf|grpc&quot;</span> dep.txt</span></code></pre></div>
 <h3 id="获取权威版本的途径">获取权威版本的途径</h3>
 <ol type="1">
 <li><strong>Spring Cloud Alibaba 官方文档 / GitHub
@@ -3616,9 +3620,9 @@ POM</strong>:实际 <code>dependencyManagement</code>
 <li><strong>start.spring.io</strong>:生成工程时选择 SCA
 组合,得到官方推荐的三件套版本。</li>
 </ol>
-<div class="sourceCode" id="cb53"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb53-1"><a href="#cb53-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 用 Maven 验证实际生效的 nacos-client 版本(排除传递依赖歧义)</span></span>
-<span id="cb53-2"><a href="#cb53-2" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="at">-Dincludes</span><span class="op">=</span>com.alibaba.nacos:nacos-client</span></code></pre></div>
+<div class="sourceCode" id="cb54"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb54-1"><a href="#cb54-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 用 Maven 验证实际生效的 nacos-client 版本(排除传递依赖歧义)</span></span>
+<span id="cb54-2"><a href="#cb54-2" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="at">-Dincludes</span><span class="op">=</span>com.alibaba.nacos:nacos-client</span></code></pre></div>
 <blockquote>
 <p><strong>客户端侧版本依据</strong>:nacos-client 的内置版本号由
 <code>VersionUtils</code> 从 <code>nacos-version.txt</code>
@@ -3631,11 +3635,11 @@ nacos-client"的第一手证据,可与 <code>dependency:tree</code>
 <code>x.y.z</code>
 三段版本做字典序比对,服务端在版本兼容性判断/能力协商时即复用该工具;<code>getFullClientVersion</code>(<code>VersionUtils.java:86-88</code>)直接返回客户端版本字符串,供
 gRPC 握手与日志上报:</p>
-<div class="sourceCode" id="cb54"><pre
-class="sourceCode java"><code class="sourceCode java"><span id="cb54-1"><a href="#cb54-1" aria-hidden="true" tabindex="-1"></a><span class="co">// 源码:common/src/main/java/com/alibaba/nacos/common/utils/VersionUtils.java:86-88</span></span>
-<span id="cb54-2"><a href="#cb54-2" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="dt">static</span> <span class="bu">String</span> <span class="fu">getFullClientVersion</span><span class="op">()</span> <span class="op">{</span></span>
-<span id="cb54-3"><a href="#cb54-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> clientVersion<span class="op">;</span></span>
-<span id="cb54-4"><a href="#cb54-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb55"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb55-1"><a href="#cb55-1" aria-hidden="true" tabindex="-1"></a><span class="co">// 源码:common/src/main/java/com/alibaba/nacos/common/utils/VersionUtils.java:86-88</span></span>
+<span id="cb55-2"><a href="#cb55-2" aria-hidden="true" tabindex="-1"></a><span class="kw">public</span> <span class="dt">static</span> <span class="bu">String</span> <span class="fu">getFullClientVersion</span><span class="op">()</span> <span class="op">{</span></span>
+<span id="cb55-3"><a href="#cb55-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> clientVersion<span class="op">;</span></span>
+<span id="cb55-4"><a href="#cb55-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
 <p>因此在排版本错配时,可在接入层用 <code>compareVersion</code>
 对"服务端要求的最低版本"与实际生效的 nacos-client
 做程序化校验,比人工比对 <code>dependency:tree</code> 更可靠、更易纳入 CI
@@ -3761,11 +3765,11 @@ register 是否成功、订阅缓存、ephemeral 语义、网络。</li>
 </tbody>
 </table>
 <p><strong>开启 debug 定位</strong>:</p>
-<div class="sourceCode" id="cb56"><pre
-class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb56-1"><a href="#cb56-1" aria-hidden="true" tabindex="-1"></a><span class="fu">logging</span><span class="kw">:</span></span>
-<span id="cb56-2"><a href="#cb56-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">level</span><span class="kw">:</span></span>
-<span id="cb56-3"><a href="#cb56-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">com.alibaba.nacos.client</span><span class="kw">:</span><span class="at"> debug</span></span>
-<span id="cb56-4"><a href="#cb56-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">com.alibaba.nacos.common.remote</span><span class="kw">:</span><span class="at"> debug</span><span class="co">   # gRPC 连接细节</span></span></code></pre></div>
+<div class="sourceCode" id="cb57"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb57-1"><a href="#cb57-1" aria-hidden="true" tabindex="-1"></a><span class="fu">logging</span><span class="kw">:</span></span>
+<span id="cb57-2"><a href="#cb57-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">level</span><span class="kw">:</span></span>
+<span id="cb57-3"><a href="#cb57-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">com.alibaba.nacos.client</span><span class="kw">:</span><span class="at"> debug</span></span>
+<span id="cb57-4"><a href="#cb57-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">com.alibaba.nacos.common.remote</span><span class="kw">:</span><span class="at"> debug</span><span class="co">   # gRPC 连接细节</span></span></code></pre></div>
 <blockquote>
 <p><strong>注意</strong>:debug
 日志量大、影响性能,仅用于定位时段开启,解决后立即恢复为
@@ -3795,9 +3799,9 @@ class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb56-1"><a href=
 <li>用 <code>-X</code> 或 <code>dependency:analyze</code>
 查冲突/已废弃依赖。</li>
 </ol>
-<div class="sourceCode" id="cb57"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb57-1"><a href="#cb57-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 确认 nacos-client 实际版本(可能有多个被仲裁后的最终版本)</span></span>
-<span id="cb57-2"><a href="#cb57-2" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="at">-Dincludes</span><span class="op">=</span>com.alibaba.nacos:<span class="pp">*</span></span></code></pre></div>
+<div class="sourceCode" id="cb58"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb58-1"><a href="#cb58-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 确认 nacos-client 实际版本(可能有多个被仲裁后的最终版本)</span></span>
+<span id="cb58-2"><a href="#cb58-2" aria-hidden="true" tabindex="-1"></a><span class="ex">mvn</span> dependency:tree <span class="at">-Dincludes</span><span class="op">=</span>com.alibaba.nacos:<span class="pp">*</span></span></code></pre></div>
 <p><strong>根因与对策表</strong></p>
 <p>表 15-27:版本不匹配问题排查表</p>
 <table>
@@ -3863,11 +3867,11 @@ Bean 缺失(如 <code>NacosConfigManager</code> 未装配),是 Boot 与 SCA
 的 failover / snapshot 文件可能覆盖远端配置(15.2 三级降级)--检查
 <code>~/.nacos/naming/</code> 或约定目录下的 failover 文件。</li>
 </ol>
-<div class="sourceCode" id="cb58"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb58-1"><a href="#cb58-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 确认应用从哪个命名空间/dataId 读配置(开启 nacos 客户端 debug 日志)</span></span>
-<span id="cb58-2"><a href="#cb58-2" aria-hidden="true" tabindex="-1"></a><span class="ex">logging:</span></span>
-<span id="cb58-3"><a href="#cb58-3" aria-hidden="true" tabindex="-1"></a>  <span class="ex">level:</span></span>
-<span id="cb58-4"><a href="#cb58-4" aria-hidden="true" tabindex="-1"></a>    <span class="ex">com.alibaba.nacos.client:</span> debug</span></code></pre></div>
+<div class="sourceCode" id="cb59"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb59-1"><a href="#cb59-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 确认应用从哪个命名空间/dataId 读配置(开启 nacos 客户端 debug 日志)</span></span>
+<span id="cb59-2"><a href="#cb59-2" aria-hidden="true" tabindex="-1"></a><span class="ex">logging:</span></span>
+<span id="cb59-3"><a href="#cb59-3" aria-hidden="true" tabindex="-1"></a>  <span class="ex">level:</span></span>
+<span id="cb59-4"><a href="#cb59-4" aria-hidden="true" tabindex="-1"></a>    <span class="ex">com.alibaba.nacos.client:</span> debug</span></code></pre></div>
 <p><strong>根因与对策表</strong></p>
 <p>表 15-28:配置不生效问题排查表</p>
 <table>

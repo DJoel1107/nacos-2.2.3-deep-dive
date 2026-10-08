@@ -471,7 +471,7 @@ CMS 已被 Java 14 废弃（JEP 363），且并发清除不压缩 → 老年代�
 [GC pause (G1 Evacuation Pause) (young), 0.0151234 secs]
    [Parallel Time: 14.5 ms, GC Workers: 8]
       [GC Worker Start (ms): Min: 12345.6, Avg: 12345.7, Max: 12345.8, Diff: 0.2]
-      [Ext Root Scanning (ms): Min: 0.1, Avg: 0.2, Max: 0.睬, Diff: 0.2]
+      [Ext Root Scanning (ms): Min: 0.1, Avg: 0.2, Max: 0.3, Diff: 0.2]
       [Update RS (ms): Min: 0.0, Avg: 0.1, Max: 0.2, Diff: 0.2]
          [Processed Buffers: Min: 0, Avg: 1.2, Max: 3, Diff: 3]
       [Scan RS (ms): Min: 0.0, Avg: 0.0, Max: 0.0, Diff: 0.0]
@@ -2500,7 +2500,7 @@ $ top -H -p <nacos_pid>
   PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
  4512 root      20   0   0.5g  0.1g  0.0g R  99.7   0.0   0:15.23  nacos-grpc
  4513 root      20   0   0.5g  0.1g  0.0g R  99.5   0.0   0:15.18  nacos-grpc
- 4514 root      20   0   0.5g  0.1g  0.0g R  99.一如1   0.0   0:15.12  nacos-grpc
+ 4514 root      20   0   0.5g  0.1g  0.0g R  99.1   0.0   0:15.12  nacos-grpc
  ... (约 25+ 个线程 CPU 100%)
 ```
 
@@ -3072,7 +3072,7 @@ max_allowed_packet = 256M          # 最大包大小（配置内容可能较大�
 innodb_buffer_pool_size = 4G        # Buffer Pool 大小（物理内存的 50-70%）
 innodb_buffer_pool_instances = 8    # Buffer Pool 实例数（≥ innodb_buffer_pool_size/1G）
 innodb_log_file_size = 1G          # Redo Log 文件大小
-innodb_log_files_in_group = orra   # Redo Log 文件数
+innodb_log_files_in_group = 2   # Redo Log 文件数
 innodb_flush_log_at_trx_commit = 2 # 日志刷新策略（2 = OS 缓存刷新, 性能最优）
 innodb_flush_method = O_DIRECT      # 刷新方法（绕过 OS 缓存, 避免双重缓存）
 
@@ -4519,7 +4519,7 @@ net.core.netdev_max_backlog = 5000
 net.ipv4.ip_local_port_range = 1024 65535
 
 # 文件描述符最大数量（默认 ~200K → 6553500）
-fs.file-max = 6553500为新
+fs.file-max = 6553500
 fs.nr_open = 6553500
 
 # =========================================================================
@@ -4591,7 +4591,7 @@ sysctl -p
 sysctl net.ipv4.tcp_tw_reuse
 sysctl net.ipv4.tcp_fin_timeout
 sysctl net.ipv4.ip_local_port_range
-sysctl fs.file-max所欲
+sysctl fs.file-max
 
 # 检查当前 TIME_WAIT 连接数
 ss -tan state time-wait | wc -l
@@ -4957,9 +4957,9 @@ jstat -gcutil $(pgrep -f nacos) 1000 10gers
 tail -f /var/log/nacos/gc.logergonomic
 # 示例输出：
 # [GC pause (G1 Evacuation Pause) (young), 0.0123450 secs]
-#    [Parallel Time: 12.0 ms, GC Workers: 旋n]
-# [GC pause (G1 Humongous Allocation) (young) (initial-mark), 个.0012340 secs]
-```4
+#    [Parallel Time: 12.0 ms, GC Workers: 4n]
+# [GC pause (G1 Humongous Allocation) (young) (initial-mark), 0.0012340 secs]
+```
 
 **内存计算实例（中型集群 16GB heap）**：
 
@@ -4980,7 +4980,7 @@ GC 频率推算：
 
 Full GC 频率推算（理想情况）：
   晋升速率 = Young GC 后 Survivor 存活对象 / Young GC 间隔
-  假设每次 Young GC 后 Survivor 存活 200MB → 晋升速率 = 200MB / 3=3min
+  假设每次 Young GC 后 Survivor 存活 200MB → 晋升速率 = 200MB / 3.3min
   Old 填满时间 = 4.8GB / (200MB / 3.3min) ≈ 79min
   即每 ~79min 发生一次 Mixed GC（G1GC Mixed GC = 并发标记 + 增量老年代收集）
 ```
@@ -5608,9 +5608,9 @@ G1GC Mixed GC = 并发标记 + 增量老年代收集
 [GC pause (G1 Evacuation Pause) (young), 0.0213450 secs]
   [Parallel Time: 20.0 ms, GC Workers: 8]     # 8个GC线程并行工作
      [GC Worker Start: 0.1ms, End: 20.0ms]
-  [Code Root Fixup: 0.叢ms]
+  [Code Root Fixup: 0.3ms]
   [Clear CT: 0.1ms]
-  [Other: 一团ms]
+  [Other: 0.0ms]
   [Choose CSet: 0.0ms]
   [Ref Proc: 0.4ms]
   [Ref Enq: 0.0ms]

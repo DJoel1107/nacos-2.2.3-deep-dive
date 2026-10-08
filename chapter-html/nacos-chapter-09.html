@@ -2222,7 +2222,7 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb35-1"><a href=
 class="sourceCode bash"><code class="sourceCode bash"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 1. 查看当前 allSubs 大小（通过 JMX 或日志）</span></span>
 <span id="cb37-2"><a href="#cb37-2" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="st">&quot;allSubs size&quot;</span> <span class="va">${nacos</span><span class="er">.home</span><span class="va">}</span>/logs/config-server.log <span class="kw">|</span> <span class="fu">tail</span> <span class="at">-1</span></span>
 <span id="cb37-3"><a href="#cb37-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb37-4"><a href="#cb37-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 2. 若 allSubs size &gt; thread.max * 流10 → 线程池饱和</span></span>
+<span id="cb37-4"><a href="#cb37-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 2. 若 allSubs size &gt; thread.max * 1.5 → 线程池饱和</span></span>
 <span id="cb37-5"><a href="#cb37-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 解决方案：调大线程池参数</span></span></code></pre></div>
 <pre class="properties"><code># 适当增大线程池（根据客户端规模）
 nacos.config.longPolling.thread.core=100
@@ -3453,7 +3453,7 @@ class="sourceCode java"><code class="sourceCode java"><span id="cb57-1"><a href=
 <code>MYSQL</code>。</p>
 <h3 id="994-健康检查时序详解">9.9.4 健康检查时序详解</h3>
 <p>完整的健康检查生命周期（以默认配置为例）：</p>
-<pre><code>时间线（秒）：0    5    10   15   2 打0   25   30   35   40   45   50
+<pre><code>时间线（秒）：0    5    10   15   20   25   30   35   40   45   50
 客户端      ├─心跳─┼─心跳─┼─心跳─┼─心跳─┼（断连）
 服务端      │      │      │      │      ├─ClientBeatCheckTaskV2 检测
             │      │      │      │      ├─UnhealthyInstanceChecker: 

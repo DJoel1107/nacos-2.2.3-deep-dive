@@ -1794,7 +1794,9 @@ public String getConfig(String dataId, String group, long timeoutMs) throws Naco
 public String getContent() {
     return content;
 }
-```服务端侧,这些规则本质上是在 config 存储中的业务配置,遵循 Nacos 配置的订阅与推送语义。在 2.5.3 中,配置与规则在服务端的落库统一由独立成模块的 `persistence/` 承接,存储实现与协议处理解耦,客户端无需感知具体存储介质。
+```
+
+服务端侧,这些规则本质上是在 config 存储中的业务配置,遵循 Nacos 配置的订阅与推送语义。在 2.5.3 中,配置与规则在服务端的落库统一由独立成模块的 `persistence/` 承接,存储实现与协议处理解耦,客户端无需感知具体存储介质。
 
 > **生产要点**:不要让 Dashboard 直推成为唯一规则来源(重启丢失);用 Nacos 持久化 + 启动时 `NacosDataSource` 加载,保证每次启动规则自动就绪。
 
